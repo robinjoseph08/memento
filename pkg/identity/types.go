@@ -9,9 +9,9 @@ type SignInRequest struct {
 	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
 }
 
-// ExchangeMobileCodeRequest carries the single-use code the web sign-in
-// handed to the Mobile App, and the platform that names its session.
-type ExchangeMobileCodeRequest struct {
+// ExchangeHandoffCodeRequest carries the Hand-off Code the web sign-in gave
+// the Mobile App, and the platform that names its session.
+type ExchangeHandoffCodeRequest struct {
 	Code     string `json:"code" validate:"required,max=64" mod:"trim"`
 	Platform string `json:"platform" validate:"required,max=40" mod:"trim"`
 }

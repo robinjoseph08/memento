@@ -61,9 +61,9 @@ type Session struct {
 	ExpiresAt     time.Time
 }
 
-// MobileSignInCode is exchanged once by the Mobile App for a session.
-type MobileSignInCode struct {
-	bun.BaseModel `bun:"table:mobile_sign_in_codes"`
+// HandoffCode is exchanged once by the Mobile App for a session of its own.
+type HandoffCode struct {
+	bun.BaseModel `bun:"table:handoff_codes"`
 	CodeHash      []byte `bun:"code_hash,pk"`
 	IdentityID    UUID   `bun:"identity_id,type:uuid"`
 	ExpiresAt     time.Time

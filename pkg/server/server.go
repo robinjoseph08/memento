@@ -198,7 +198,7 @@ func capturePanicErrorStack() echo.MiddlewareFunc {
 // The Origin check exists for cookies, which browsers attach on their own.
 // The Mobile App authenticates with a bearer header that only its own code
 // can set, so a bearer request skips the check, as does the one request that
-// exchanges its sign-in code before it has a token at all.
+// exchanges its Hand-off Code before it has a token at all.
 func browserAPI(publicURL string, development bool, hostname string) echo.MiddlewareFunc {
 	origin := strings.TrimRight(publicURL, "/")
 	return func(next echo.HandlerFunc) echo.HandlerFunc {

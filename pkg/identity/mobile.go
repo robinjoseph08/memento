@@ -13,16 +13,16 @@ import (
 	"github.com/uptrace/bun"
 )
 
-// MobileCodeLifetime bounds the hand-off from the browser sheet to the app.
-const MobileCodeLifetime = time.Minute
+// HandoffCodeLifetime bounds the hand-off from the browser sheet to the app.
+const HandoffCodeLifetime = time.Minute
 
-var ErrMobileCodeInvalid = &errcodes.Error{HTTPCode: 401, Code: "invalid_code", Message: "That sign-in has expired. Start again from the app."}
+var ErrHandoffCodeInvalid = &errcodes.Error{HTTPCode: 401, Code: "invalid_code", Message: "That sign-in has expired. Start again from the app."}
 
-// IssueMobileCode hands the browser's signed-in session over to the Mobile
-// App as a single-use code, and ends that session in the same transaction:
+// IssueHandoffCode hands the browser's signed-in session over to the Mobile
+// App as a Hand-off Code, and ends that session in the same transaction:
 // the phone's session replaces it, so the next sign-in from the app starts
 // fresh and can be someone else. Expired codes are removed on the way.
-func (m *Module) IssueMobileCode(ctx context.Context, token string) (string, error) {
+func (m *Module) IssueHandoffCode(ctx context.Context, token string) (string, error) {
 	code, hash, err := newSecret()
 	if err != nil {
 		return "", err
@@ -38,21 +38,21 @@ func (m *Module) IssueMobileCode(ctx context.Context, token string) (string, err
 		if _, err := tx.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", tokenHash[:]).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		if _, err := tx.NewDelete().Model((*models.MobileSignInCode)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
+		if _, err := tx.NewDelete().Model((*models.HandoffCode)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		pending := models.MobileSignInCode{CodeHash: hash, IdentityID: identityID, ExpiresAt: now.Add(MobileCodeLifetime)}
+		pending := models.HandoffCode{CodeHash: hash, IdentityID: identityID, ExpiresAt: now.Add(HandoffCodeLifetime)}
 		_, err = tx.NewInsert().Model(&pending).Exec(ctx)
 		return errorstack.CaptureContext(ctx, err)
 	})
 	return code, err
 }
 
-// ExchangeMobileCode issues the app its own session, labeled by platform. The
+// ExchangeHandoffCode issues the app its own session, labeled by platform. The
 // code is consumed as it is read, so concurrent exchanges admit one phone.
-func (m *Module) ExchangeMobileCode(ctx context.Context, code, platform string) (Session, error) {
+func (m *Module) ExchangeHandoffCode(ctx context.Context, code, platform string) (Session, error) {
 	if len(code) != 43 {
-		return Session{}, ErrMobileCodeInvalid
+		return Session{}, ErrHandoffCodeInvalid
 	}
 	token, hash, err := newSecret()
 	if err != nil {
@@ -63,11 +63,11 @@ func (m *Module) ExchangeMobileCode(ctx context.Context, code, platform string) 
 	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		now := m.now().UTC()
 		var identityID models.UUID
-		err := tx.NewDelete().Model((*models.MobileSignInCode)(nil)).
+		err := tx.NewDelete().Model((*models.HandoffCode)(nil)).
 			Where("code_hash = ?", codeHash[:]).Where("expires_at > ?", now).
 			Returning("identity_id").Scan(ctx, &identityID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrMobileCodeInvalid
+			return ErrHandoffCodeInvalid
 		}
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)

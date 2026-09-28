@@ -11,16 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestMobileCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
+func TestHandoffCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
 	module := identity.New(testdb.New(t), func() time.Time { return now })
 	browser := claimCurator(t, module)
 
-	code, err := module.IssueMobileCode(t.Context(), browser.Token)
+	code, err := module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
 	require.Len(t, code, 43)
-	phone, err := module.ExchangeMobileCode(t.Context(), code, "iPhone")
+	phone, err := module.ExchangeHandoffCode(t.Context(), code, "iPhone")
 	require.NoError(t, err)
 	assert.Equal(t, browser.Person, phone.Person)
 	assert.NotEqual(t, browser.Token, phone.Token)
@@ -39,11 +39,11 @@ func TestMobileCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
 	assert.Equal(t, "Memento on iPhone", sessions[0].Device)
 	assert.True(t, sessions[0].Current)
 
-	_, err = module.ExchangeMobileCode(t.Context(), code, "iPhone")
-	require.ErrorIs(t, err, identity.ErrMobileCodeInvalid, "a code works once")
-	_, err = module.ExchangeMobileCode(t.Context(), "made-up-code", "iPhone")
-	require.ErrorIs(t, err, identity.ErrMobileCodeInvalid)
-	_, err = module.IssueMobileCode(t.Context(), "made-up-token")
+	_, err = module.ExchangeHandoffCode(t.Context(), code, "iPhone")
+	require.ErrorIs(t, err, identity.ErrHandoffCodeInvalid, "a code works once")
+	_, err = module.ExchangeHandoffCode(t.Context(), "made-up-code", "iPhone")
+	require.ErrorIs(t, err, identity.ErrHandoffCodeInvalid)
+	_, err = module.IssueHandoffCode(t.Context(), "made-up-token")
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
 
 	require.NoError(t, module.SignOut(t.Context(), phone.Token))
@@ -51,24 +51,24 @@ func TestMobileCodeExchangeIssuesABearerSessionOnce(t *testing.T) {
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
 }
 
-func TestMobileCodeExpiresWithinAMinute(t *testing.T) {
+func TestHandoffCodeExpiresWithinAMinute(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 22, 10, 0, 0, 0, time.UTC)
 	module := identity.New(testdb.New(t), func() time.Time { return now })
 	browser := claimCurator(t, module)
 
-	code, err := module.IssueMobileCode(t.Context(), browser.Token)
+	code, err := module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
-	now = now.Add(identity.MobileCodeLifetime)
-	_, err = module.ExchangeMobileCode(t.Context(), code, "Android")
-	require.ErrorIs(t, err, identity.ErrMobileCodeInvalid)
+	now = now.Add(identity.HandoffCodeLifetime)
+	_, err = module.ExchangeHandoffCode(t.Context(), code, "Android")
+	require.ErrorIs(t, err, identity.ErrHandoffCodeInvalid)
 
 	// The hand-off ended the first browser session, so the retry signs in again.
 	browser = claimCurator(t, module)
-	fresh, err := module.IssueMobileCode(t.Context(), browser.Token)
+	fresh, err := module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
-	now = now.Add(identity.MobileCodeLifetime - time.Second)
-	phone, err := module.ExchangeMobileCode(t.Context(), fresh, "Android")
+	now = now.Add(identity.HandoffCodeLifetime - time.Second)
+	phone, err := module.ExchangeHandoffCode(t.Context(), fresh, "Android")
 	require.NoError(t, err)
 	assert.Equal(t, browser.Person, phone.Person)
 }
@@ -83,9 +83,9 @@ func TestDeactivationEndsABearerSession(t *testing.T) {
 	require.NoError(t, err)
 	browser, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))
 	require.NoError(t, err)
-	code, err := module.IssueMobileCode(t.Context(), browser.Token)
+	code, err := module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
-	phone, err := module.ExchangeMobileCode(t.Context(), code, "iPhone")
+	phone, err := module.ExchangeHandoffCode(t.Context(), code, "iPhone")
 	require.NoError(t, err)
 	_, err = module.Authenticate(t.Context(), phone.Token)
 	require.NoError(t, err)
@@ -100,11 +100,11 @@ func TestDeactivationEndsABearerSession(t *testing.T) {
 	require.NoError(t, err)
 	browser, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))
 	require.NoError(t, err)
-	code, err = module.IssueMobileCode(t.Context(), browser.Token)
+	code, err = module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
 	_, err = module.UpdatePerson(t.Context(), curator.Token, person.ID, identity.UpdatePersonRequest{DisplayName: "Alex", Deactivated: true})
 	require.NoError(t, err)
-	_, err = module.ExchangeMobileCode(t.Context(), code, "iPhone")
+	_, err = module.ExchangeHandoffCode(t.Context(), code, "iPhone")
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
 }
 
@@ -112,7 +112,7 @@ func TestConcurrentExchangesAdmitExactlyOnePhone(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	browser := claimCurator(t, module)
-	code, err := module.IssueMobileCode(t.Context(), browser.Token)
+	code, err := module.IssueHandoffCode(t.Context(), browser.Token)
 	require.NoError(t, err)
 
 	const attempts = 8
@@ -122,7 +122,7 @@ func TestConcurrentExchangesAdmitExactlyOnePhone(t *testing.T) {
 	for range attempts {
 		wg.Go(func() {
 			<-start
-			_, err := module.ExchangeMobileCode(t.Context(), code, "iPhone")
+			_, err := module.ExchangeHandoffCode(t.Context(), code, "iPhone")
 			results <- err
 		})
 	}
@@ -134,7 +134,7 @@ func TestConcurrentExchangesAdmitExactlyOnePhone(t *testing.T) {
 		if err == nil {
 			winners++
 		} else {
-			require.ErrorIs(t, err, identity.ErrMobileCodeInvalid)
+			require.ErrorIs(t, err, identity.ErrHandoffCodeInvalid)
 		}
 	}
 	assert.Equal(t, 1, winners)

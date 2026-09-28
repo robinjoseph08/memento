@@ -91,5 +91,9 @@ _Avoid_: Instance, Site
 The viewer-only Memento app for phones. It connects to an Installation and offers viewing and Update Notifications; curation stays on the web.
 _Avoid_: Native app, Client
 
+**Hand-off Code**:
+A single-use code the web sign-in gives the Mobile App so the phone gets a session of its own. It verifies nothing and only moves an already signed-in Person onto their phone, unlike a Sign-in Code.
+_Avoid_: Mobile sign-in code, Exchange code
+
 **Onboarding**:
 The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible to them.

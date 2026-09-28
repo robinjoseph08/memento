@@ -30,8 +30,8 @@ type AuthenticationUseCases interface {
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
-	IssueMobileCode(context.Context, string) (string, error)
-	ExchangeMobileCode(context.Context, string, string) (Session, error)
+	IssueHandoffCode(context.Context, string) (string, error)
+	ExchangeHandoffCode(context.Context, string, string) (Session, error)
 }
 
 type FaceUseCases interface {

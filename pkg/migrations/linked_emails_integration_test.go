@@ -9,7 +9,6 @@ import (
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/uptrace/bun/migrate"
 )
 
 const linkedEmailsMigration = "20260928000000"
@@ -22,15 +21,27 @@ func TestLinkedEmailsMigrationKeepsSessionsAndRefusesSharedAddresses(t *testing.
 	db := testdb.New(t)
 	ctx := t.Context()
 	migrator := migrations.NewMigrator(db)
-	var target *migrate.Migration
 	registered := migrations.Migrations.Sorted()
+	targetIndex := -1
 	for i := range registered {
 		if registered[i].Name == linkedEmailsMigration {
-			target = &registered[i]
+			targetIndex = i
 		}
 	}
-	require.NotNil(t, target, "Linked Email migration must be registered")
-	require.NoError(t, target.Down(ctx, migrator, target))
+	require.NotEqual(t, -1, targetIndex, "Linked Email migration must be registered")
+	// Roll back to just before the target so the seed matches the previous release.
+	for i := len(registered) - 1; i >= targetIndex; i-- {
+		require.NoError(t, registered[i].Down(ctx, migrator, &registered[i]))
+	}
+	// up applies the target and everything after it, as an upgrade would.
+	up := func() error {
+		for i := targetIndex; i < len(registered); i++ {
+			if err := registered[i].Up(ctx, migrator, &registered[i]); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	now := time.Now().UTC()
 	earlier := now.Add(-time.Hour)
@@ -73,7 +84,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	)
 	require.NoError(t, err)
 
-	err = target.Up(ctx, migrator, target)
+	err = up()
 	require.ErrorContains(t, err, "more than one Person holds dup@example.test", "two Persons holding one address must stop the upgrade")
 	require.ErrorContains(t, err, "preauthorizations for second@example.test differ only by letter case")
 	columns, err := db.NewSelect().Table("information_schema.columns").Where("table_schema = current_schema() AND table_name = 'identities' AND column_name IN ('provider', 'subject')").Count(ctx)
@@ -82,7 +93,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 
 	_, err = db.ExecContext(ctx, `DELETE FROM identities WHERE id = ?; UPDATE preauthorizations SET revoked_at = ? WHERE id = ?`, dupTwo, now, samApproval)
 	require.NoError(t, err)
-	require.NoError(t, target.Up(ctx, migrator, target))
+	require.NoError(t, up())
 
 	var emails []string
 	require.NoError(t, db.NewSelect().Table("identities").Column("email").Order("email").Scan(ctx, &emails))
@@ -93,7 +104,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	var sessionIdentities []models.UUID
 	require.NoError(t, db.NewSelect().Table("sessions").Column("identity_id").Order("created_at", "id").Scan(ctx, &sessionIdentities))
 	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle, samGoogle}, sessionIdentities, "folding keeps every session signed in")
-	codes, err := db.NewSelect().Table("mobile_sign_in_codes").Where("identity_id = ?", samGoogle).Count(ctx)
+	codes, err := db.NewSelect().Table("handoff_codes").Where("identity_id = ?", samGoogle).Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, codes)
 	var person models.Person
@@ -101,7 +112,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	require.NotNil(t, person.UpdateIdentityID)
 	assert.Equal(t, alexGoogle, *person.UpdateIdentityID)
 	assert.True(t, person.EmailUpdates)
-	codes, err = db.NewSelect().Table("mobile_sign_in_codes").Where("identity_id = ?", alexGoogle).Count(ctx)
+	codes, err = db.NewSelect().Table("handoff_codes").Where("identity_id = ?", alexGoogle).Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, codes)
 	var approved []string
