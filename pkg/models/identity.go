@@ -13,7 +13,7 @@ type Person struct {
 	IsCurator             bool
 	OnboardingCompletedAt *time.Time
 	DeactivatedAt         *time.Time
-	UpdateIdentityID      *UUID  `bun:"update_identity_id,type:uuid"`
+	UpdateEmailID         *UUID  `bun:"update_email_id,type:uuid"`
 	UpdateEmail           string `bun:",scanonly"`
 	EmailUpdates          bool
 	AvatarFaceID          *string
@@ -21,10 +21,10 @@ type Person struct {
 	CreatedAt             time.Time
 }
 
-// Identity is one Linked Email: a verified, lowercased address that signs
-// its Person in. Unlinking keeps the row so the address stays known.
-type Identity struct {
-	bun.BaseModel `bun:"table:identities"`
+// LinkedEmail is a verified, lowercased address that signs its Person in.
+// Unlinking keeps the row so the address stays known.
+type LinkedEmail struct {
+	bun.BaseModel `bun:"table:linked_emails,alias:linked_email"`
 	ID            UUID `bun:"id,pk,type:uuid"`
 	PersonID      UUID `bun:"person_id,type:uuid"`
 	Email         string
@@ -55,7 +55,7 @@ type Session struct {
 	ID            UUID `bun:"id,type:uuid"`
 	Device        string
 	TokenHash     []byte `bun:"token_hash,pk"`
-	IdentityID    UUID   `bun:"identity_id,type:uuid"`
+	LinkedEmailID UUID   `bun:"linked_email_id,type:uuid"`
 	CreatedAt     time.Time
 	RenewedAt     time.Time
 	ExpiresAt     time.Time
@@ -65,7 +65,7 @@ type Session struct {
 type HandoffCode struct {
 	bun.BaseModel `bun:"table:handoff_codes"`
 	CodeHash      []byte `bun:"code_hash,pk"`
-	IdentityID    UUID   `bun:"identity_id,type:uuid"`
+	LinkedEmailID UUID   `bun:"linked_email_id,type:uuid"`
 	ExpiresAt     time.Time
 }
 
@@ -79,7 +79,7 @@ type Invitation struct {
 	CreatedAt          time.Time
 }
 
-// AccessRequest records who asked, never whether two identities share a human.
+// AccessRequest records who asked, never whether two addresses share a human.
 type AccessRequest struct {
 	bun.BaseModel `bun:"table:access_requests,alias:request"`
 	ID            UUID `bun:"id,pk,type:uuid"`

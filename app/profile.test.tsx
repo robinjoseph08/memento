@@ -46,7 +46,7 @@ afterEach(() => {
 it("keeps profile edits through failed refresh, focuses a rejected email, and saves linked-address preferences", async () => {
   let failRead = false;
   let failSave = true;
-  let profile = { person: alex, identities: [account] };
+  let profile = { person: alex, emails: [account] };
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -120,7 +120,7 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
 it("chooses a linked update email and clears it through the profile menu", async () => {
   let person = alex;
   const saved: UpdateProfileRequest[] = [];
-  const identities = [
+  const emails = [
     account,
     { ...account, id: "second", email: "alex.second@example.test" },
   ];
@@ -139,7 +139,7 @@ it("chooses a linked update email and clears it through the profile menu", async
         saved.push(request);
         person = { ...person, ...request };
       }
-      return Response.json({ person, identities });
+      return Response.json({ person, emails });
     }),
   );
   window.history.replaceState(null, "", "/profile");
@@ -188,7 +188,7 @@ it("replaces a private profile on identity refresh and ignores the old in-flight
       if (path.endsWith("/profile"))
         return Response.json({
           person,
-          identities: [{ ...account, email: person.update_email }],
+          emails: [{ ...account, email: person.update_email }],
         });
       if (path.endsWith("/sessions")) {
         if (person.id === robin.id) {
@@ -262,7 +262,7 @@ it("removes a revoked session's private screen on a 401 and refreshes sign-in st
           { status: 401 },
         );
       }
-      return Response.json({ person: alex, identities: [account] });
+      return Response.json({ person: alex, emails: [account] });
     }),
   );
   window.history.replaceState(null, "", "/profile");
@@ -296,7 +296,7 @@ function serveProfile() {
         return Response.json([]);
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });
-      return Response.json({ person: alex, identities: [account] });
+      return Response.json({ person: alex, emails: [account] });
     }),
   );
 }
@@ -384,7 +384,7 @@ it.each([false, true])(
         if (path.endsWith("/sessions")) return Response.json([]);
         if (path === "/api/notifications")
           return Response.json({ notifications: [], unread: 0 });
-        return Response.json({ person, identities: [account] });
+        return Response.json({ person, emails: [account] });
       }),
     );
     window.history.replaceState(null, "", "/profile");
@@ -423,7 +423,7 @@ it.each([false, true])(
           return Response.json([
             {
               id: "browser",
-              identity_id: account.id,
+              linked_email_id: account.id,
               email: account.email,
               device: "Firefox on Mac",
               current: true,
@@ -434,7 +434,7 @@ it.each([false, true])(
           ]);
         if (path === "/api/notifications")
           return Response.json({ notifications: [], unread: 0 });
-        return Response.json({ person: alex, identities: [account] });
+        return Response.json({ person: alex, emails: [account] });
       }),
     );
     window.history.replaceState(null, "", "/profile");
@@ -479,7 +479,7 @@ it.each([false, true])(
 
 it("uses server notification defaults and preserves an unsaved opt-out on refresh", async () => {
   let person = { ...alex, email_updates: true };
-  let identities = [account];
+  let emails = [account];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -490,7 +490,7 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
         return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST")
         person = { ...person, ...JSON.parse(String(options.body)) };
-      return Response.json({ person, identities });
+      return Response.json({ person, emails });
     }),
   );
   window.history.replaceState(null, "", "/profile");
@@ -505,7 +505,7 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
   ).toHaveTextContent("alex@example.test");
   await user.click(updates);
   person = { ...person, display_name: "Alex refreshed" };
-  identities = [
+  emails = [
     account,
     { ...account, id: "second", email: "second@example.test" },
   ];
@@ -523,7 +523,7 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
 });
 
 it("keeps another linked email available after unlinking one from your profile", async () => {
-  let identities = [
+  let emails = [
     account,
     { ...account, id: "second", email: "second@example.test" },
   ];
@@ -540,10 +540,10 @@ it("keeps another linked email available after unlinking one from your profile",
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });
       if (options?.method === "POST") {
-        identities = identities.filter((identity) => identity.id !== "second");
+        emails = emails.filter((linked) => linked.id !== "second");
         return new Response(null, { status: 204 });
       }
-      return Response.json({ person: alex, identities });
+      return Response.json({ person: alex, emails });
     }),
   );
   window.history.replaceState(null, "", "/profile");

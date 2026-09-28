@@ -1,7 +1,7 @@
 import { Link2, Unlink } from "lucide-react";
 
 import { formatDate } from "../../lib/utils";
-import type { LinkedIdentity } from "../../types/generated/identity";
+import type { LinkedEmail } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
 import { SectionHeading } from "../people/form-fields";
 import { EmptyState } from "../shell/empty-state";
@@ -14,20 +14,20 @@ import {
   TableRow,
 } from "../ui/table";
 
-export function LinkedIdentities({
-  identities,
+export function LinkedEmails({
+  emails,
   canUnlinkLast,
   pending,
   error,
   unlink,
 }: {
-  identities: LinkedIdentity[];
+  emails: LinkedEmail[];
   canUnlinkLast: boolean;
   pending: boolean;
   error: unknown;
   unlink: (id: string) => Promise<unknown>;
 }) {
-  const keepLast = !canUnlinkLast && identities.length === 1;
+  const keepLast = !canUnlinkLast && emails.length === 1;
   return (
     <section
       aria-labelledby="linked-emails"
@@ -39,7 +39,7 @@ export function LinkedIdentities({
       <p className="mt-3 mb-5 max-w-150 text-sm text-muted">
         Unlinking an email signs out all browsers using it.
       </p>
-      {identities.length ? (
+      {emails.length ? (
         <Table
           aria-labelledby="linked-emails"
           className="table-fixed sm:table-auto"
@@ -56,19 +56,19 @@ export function LinkedIdentities({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {identities.map((identity) => (
-              <TableRow key={identity.id}>
+            {emails.map((linked) => (
+              <TableRow key={linked.id}>
                 <TableCell className="wrap-anywhere sm:min-w-40">
-                  <p>{identity.email}</p>
+                  <p>{linked.email}</p>
                   <p className="mt-2 text-xs text-muted sm:hidden">
                     Linked{" "}
                     <span className="inline-block">
-                      {formatDate(identity.created_at)}
+                      {formatDate(linked.created_at)}
                     </span>
                   </p>
                 </TableCell>
                 <TableCell className="hidden text-xs whitespace-nowrap text-muted sm:table-cell">
-                  {formatDate(identity.created_at)}
+                  {formatDate(linked.created_at)}
                 </TableCell>
                 <TableCell className="py-2.5 text-right">
                   <ConfirmAction
@@ -77,8 +77,8 @@ export function LinkedIdentities({
                     disabled={keepLast}
                     error={error}
                     icon={Unlink}
-                    label={`Unlink ${identity.email}`}
-                    onConfirm={() => unlink(identity.id)}
+                    label={`Unlink ${linked.email}`}
+                    onConfirm={() => unlink(linked.id)}
                     pending={pending}
                     triggerLabel="Unlink"
                   />

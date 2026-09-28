@@ -45,7 +45,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
       if (path.endsWith("/status"))
         return Response.json({ claimed: true, person, auth_mode: "fake" });
       if (path.endsWith("/identity/profile"))
-        return Response.json({ person, identities: [account] });
+        return Response.json({ person, emails: [account] });
       if (path.endsWith("/identity/onboarding")) {
         completions.push(JSON.parse(String(options?.body)));
         person = {
@@ -157,7 +157,7 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
             avatar_url: "",
           },
           faces: [],
-          identities: [],
+          emails: [],
           preauthorizations: [
             {
               id: "approval",

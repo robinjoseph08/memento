@@ -1602,7 +1602,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
               avatar: false,
             },
           ],
-          identities: [],
+          emails: [],
           preauthorizations: [],
           sessions: [],
         });

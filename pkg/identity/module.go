@@ -19,9 +19,9 @@ import (
 const SessionLifetime = 180 * 24 * time.Hour
 
 var (
-	ErrAccessDenied       = &errcodes.Error{HTTPCode: 403, Code: "access_denied", Message: "This email does not have access to this installation."}
-	ErrUnauthenticated    = &errcodes.Error{HTTPCode: 401, Code: "unauthenticated", Message: "Sign in to continue."}
-	ErrUnverifiedIdentity = &errcodes.Error{HTTPCode: 403, Code: "unverified_identity", Message: "Sign-in requires a verified email address."}
+	ErrAccessDenied    = &errcodes.Error{HTTPCode: 403, Code: "access_denied", Message: "This email does not have access to this installation."}
+	ErrUnauthenticated = &errcodes.Error{HTTPCode: 401, Code: "unauthenticated", Message: "Sign in to continue."}
+	ErrUnverifiedEmail = &errcodes.Error{HTTPCode: 403, Code: "unverified_email", Message: "Sign-in requires a verified email address."}
 	// ErrAccessRequested means the verified address is unknown and a Curator now has one pending request for it.
 	ErrAccessRequested = &errcodes.Error{HTTPCode: 403, Code: "access_requested", Message: "This email does not have access yet. Your Curator has been asked to review your request."}
 )
@@ -119,7 +119,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		var person models.Person
-		var linked models.Identity
+		var linked models.LinkedEmail
 		switch err := tx.NewSelect().Model(&linked).Where("email = ? AND unlinked_at IS NULL", claims.Email).Scan(ctx); {
 		case err == nil:
 			person, err = personByID(ctx, tx, linked.PersonID.String())
@@ -145,7 +145,7 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		default:
 			person, err = m.resolvePreauthorization(ctx, tx, claims.Email)
 			if errors.Is(err, errNoPreauthorization) {
-				unlinked, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("email = ?", claims.Email).Exists(ctx)
+				unlinked, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("email = ?", claims.Email).Exists(ctx)
 				if err != nil {
 					return errorstack.CaptureContext(ctx, err)
 				}
@@ -178,21 +178,21 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 
 // link adds a Linked Email to the Person. The first one a Person ever links
 // also becomes where their update emails go.
-func link(ctx context.Context, tx bun.Tx, person *models.Person, email string, now time.Time) (models.Identity, error) {
-	linkedBefore, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
+func link(ctx context.Context, tx bun.Tx, person *models.Person, email string, now time.Time) (models.LinkedEmail, error) {
+	linkedBefore, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
 	if err != nil {
-		return models.Identity{}, errorstack.CaptureContext(ctx, err)
+		return models.LinkedEmail{}, errorstack.CaptureContext(ctx, err)
 	}
-	linked := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Email: email, CreatedAt: now}
+	linked := models.LinkedEmail{ID: models.NewUUIDv7(), PersonID: person.ID, Email: email, CreatedAt: now}
 	if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
-		return models.Identity{}, errorstack.CaptureContext(ctx, err)
+		return models.LinkedEmail{}, errorstack.CaptureContext(ctx, err)
 	}
 	if !linkedBefore {
-		person.UpdateIdentityID = &linked.ID
+		person.UpdateEmailID = &linked.ID
 		person.UpdateEmail = linked.Email
 		person.EmailUpdates = true
-		if _, err := tx.NewUpdate().Model(person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
-			return models.Identity{}, errorstack.CaptureContext(ctx, err)
+		if _, err := tx.NewUpdate().Model(person).Column("update_email_id", "email_updates").WherePK().Exec(ctx); err != nil {
+			return models.LinkedEmail{}, errorstack.CaptureContext(ctx, err)
 		}
 	}
 	return linked, nil
@@ -227,8 +227,8 @@ func newSecret() (string, []byte, error) {
 	return secret, hash[:], nil
 }
 
-func insertSession(ctx context.Context, tx bun.Tx, identityID models.UUID, device string, hash []byte, now time.Time) (models.Session, error) {
-	session := models.Session{ID: models.NewUUIDv7(), Device: device, TokenHash: hash, IdentityID: identityID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+func insertSession(ctx context.Context, tx bun.Tx, emailID models.UUID, device string, hash []byte, now time.Time) (models.Session, error) {
+	session := models.Session{ID: models.NewUUIDv7(), Device: device, TokenHash: hash, LinkedEmailID: emailID, CreatedAt: now, RenewedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 	if _, err := tx.NewInsert().Model(&session).Exec(ctx); err != nil {
 		return models.Session{}, errorstack.CaptureContext(ctx, err)
 	}

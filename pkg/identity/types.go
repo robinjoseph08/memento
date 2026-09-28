@@ -90,8 +90,8 @@ type UpdateProfileRequest struct {
 	EmailUpdates bool   `json:"email_updates"`
 }
 
-// LinkedIdentity is a Linked Email as the Person page and profile show it.
-type LinkedIdentity struct {
+// LinkedEmail is a Linked Email as the Person page and profile show it.
+type LinkedEmail struct {
 	ID        string    `json:"id"`
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
@@ -116,7 +116,7 @@ type LinkedFace struct {
 type PersonDetail struct {
 	Person            Person             `json:"person"`
 	Faces             []LinkedFace       `json:"faces"`
-	Identities        []LinkedIdentity   `json:"identities"`
+	Emails            []LinkedEmail      `json:"emails"`
 	Preauthorizations []Preauthorization `json:"preauthorizations"`
 	Invitations       []Invitation       `json:"invitations"`
 	Sessions          []BrowserSession   `json:"sessions"`
@@ -124,20 +124,20 @@ type PersonDetail struct {
 }
 
 type Profile struct {
-	Person     Person           `json:"person"`
-	Identities []LinkedIdentity `json:"identities"`
+	Person Person        `json:"person"`
+	Emails []LinkedEmail `json:"emails"`
 }
 
 // BrowserSession exposes no credential or token hash.
 type BrowserSession struct {
-	ID         string    `json:"id"`
-	IdentityID string    `json:"identity_id"`
-	Email      string    `json:"email"`
-	Device     string    `json:"device"`
-	CreatedAt  time.Time `json:"created_at"`
-	LastUsedAt time.Time `json:"last_used_at"`
-	ExpiresAt  time.Time `json:"expires_at"`
-	Current    bool      `json:"current"`
+	ID            string    `json:"id"`
+	LinkedEmailID string    `json:"linked_email_id"`
+	Email         string    `json:"email"`
+	Device        string    `json:"device"`
+	CreatedAt     time.Time `json:"created_at"`
+	LastUsedAt    time.Time `json:"last_used_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Current       bool      `json:"current"`
 }
 
 // SendInvitationRequest names the unused Preauthorization the email should describe.

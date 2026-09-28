@@ -94,20 +94,20 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	require.NoError(t, up())
 
 	var emails []string
-	require.NoError(t, db.NewSelect().Table("identities").Column("email").Order("email").Scan(ctx, &emails))
+	require.NoError(t, db.NewSelect().Table("linked_emails").Column("email").Order("email").Scan(ctx, &emails))
 	assert.Equal(t, []string{"alex@example.test", "dup@example.test", "sam@example.test", "sam@example.test"}, emails)
 	var linked []models.UUID
-	require.NoError(t, db.NewSelect().Table("identities").Column("id").Where("unlinked_at IS NULL").Order("email").Scan(ctx, &linked))
+	require.NoError(t, db.NewSelect().Table("linked_emails").Column("id").Where("unlinked_at IS NULL").Order("email").Scan(ctx, &linked))
 	assert.Equal(t, []models.UUID{alexGoogle, dupOne, samGoogle}, linked, "an unlinked sign-in may share its address with a linked one")
 	var sessionIdentities []models.UUID
-	require.NoError(t, db.NewSelect().Table("sessions").Column("identity_id").Order("created_at", "id").Scan(ctx, &sessionIdentities))
+	require.NoError(t, db.NewSelect().Table("sessions").Column("linked_email_id").Order("created_at", "id").Scan(ctx, &sessionIdentities))
 	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle}, sessionIdentities, "every session keeps its Linked Email")
 	var person models.Person
-	require.NoError(t, db.NewSelect().Model(&person).Column("update_identity_id", "email_updates").Where("id = ?", alex).Scan(ctx))
-	require.NotNil(t, person.UpdateIdentityID)
-	assert.Equal(t, alexGoogle, *person.UpdateIdentityID)
+	require.NoError(t, db.NewSelect().Model(&person).Column("update_email_id", "email_updates").Where("id = ?", alex).Scan(ctx))
+	require.NotNil(t, person.UpdateEmailID)
+	assert.Equal(t, alexGoogle, *person.UpdateEmailID)
 	assert.True(t, person.EmailUpdates)
-	codes, err := db.NewSelect().Table("handoff_codes").Where("identity_id = ?", alexGoogle).Count(ctx)
+	codes, err := db.NewSelect().Table("handoff_codes").Where("linked_email_id = ?", alexGoogle).Count(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, 1, codes)
 	var approved []string
@@ -121,16 +121,16 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	var albumRequest string
 	require.NoError(t, db.NewSelect().Table("access_requests").Column("email").Where("kind = 'album'").Scan(ctx, &albumRequest))
 	assert.Equal(t, "sam@example.test", albumRequest)
-	for _, table := range []string{"identities", "access_requests"} {
+	for _, table := range []string{"linked_emails", "access_requests"} {
 		columns, err := db.NewSelect().Table("information_schema.columns").Where("table_schema = current_schema() AND table_name = ? AND column_name IN ('provider', 'subject')", table).Count(ctx)
 		require.NoError(t, err)
 		assert.Zero(t, columns, table)
 	}
 
 	// The database, not Go, keeps every linked address lowercased and unique.
-	_, err = db.ExecContext(ctx, `INSERT INTO identities (id, person_id, email, created_at) VALUES (?, ?, 'sam@example.test', ?)`, models.NewUUIDv7(), alex, now)
+	_, err = db.ExecContext(ctx, `INSERT INTO linked_emails (id, person_id, email, created_at) VALUES (?, ?, 'sam@example.test', ?)`, models.NewUUIDv7(), alex, now)
 	require.Error(t, err, "a second Person cannot link an address someone holds")
-	_, err = db.ExecContext(ctx, `INSERT INTO identities (id, person_id, email, created_at) VALUES (?, ?, 'Mixed@example.test', ?)`, models.NewUUIDv7(), alex, now)
+	_, err = db.ExecContext(ctx, `INSERT INTO linked_emails (id, person_id, email, created_at) VALUES (?, ?, 'Mixed@example.test', ?)`, models.NewUUIDv7(), alex, now)
 	require.Error(t, err, "addresses are stored lowercased")
 	_, err = db.ExecContext(ctx, `INSERT INTO access_requests (id, kind, email, email_verified, display_name, status, created_at, updated_at) VALUES (?, 'join', 'stranger@example.test', true, 'Again', 'pending', ?, ?)`, models.NewUUIDv7(), now, now)
 	require.Error(t, err, "one open join request per address")

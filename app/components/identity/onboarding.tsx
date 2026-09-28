@@ -72,9 +72,7 @@ function OnboardingForm({ profile }: { profile: Profile }) {
   useUnsavedChanges((dirty || complete.isPending) && !complete.isSuccess);
   const errors = fieldErrors(complete.error);
   const emailId = useId();
-  const emails = [
-    ...new Set(profile.identities.map((identity) => identity.email)),
-  ];
+  const emails = [...new Set(profile.emails.map((linked) => linked.email))];
   return (
     <div className="mt-9 grid gap-x-12 gap-y-10 min-[1001px]:grid-cols-[minmax(0,380px)_minmax(0,1fr)]">
       <Form

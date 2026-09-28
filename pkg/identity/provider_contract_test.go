@@ -59,12 +59,12 @@ func TestProviderIdentityContract(t *testing.T) {
 			assert.Equal(t, alex.ID, second.Person.ID)
 			detail, err := module.GetPerson(t.Context(), curator.Token, alex.ID)
 			require.NoError(t, err)
-			require.Len(t, detail.Identities, 2)
+			require.Len(t, detail.Emails, 2)
 			require.Len(t, detail.Preauthorizations, 2)
 			for _, approval := range detail.Preauthorizations {
 				assert.NotNil(t, approval.ConsumedAt)
 			}
-			require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, alex.ID, detail.Identities[1].ID))
+			require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, alex.ID, detail.Emails[1].ID))
 			_, err = module.Authenticate(t.Context(), second.Token)
 			require.ErrorIs(t, err, identity.ErrUnauthenticated)
 			_, err = module.Authenticate(t.Context(), member.Token)

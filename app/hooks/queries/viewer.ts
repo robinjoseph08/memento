@@ -18,7 +18,7 @@ export type ViewerContext =
 
 // Galleries load every page, so refetching them on each window focus would
 // replay the whole Album. Keys already name the Person, so nothing leaks
-// between identities while pages stay cached.
+// between people while pages stay cached.
 const viewerStaleTime = 5 * 60_000;
 export type ViewerTab = "photos" | "videos";
 

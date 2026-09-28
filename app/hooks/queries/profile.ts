@@ -50,13 +50,13 @@ export function useUpdateProfile() {
     },
   });
 }
-export function useUnlinkIdentity() {
+export function useUnlinkEmail() {
   const client = useQueryClient();
   const scope = usePrivateScope();
   return useMutation({
     mutationKey: scope,
     mutationFn: (id: string) =>
-      request<void>(`/api/identity/identities/${id}/unlink`, { body: {} }),
+      request<void>(`/api/identity/emails/${id}/unlink`, { body: {} }),
     onSuccess: async () => {
       if (client.getQueryData<Status>(statusKey)?.person?.id !== scope[1])
         return;

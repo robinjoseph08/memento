@@ -136,7 +136,7 @@ func TestGoogleHTTPFailures(t *testing.T) {
 		}},
 		{"token rejected", "sign_in_failed", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) { s.tokenStatus = 400 }},
 		{"provider unavailable", "provider_unavailable", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) { s.tokenStatus = 503 }},
-		{"unverified email", "unverified_identity", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
+		{"unverified email", "unverified_email", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
 			s.claims["email_verified"] = false
 		}},
 		{"no access", "access_denied", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {

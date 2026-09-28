@@ -55,7 +55,7 @@ type ProfileUseCases interface {
 	UpdateProfile(context.Context, string, UpdateProfileRequest) (Profile, error)
 	Sessions(context.Context, string) ([]BrowserSession, error)
 	SignOutEverywhere(context.Context, string) error
-	UnlinkIdentity(context.Context, string, string, string) error
+	UnlinkEmail(context.Context, string, string, string) error
 }
 
 type Handlers struct {

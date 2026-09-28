@@ -112,8 +112,8 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 			}
 			return h.failure(c, "provider_unavailable", transaction.returnTo)
 		}
-		if errors.Is(err, ErrUnverifiedIdentity) {
-			return h.failure(c, "unverified_identity", transaction.returnTo)
+		if errors.Is(err, ErrUnverifiedEmail) {
+			return h.failure(c, "unverified_email", transaction.returnTo)
 		}
 		return h.failure(c, "sign_in_failed", transaction.returnTo)
 	}
@@ -125,8 +125,8 @@ func (h *googleHandlers) callback(c *echo.Context) error {
 		if errors.Is(err, ErrAccessRequested) {
 			return h.failure(c, "access_requested", transaction.returnTo)
 		}
-		if errors.Is(err, ErrUnverifiedIdentity) {
-			return h.failure(c, "unverified_identity", transaction.returnTo)
+		if errors.Is(err, ErrUnverifiedEmail) {
+			return h.failure(c, "unverified_email", transaction.returnTo)
 		}
 		if !errors.Is(err, ErrUnauthenticated) && !errorstack.IsContextCancellation(c.Request().Context(), err) {
 			echologger.FromEchoContext(c).Err(err).Error("Google sign-in failed")

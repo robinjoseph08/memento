@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *testing.T) {
+func TestUnknownAddressCreatesOneRequestThatCuratorsResolveDeliberately(t *testing.T) {
 	t.Parallel()
 	a := newAdmission(t, true)
 	module := a.identity
@@ -108,7 +108,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	require.Len(t, detail.Preauthorizations, 1)
 	assert.Equal(t, "stranger@example.test", detail.Preauthorizations[0].Email)
 	assert.Nil(t, detail.Preauthorizations[0].ConsumedAt)
-	assert.Empty(t, detail.Identities, "approval does not link the identity by itself")
+	assert.Empty(t, detail.Emails, "approval does not link the identity by itself")
 	for _, table := range []any{(*models.AlbumAccessDecision)(nil), (*models.MomentAccessDecision)(nil), (*models.EntryAccessDecision)(nil)} {
 		count, err := a.db.NewSelect().Model(table).Count(t.Context())
 		require.NoError(t, err)

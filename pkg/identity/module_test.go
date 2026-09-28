@@ -89,7 +89,7 @@ func TestUnverifiedClaimDoesNotClaimInstallation(t *testing.T) {
 	module := identity.New(testdb.New(t), nil)
 	claims := identity.Claims{Email: "owner@example.test", DisplayName: "Owner"}
 	_, err := module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrUnverifiedIdentity)
+	require.ErrorIs(t, err, identity.ErrUnverifiedEmail)
 	claimed, err := module.Claimed(t.Context())
 	require.NoError(t, err)
 	assert.False(t, claimed)
@@ -104,7 +104,7 @@ func TestInvalidAddressDoesNotClaim(t *testing.T) {
 	// A malformed address must be refused, not silently changed by the SQL adapter.
 	claims := identity.Claims{Email: "owner\x00@example.test", EmailVerified: true, DisplayName: "Owner"}
 	_, err := module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrUnverifiedIdentity)
+	require.ErrorIs(t, err, identity.ErrUnverifiedEmail)
 	claimed, err := module.Claimed(t.Context())
 	require.NoError(t, err)
 	assert.False(t, claimed)
@@ -189,8 +189,8 @@ func TestSignInResolvesAddressInOrder(t *testing.T) {
 	assert.True(t, linked.Person.EmailUpdates)
 	detail, err := module.GetPerson(t.Context(), curator.Token, alex.ID)
 	require.NoError(t, err)
-	require.Len(t, detail.Identities, 1)
-	assert.Equal(t, "alex@example.test", detail.Identities[0].Email)
+	require.Len(t, detail.Emails, 1)
+	assert.Equal(t, "alex@example.test", detail.Emails[0].Email)
 	require.Len(t, detail.Preauthorizations, 1)
 	assert.NotNil(t, detail.Preauthorizations[0].ConsumedAt)
 
@@ -205,10 +205,10 @@ func TestSignInResolvesAddressInOrder(t *testing.T) {
 	require.NoError(t, err)
 	detail, err = module.GetPerson(t.Context(), curator.Token, alex.ID)
 	require.NoError(t, err)
-	require.Len(t, detail.Identities, 1, "a returning sign-in links nothing new")
+	require.Len(t, detail.Emails, 1, "a returning sign-in links nothing new")
 
 	// An unlinked address is refused outright until a Curator preauthorizes it again.
-	require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, alex.ID, detail.Identities[0].ID))
+	require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, alex.ID, detail.Emails[0].ID))
 	_, err = module.SignIn(t.Context(), claims("alex@example.test", "Alex"))
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
 	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
@@ -223,14 +223,14 @@ func TestSignInResolvesAddressInOrder(t *testing.T) {
 	require.ErrorIs(t, err, identity.ErrUnauthenticated, "unlinking ended the earlier sessions")
 	detail, err = module.GetPerson(t.Context(), curator.Token, alex.ID)
 	require.NoError(t, err)
-	require.Len(t, detail.Identities, 1)
+	require.Len(t, detail.Emails, 1)
 
 	// Once unlinked, the address may be preauthorized for someone else instead.
 	sam, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Sam"})
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, sam.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 	require.Error(t, err, "a linked address cannot be preauthorized for another Person")
-	require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, alex.ID, detail.Identities[0].ID))
+	require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, alex.ID, detail.Emails[0].ID))
 	_, err = module.Preauthorize(t.Context(), curator.Token, sam.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 	require.NoError(t, err)
 	moved, err := module.SignIn(t.Context(), claims("alex@example.test", "Sam"))

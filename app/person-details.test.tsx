@@ -46,7 +46,7 @@ afterEach(() => {
 it("chooses an avatar from a Person's linked Immich faces", async () => {
   let detail = {
     person: { ...alex, avatar_url: "/api/media/people/alex/avatar?v=first" },
-    identities: [account],
+    emails: [account],
     sessions: [],
     preauthorizations: [],
     invitations: [],
@@ -122,7 +122,7 @@ it("puts linked emails first and keeps previous emails collapsed outside active 
         });
       return Response.json({
         person: alex,
-        identities: [account],
+        emails: [account],
         sessions: [],
         preauthorizations: [
           {
@@ -197,14 +197,14 @@ it.each([false, true])(
           throw new Error(`Unexpected request: ${path}`);
         return Response.json({
           person: { ...alex, email_updates: subscribed },
-          identities: [account],
+          emails: [account],
           preauthorizations: [],
           invitations: [],
           announced: { albums: 0, entries: 0 },
           sessions: [
             {
               id: "browser",
-              identity_id: account.id,
+              linked_email_id: account.id,
               email: account.email,
               device: "Alex's phone",
               current: false,
@@ -252,7 +252,7 @@ it.each([false, true])(
 );
 
 it("lets a Curator remove another person's final linked email without losing a name draft", async () => {
-  let identities = [account];
+  let emails = [account];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -263,12 +263,12 @@ it("lets a Curator remove another person's final linked email without losing a n
           auth_mode: "fake",
         });
       if (options?.method === "POST") {
-        identities = [];
+        emails = [];
         return new Response(null, { status: 204 });
       }
       return Response.json({
         person: alex,
-        identities,
+        emails,
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -344,7 +344,7 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
       if (failRead) return Response.json({}, { status: 503 });
       return Response.json({
         person: alex,
-        identities: [],
+        emails: [],
         preauthorizations,
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -430,7 +430,7 @@ it("lets a Curator rename themselves without removing their own access", async (
       }
       return Response.json({
         person,
-        identities: [{ ...account, email: robin.update_email }],
+        emails: [{ ...account, email: robin.update_email }],
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -469,7 +469,7 @@ it("lets a Curator rename themselves without removing their own access", async (
 
 it("asks before deactivating a person and saves only after confirming", async () => {
   const saves: unknown[] = [];
-  let person = alex;
+  let person: typeof alex & { deactivated_at?: string } = alex;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -486,7 +486,7 @@ it("asks before deactivating a person and saves only after confirming", async ()
       }
       return Response.json({
         person,
-        identities: [account],
+        emails: [account],
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },

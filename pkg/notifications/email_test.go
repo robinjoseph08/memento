@@ -67,7 +67,7 @@ func TestUpdateEmailIsRecheckedAgainstEligibilityBeforeSending(t *testing.T) {
 			return err
 		}},
 		"destination unlinked before sending": {options: personOptions{email: "alex@example.test", emailUpdates: true}, queued: true, status: "skipped", contains: "no email selected", change: func(ctx context.Context, db *bun.DB, person models.Person) error {
-			_, err := db.NewUpdate().Model((*models.Identity)(nil)).Set("unlinked_at = ?", time.Now().UTC()).Where("person_id = ?", person.ID).Exec(ctx)
+			_, err := db.NewUpdate().Model((*models.LinkedEmail)(nil)).Set("unlinked_at = ?", time.Now().UTC()).Where("person_id = ?", person.ID).Exec(ctx)
 			return err
 		}},
 		"deactivated before sending": {options: personOptions{email: "alex@example.test", emailUpdates: true}, queued: true, status: "skipped", contains: "deactivated", change: func(ctx context.Context, db *bun.DB, person models.Person) error {
@@ -287,7 +287,7 @@ func TestUnsubscribeLinkChangesNothingUntilConfirmed(t *testing.T) {
 	assert.False(t, state.Subscribed)
 	require.NoError(t, db.NewSelect().Model(&person).Where("id = ?", alex.ID).Scan(t.Context()))
 	assert.False(t, person.EmailUpdates)
-	assert.NotNil(t, person.UpdateIdentityID)
+	assert.NotNil(t, person.UpdateEmailID)
 	state, err = module.Unsubscribe(t.Context(), token)
 	require.NoError(t, err, "confirming again is harmless")
 	assert.False(t, state.Subscribed)

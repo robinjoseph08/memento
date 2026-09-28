@@ -29,11 +29,11 @@ func (m *Module) IssueHandoffCode(ctx context.Context, token string) (string, er
 	}
 	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		now := m.now().UTC()
-		linked, err := m.sessionIdentity(ctx, tx, token)
+		linked, err := m.sessionEmail(ctx, tx, token)
 		if err != nil {
 			return err
 		}
-		identityID := linked.ID
+		emailID := linked.ID
 		tokenHash := sha256.Sum256([]byte(token))
 		if _, err := tx.NewDelete().Model((*models.Session)(nil)).Where("token_hash = ?", tokenHash[:]).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
@@ -41,7 +41,7 @@ func (m *Module) IssueHandoffCode(ctx context.Context, token string) (string, er
 		if _, err := tx.NewDelete().Model((*models.HandoffCode)(nil)).Where("expires_at <= ?", now).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		pending := models.HandoffCode{CodeHash: hash, IdentityID: identityID, ExpiresAt: now.Add(HandoffCodeLifetime)}
+		pending := models.HandoffCode{CodeHash: hash, LinkedEmailID: emailID, ExpiresAt: now.Add(HandoffCodeLifetime)}
 		_, err = tx.NewInsert().Model(&pending).Exec(ctx)
 		return errorstack.CaptureContext(ctx, err)
 	})
@@ -62,10 +62,10 @@ func (m *Module) ExchangeHandoffCode(ctx context.Context, code, platform string)
 	var result Session
 	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		now := m.now().UTC()
-		var identityID models.UUID
+		var emailID models.UUID
 		err := tx.NewDelete().Model((*models.HandoffCode)(nil)).
 			Where("code_hash = ?", codeHash[:]).Where("expires_at > ?", now).
-			Returning("identity_id").Scan(ctx, &identityID)
+			Returning("linked_email_id").Scan(ctx, &emailID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrHandoffCodeInvalid
 		}
@@ -74,15 +74,15 @@ func (m *Module) ExchangeHandoffCode(ctx context.Context, code, platform string)
 		}
 		var person models.Person
 		err = selectPeople(tx, &person).
-			Join("JOIN identities AS i ON i.person_id = person.id").
-			Where("i.id = ?", identityID).Where("i.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
+			Join("JOIN linked_emails AS i ON i.person_id = person.id").
+			Where("i.id = ?", emailID).Where("i.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrAccessDenied
 		}
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		session, err := insertSession(ctx, tx, identityID, "Memento on "+platform, hash, now)
+		session, err := insertSession(ctx, tx, emailID, "Memento on "+platform, hash, now)
 		if err != nil {
 			return err
 		}

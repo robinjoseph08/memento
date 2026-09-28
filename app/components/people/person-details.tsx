@@ -17,7 +17,7 @@ import {
   usePreauthorize,
   useRevokePreauthorization,
   useSetPersonAvatar,
-  useUnlinkPersonIdentity,
+  useUnlinkPersonEmail,
   useUpdatePerson,
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
@@ -28,7 +28,7 @@ import type {
   UpdatePersonRequest,
 } from "../../types/generated/identity";
 import { ConfirmDialog } from "../forms/confirm-dialog";
-import { LinkedIdentities } from "../identity/linked-identities";
+import { LinkedEmails } from "../identity/linked-emails";
 import { SessionTable } from "../identity/session-table";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -58,7 +58,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
   const update = useUpdatePerson(person.id);
   const preauthorize = usePreauthorize(person.id);
   const revoke = useRevokePreauthorization(person.id);
-  const unlink = useUnlinkPersonIdentity(person.id);
+  const unlink = useUnlinkPersonEmail(person.id);
   const sendInvitation = useSendInvitation(person.id);
   const retryInvitation = useRetryInvitation(person.id);
   const inviteError = sendInvitation.error ?? retryInvitation.error;
@@ -216,10 +216,10 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
           </section>
         </div>
         <div className="min-w-0 min-[1201px]:[&>section:first-child]:border-0 min-[1201px]:[&>section:first-child]:pt-0">
-          <LinkedIdentities
+          <LinkedEmails
             canUnlinkLast={!!identity?.person && !isSelf}
+            emails={detail.emails}
             error={unlink.error}
-            identities={detail.identities}
             pending={unlink.isPending}
             unlink={unlink.mutateAsync}
           />

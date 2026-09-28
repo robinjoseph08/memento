@@ -36,7 +36,7 @@ func TestOnboardingIsSharedOneTimeAndCommitsBaselineAtomically(t *testing.T) {
 		assert.Nil(t, session.Person.OnboardingCompletedAt)
 		profile, err := module.Profile(t.Context(), session.Token)
 		require.NoError(t, err)
-		assert.Len(t, profile.Identities, 1)
+		assert.Len(t, profile.Emails, 1)
 	}
 
 	// Entry A is visible to Direct before completion; nothing is visible to Invited.

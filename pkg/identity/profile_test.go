@@ -21,7 +21,7 @@ func authorizePerson(t *testing.T, module *identity.Module, curator identity.Ses
 	return session
 }
 
-func TestFirstLinkedIdentityEnablesEmailUpdates(t *testing.T) {
+func TestFirstLinkedEmailEnablesEmailUpdates(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	curator := claimCurator(t, module)
@@ -72,8 +72,8 @@ func TestLaterSignInsAndIdentityLinksPreserveEmailOptOut(t *testing.T) {
 
 	// A Curator can remove every account. Their history still prevents defaults
 	// from being applied when an old subject returns or a new account is added.
-	for _, linked := range profile.Identities {
-		require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, member.Person.ID, linked.ID))
+	for _, linked := range profile.Emails {
+		require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, member.Person.ID, linked.ID))
 	}
 	_, err = module.Preauthorize(t.Context(), curator.Token, member.Person.ID, identity.PreauthorizeRequest{Email: claims.Email})
 	require.NoError(t, err)
@@ -83,8 +83,8 @@ func TestLaterSignInsAndIdentityLinksPreserveEmailOptOut(t *testing.T) {
 	assert.Empty(t, relinked.Person.UpdateEmail)
 	profile, err = module.Profile(t.Context(), relinked.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 1)
-	require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, member.Person.ID, profile.Identities[0].ID))
+	require.Len(t, profile.Emails, 1)
+	require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, member.Person.ID, profile.Emails[0].ID))
 	_, err = module.Preauthorize(t.Context(), curator.Token, member.Person.ID, identity.PreauthorizeRequest{Email: "third@example.test"})
 	require.NoError(t, err)
 	third, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "third@example.test", DisplayName: "Alex"}))
@@ -111,7 +111,7 @@ func TestProfileAndMultipleIdentities(t *testing.T) {
 	assert.Equal(t, first.Person.ID, second.Person.ID)
 	profile, err := module.Profile(t.Context(), second.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 2)
+	require.Len(t, profile.Emails, 2)
 	_, err = module.UpdateProfile(t.Context(), second.Token, identity.UpdateProfileRequest{DisplayName: "New Alex", UpdateEmail: "arbitrary@example.test", EmailUpdates: true})
 	require.Error(t, err)
 	profile, err = module.UpdateProfile(t.Context(), second.Token, identity.UpdateProfileRequest{DisplayName: "New Alex", UpdateEmail: "second@example.test", EmailUpdates: true})
@@ -130,8 +130,8 @@ func TestLastCuratorKeepsASignInAccount(t *testing.T) {
 	curator := claimCurator(t, module)
 	profile, err := module.Profile(t.Context(), curator.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 1)
-	err = module.UnlinkIdentity(t.Context(), curator.Token, "", profile.Identities[0].ID)
+	require.Len(t, profile.Emails, 1)
+	err = module.UnlinkEmail(t.Context(), curator.Token, "", profile.Emails[0].ID)
 	require.ErrorIs(t, err, identity.ErrLastAccount)
 	// A role assigned to a name-only Person cannot recover a locked installation.
 	nameOnly, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "No login"})
@@ -140,16 +140,16 @@ func TestLastCuratorKeepsASignInAccount(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.UpdatePerson(t.Context(), curator.Token, curator.Person.ID, identity.UpdatePersonRequest{DisplayName: "Curator"})
 	requirePersonFieldError(t, err, "is_curator")
-	err = module.UnlinkIdentity(t.Context(), curator.Token, "", profile.Identities[0].ID)
+	err = module.UnlinkEmail(t.Context(), curator.Token, "", profile.Emails[0].ID)
 	require.ErrorIs(t, err, identity.ErrLastAccount)
 	other := authorizePerson(t, module, curator, "Other", "other@example.test")
 	_, err = module.UpdatePerson(t.Context(), curator.Token, other.Person.ID, identity.UpdatePersonRequest{DisplayName: "Other", IsCurator: true})
 	require.NoError(t, err)
 	for _, personID := range []string{"", curator.Person.ID} {
-		err := module.UnlinkIdentity(t.Context(), curator.Token, personID, profile.Identities[0].ID)
+		err := module.UnlinkEmail(t.Context(), curator.Token, personID, profile.Emails[0].ID)
 		require.ErrorIs(t, err, identity.ErrLastAccount)
 	}
-	require.NoError(t, module.UnlinkIdentity(t.Context(), other.Token, curator.Person.ID, profile.Identities[0].ID))
+	require.NoError(t, module.UnlinkEmail(t.Context(), other.Token, curator.Person.ID, profile.Emails[0].ID))
 	_, err = module.Authenticate(t.Context(), curator.Token)
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
 	_, err = module.Authenticate(t.Context(), other.Token)
@@ -166,26 +166,26 @@ func TestMemberKeepsLastAccountUnlessAnotherCuratorUnlinksIt(t *testing.T) {
 	member := authorizePerson(t, module, curator, "Alex", "alex@example.test")
 	profile, err := module.Profile(t.Context(), member.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 1)
-	id := profile.Identities[0].ID
-	err = module.UnlinkIdentity(t.Context(), member.Token, "", id)
+	require.Len(t, profile.Emails, 1)
+	id := profile.Emails[0].ID
+	err = module.UnlinkEmail(t.Context(), member.Token, "", id)
 	require.ErrorIs(t, err, identity.ErrLastAccount)
 	_, err = module.Authenticate(t.Context(), member.Token)
 	require.NoError(t, err)
-	err = module.UnlinkIdentity(t.Context(), member.Token, member.Person.ID, id)
+	err = module.UnlinkEmail(t.Context(), member.Token, member.Person.ID, id)
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
-	err = module.UnlinkIdentity(t.Context(), member.Token, curator.Person.ID, id)
+	err = module.UnlinkEmail(t.Context(), member.Token, curator.Person.ID, id)
 	require.ErrorIs(t, err, identity.ErrAccessDenied)
-	require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, member.Person.ID, id))
+	require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, member.Person.ID, id))
 	detail, err := module.GetPerson(t.Context(), curator.Token, member.Person.ID)
 	require.NoError(t, err)
-	assert.Empty(t, detail.Identities)
+	assert.Empty(t, detail.Emails)
 	assert.Empty(t, detail.Sessions)
 	_, err = module.Authenticate(t.Context(), member.Token)
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
 }
 
-func TestIdentityUnlinkAndSessions(t *testing.T) {
+func TestUnlinkEmailAndSessions(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	curator := claimCurator(t, module)
@@ -203,7 +203,7 @@ func TestIdentityUnlinkAndSessions(t *testing.T) {
 	assert.NotEqual(t, sessions[0].ID, sessions[1].ID)
 	_, err = module.UpdateProfile(t.Context(), first.Token, identity.UpdateProfileRequest{DisplayName: "Alex", UpdateEmail: "second@example.test", EmailUpdates: true})
 	require.NoError(t, err)
-	require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, first.Person.ID, sessions[1].IdentityID))
+	require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, first.Person.ID, sessions[1].LinkedEmailID))
 	_, err = module.Authenticate(t.Context(), second.Token)
 	require.ErrorIs(t, err, identity.ErrUnauthenticated)
 	_, err = module.SignIn(t.Context(), claims)

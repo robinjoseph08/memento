@@ -103,7 +103,7 @@ it("preserves edits when the server rejects a Person change", async () => {
         );
       return Response.json({
         person: { ...curator, id: "other-curator" },
-        identities: [],
+        emails: [],
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -157,7 +157,7 @@ it("keeps successfully saved Person values when the following refresh fails", as
         );
       return Response.json({
         person: alex,
-        identities: [],
+        emails: [],
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -215,7 +215,7 @@ it("creates a person without losing a rejected display name and opens their acce
             is_curator: false,
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
-          identities: [],
+          emails: [],
           preauthorizations: [],
           invitations: [],
           announced: { albums: 0, entries: 0 },

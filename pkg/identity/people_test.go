@@ -105,7 +105,7 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	require.Len(t, detail.Preauthorizations, 1)
 	assert.Equal(t, authorization.ID, detail.Preauthorizations[0].ID)
 	assert.NotNil(t, detail.Preauthorizations[0].ConsumedAt)
-	require.Len(t, detail.Identities, 1)
+	require.Len(t, detail.Emails, 1)
 	claims.DisplayName = "Renamed at the provider"
 	returning, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
@@ -239,7 +239,7 @@ func TestPeopleWithoutLogin(t *testing.T) {
 	assert.Nil(t, people[0].LastSeenAt)
 	detail, err := module.GetPerson(t.Context(), curator.Token, person.ID)
 	require.NoError(t, err)
-	assert.Empty(t, detail.Identities)
+	assert.Empty(t, detail.Emails)
 	assert.Empty(t, detail.Preauthorizations)
 	renamed, err := module.UpdatePerson(t.Context(), curator.Token, person.ID, identity.UpdatePersonRequest{DisplayName: "Alex Smith"})
 	require.NoError(t, err)

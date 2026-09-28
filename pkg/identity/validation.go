@@ -89,16 +89,16 @@ func fieldError(field, message string) error {
 // lowercased, which is how every Linked Email is stored and compared.
 func normalizeClaims(claims Claims) (Claims, error) {
 	if !claims.EmailVerified {
-		return claims, ErrUnverifiedIdentity
+		return claims, ErrUnverifiedEmail
 	}
 	email, err := normalizeEmail(claims.Email)
 	if err != nil {
-		return claims, ErrUnverifiedIdentity
+		return claims, ErrUnverifiedEmail
 	}
 	claims.Email = email
 	claims.DisplayName = strings.TrimSpace(claims.DisplayName)
 	if claims.DisplayName == "" || len([]rune(claims.DisplayName)) > 100 || strings.ContainsRune(claims.DisplayName, 0) {
-		return claims, ErrUnverifiedIdentity
+		return claims, ErrUnverifiedEmail
 	}
 	return claims, nil
 }

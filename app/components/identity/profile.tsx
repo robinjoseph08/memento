@@ -5,7 +5,7 @@ import { useIdentityStatus, useSignOut } from "../../hooks/queries/identity";
 import {
   useProfile,
   useSessions,
-  useUnlinkIdentity,
+  useUnlinkEmail,
   useUpdateProfile,
 } from "../../hooks/queries/profile";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
@@ -28,7 +28,7 @@ import { PageTitle } from "../shell/page-title";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
-import { LinkedIdentities } from "./linked-identities";
+import { LinkedEmails } from "./linked-emails";
 import { SessionTable } from "./session-table";
 
 export function ProfilePage() {
@@ -90,15 +90,13 @@ function ProfileDetails({ profile }: { profile: Profile }) {
   const [draft, setDraft] = useState<UpdateProfileRequest | null>(null);
   const values = draft ?? initial;
   const update = useUpdateProfile();
-  const unlink = useUnlinkIdentity();
+  const unlink = useUnlinkEmail();
   const dirty =
     draft !== null && JSON.stringify(draft) !== JSON.stringify(initial);
   useUnsavedChanges(dirty || update.isPending);
   const errors = fieldErrors(update.error);
   const emailId = useId();
-  const emails = [
-    ...new Set(profile.identities.map((identity) => identity.email)),
-  ];
+  const emails = [...new Set(profile.emails.map((linked) => linked.email))];
   return (
     <div className="mt-9 grid min-w-0 gap-x-12 min-[1201px]:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Form
@@ -176,10 +174,10 @@ function ProfileDetails({ profile }: { profile: Profile }) {
         )}
       </Form>
       <div className="min-w-0 min-[1201px]:[&>section:first-child]:border-0 min-[1201px]:[&>section:first-child]:pt-0">
-        <LinkedIdentities
+        <LinkedEmails
           canUnlinkLast={false}
+          emails={profile.emails}
           error={unlink.error}
-          identities={profile.identities}
           pending={unlink.isPending}
           unlink={unlink.mutateAsync}
         />

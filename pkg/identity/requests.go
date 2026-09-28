@@ -97,7 +97,7 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 	}
 	var recipients []string
 	err := tx.NewSelect().TableExpr("persons AS person").ColumnExpr("updates.email").
-		Join("JOIN identities AS updates ON updates.id = person.update_identity_id AND updates.unlinked_at IS NULL").
+		Join("JOIN linked_emails AS updates ON updates.id = person.update_email_id AND updates.unlinked_at IS NULL").
 		Where("person.is_curator AND person.deactivated_at IS NULL").OrderExpr("updates.email").Scan(ctx, &recipients)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
@@ -114,22 +114,22 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 	return nil
 }
 
-// sessionIdentity returns the Linked Email behind a live session, under the
+// sessionEmail returns the Linked Email behind a live session, under the
 // same checks as sessionPerson.
-func (m *Module) sessionIdentity(ctx context.Context, tx bun.Tx, token string) (models.Identity, error) {
-	var identity models.Identity
+func (m *Module) sessionEmail(ctx context.Context, tx bun.Tx, token string) (models.LinkedEmail, error) {
+	var linked models.LinkedEmail
 	if len(token) != 43 {
-		return identity, ErrUnauthenticated
+		return linked, ErrUnauthenticated
 	}
 	hash := sha256.Sum256([]byte(token))
-	err := tx.NewSelect().Model(&identity).Join("JOIN sessions AS s ON s.identity_id = identity.id").
-		Join("JOIN persons AS person ON person.id = identity.person_id").
+	err := tx.NewSelect().Model(&linked).Join("JOIN sessions AS s ON s.linked_email_id = linked_email.id").
+		Join("JOIN persons AS person ON person.id = linked_email.person_id").
 		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).
-		Where("identity.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
+		Where("linked_email.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return identity, ErrUnauthenticated
+		return linked, ErrUnauthenticated
 	}
-	return identity, errorstack.CaptureContext(ctx, err)
+	return linked, errorstack.CaptureContext(ctx, err)
 }
 
 // RequestAlbumAccess is the explicit action for an existing Person who reached
@@ -142,7 +142,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		if err != nil {
 			return err
 		}
-		identity, err := m.sessionIdentity(ctx, tx, token)
+		linked, err := m.sessionEmail(ctx, tx, token)
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 			return errorstack.CaptureContext(ctx, err)
 		}
 		now := m.now().UTC()
-		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Email: identity.Email, EmailVerified: true,
+		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Email: linked.Email, EmailVerified: true,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 		_, err = tx.NewInsert().Model(&row).
 			On("CONFLICT (person_id, album_id) WHERE status <> 'approved' AND kind = 'album' DO UPDATE").
@@ -241,7 +241,7 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 		}
 		now := m.now().UTC()
 		if row.Kind == RequestJoin {
-			person, err := m.admitRequestedIdentity(ctx, tx, row.AccessRequest, request, now)
+			person, err := m.admitRequestedAddress(ctx, tx, row.AccessRequest, request, now)
 			if err != nil {
 				return err
 			}
@@ -262,9 +262,9 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 	return result, err
 }
 
-// admitRequestedIdentity chooses or creates the Person and approves the exact
+// admitRequestedAddress chooses or creates the Person and approves the exact
 // verified email so the next ordinary sign-in links it.
-func (m *Module) admitRequestedIdentity(ctx context.Context, tx bun.Tx, row models.AccessRequest, request ApproveAccessRequestRequest, now time.Time) (models.Person, error) {
+func (m *Module) admitRequestedAddress(ctx context.Context, tx bun.Tx, row models.AccessRequest, request ApproveAccessRequestRequest, now time.Time) (models.Person, error) {
 	var person models.Person
 	switch {
 	case request.PersonID != "" && strings.TrimSpace(request.DisplayName) != "":

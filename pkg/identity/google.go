@@ -138,7 +138,7 @@ func (p *GoogleProvider) Exchange(ctx context.Context, code, nonce, verifier str
 		return Claims{}, ErrUnauthenticated
 	}
 	if !profile.EmailVerified {
-		return Claims{}, ErrUnverifiedIdentity
+		return Claims{}, ErrUnverifiedEmail
 	}
 	profile.Name = strings.TrimSpace(profile.Name)
 	if profile.Name == "" {

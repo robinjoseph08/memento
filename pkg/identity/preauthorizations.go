@@ -121,7 +121,7 @@ func (m *Module) resolvePreauthorization(ctx context.Context, tx bun.Tx, email s
 // linkedHolder is the Person a Linked Email currently signs in, and whether
 // anyone holds the address at all.
 func linkedHolder(ctx context.Context, tx bun.Tx, email string) (models.UUID, bool, error) {
-	var linked models.Identity
+	var linked models.LinkedEmail
 	err := tx.NewSelect().Model(&linked).Column("person_id").Where("email = ? AND unlinked_at IS NULL", email).Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return models.UUID{}, false, nil
@@ -132,14 +132,14 @@ func linkedHolder(ctx context.Context, tx bun.Tx, email string) (models.UUID, bo
 	return linked.PersonID, true, nil
 }
 
-func linkedIdentities(ctx context.Context, tx bun.Tx, personID models.UUID) ([]LinkedIdentity, error) {
-	var identities []models.Identity
-	if err := tx.NewSelect().Model(&identities).Where("person_id = ? AND unlinked_at IS NULL", personID).Order("created_at", "id").Scan(ctx); err != nil {
+func linkedEmails(ctx context.Context, tx bun.Tx, personID models.UUID) ([]LinkedEmail, error) {
+	var emails []models.LinkedEmail
+	if err := tx.NewSelect().Model(&emails).Where("person_id = ? AND unlinked_at IS NULL", personID).Order("created_at", "id").Scan(ctx); err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
-	result := make([]LinkedIdentity, 0, len(identities))
-	for _, value := range identities {
-		result = append(result, LinkedIdentity{ID: value.ID.String(), Email: value.Email, CreatedAt: value.CreatedAt})
+	result := make([]LinkedEmail, 0, len(emails))
+	for _, value := range emails {
+		result = append(result, LinkedEmail{ID: value.ID.String(), Email: value.Email, CreatedAt: value.CreatedAt})
 	}
 	return result, nil
 }

@@ -197,13 +197,13 @@ export function useRevokePreauthorization(id: string) {
   });
 }
 
-export function useUnlinkPersonIdentity(id: string) {
+export function useUnlinkPersonEmail(id: string) {
   const client = useQueryClient();
   const scope = usePrivateScope();
   return useMutation({
     mutationKey: scope,
-    mutationFn: (identityID: string) =>
-      request<void>(`/api/people/${id}/identities/${identityID}/unlink`, {
+    mutationFn: (emailID: string) =>
+      request<void>(`/api/people/${id}/emails/${emailID}/unlink`, {
         body: {},
       }),
     onSuccess: async () => {
