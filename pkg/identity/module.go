@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -20,11 +19,11 @@ import (
 const SessionLifetime = 180 * 24 * time.Hour
 
 var (
-	ErrAccessDenied       = &errcodes.Error{HTTPCode: 403, Code: "access_denied", Message: "This identity does not have access to this installation."}
+	ErrAccessDenied       = &errcodes.Error{HTTPCode: 403, Code: "access_denied", Message: "This email does not have access to this installation."}
 	ErrUnauthenticated    = &errcodes.Error{HTTPCode: 401, Code: "unauthenticated", Message: "Sign in to continue."}
 	ErrUnverifiedIdentity = &errcodes.Error{HTTPCode: 403, Code: "unverified_identity", Message: "Sign-in requires a verified email address."}
-	// ErrAccessRequested means the verified identity is unknown and a Curator now has one pending request for it.
-	ErrAccessRequested = &errcodes.Error{HTTPCode: 403, Code: "access_requested", Message: "This account does not have access yet. Your Curator has been asked to review your request."}
+	// ErrAccessRequested means the verified address is unknown and a Curator now has one pending request for it.
+	ErrAccessRequested = &errcodes.Error{HTTPCode: 403, Code: "access_requested", Message: "This email does not have access yet. Your Curator has been asked to review your request."}
 )
 
 // Mail is the consumer-owned view of Notifications for Invitations.
@@ -40,10 +39,10 @@ type Announcements interface {
 	Announced(context.Context, bun.IDB, string) (notifications.Baseline, error)
 }
 
-// Claims must come from a trusted provider adapter, never an unchecked browser body.
+// Claims are one verified address and the name the verifier reported. They
+// must come from a trusted adapter, never an unchecked browser body, and any
+// way of verifying an address (Google, a Sign-in Code) produces the same shape.
 type Claims struct {
-	Provider      string
-	Subject       string
 	Email         string
 	EmailVerified bool
 	DisplayName   string
@@ -94,10 +93,16 @@ func (m *Module) Claimed(ctx context.Context) (bool, error) {
 	return claimed, nil
 }
 
-// SignIn claims an empty installation, authenticates a known subject, or consumes
-// an exact verified-email preauthorization. Display names never grant access.
+// SignIn resolves a verified address in order: an unclaimed Installation
+// makes it the first Curator; a Linked Email signs its Person in; an unused
+// Preauthorization links it; anything else becomes an Access Request. An
+// unlinked address is refused until a Curator preauthorizes it again, and a
+// deactivated Person is refused outright. Display names never grant access.
+// The Linked Email lookup runs first because an unclaimed Installation has no
+// Person who could hold one.
 func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
-	if err := validateClaims(claims); err != nil {
+	claims, err := normalizeClaims(claims)
+	if err != nil {
 		return Session{}, err
 	}
 	now := m.now().UTC()
@@ -113,90 +118,49 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 			Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		var linked models.Identity
-		err := tx.NewSelect().Model(&linked).Where("provider = ? AND subject = ?", claims.Provider, claims.Subject).Scan(ctx)
 		var person models.Person
-		if errors.Is(err, sql.ErrNoRows) {
-			if claimedBy.Valid {
-				person, err = m.resolvePreauthorization(ctx, tx, claims)
-				if errors.Is(err, errNoPreauthorization) {
-					// Commit the request while refusing the session.
-					requested = true
-					return m.recordAccessRequest(ctx, tx, claims)
-				}
-				if err != nil {
-					return err
-				}
-			} else {
-				person = models.Person{ID: models.NewUUIDv7(), DisplayName: strings.TrimSpace(claims.DisplayName), IsCurator: true, CreatedAt: now}
-				if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
-					return errorstack.CaptureContext(ctx, err)
-				}
-			}
-			previousIdentity, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
-			if err != nil {
-				return errorstack.CaptureContext(ctx, err)
-			}
-			linked = models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, CreatedAt: now}
-			if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
-				return errorstack.CaptureContext(ctx, err)
-			}
-			if !previousIdentity {
-				person.UpdateIdentityID = &linked.ID
-				person.UpdateEmail = linked.Email
-				person.EmailUpdates = true
-				if _, err := tx.NewUpdate().Model(&person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
-					return errorstack.CaptureContext(ctx, err)
-				}
-			}
-			if !claimedBy.Valid {
-				updated, err := tx.NewUpdate().Table("installation").
-					Set("claimed_by = ?", person.ID).Set("claimed_at = ?", now).
-					Where("singleton = true").Where("claimed_by IS NULL").Exec(ctx)
-				if err != nil {
-					return errorstack.CaptureContext(ctx, err)
-				}
-				count, err := updated.RowsAffected()
-				if err != nil {
-					return errorstack.Capture(err)
-				}
-				if count != 1 {
-					return ErrAccessDenied
-				}
-			}
-		} else if err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		} else {
+		var linked models.Identity
+		switch err := tx.NewSelect().Model(&linked).Where("email = ? AND unlinked_at IS NULL", claims.Email).Scan(ctx); {
+		case err == nil:
 			person, err = personByID(ctx, tx, linked.PersonID.String())
 			if err != nil {
 				return err
 			}
-		}
-		if person.DeactivatedAt != nil {
-			return ErrAccessDenied
-		}
-		if linked.UnlinkedAt != nil {
-			// A known but unlinked subject is refused outright; only new identities request access.
-			approved, err := m.resolvePreauthorization(ctx, tx, claims)
-			if errors.Is(err, errNoPreauthorization) {
+			if person.DeactivatedAt != nil {
 				return ErrAccessDenied
+			}
+		case !errors.Is(err, sql.ErrNoRows):
+			return errorstack.CaptureContext(ctx, err)
+		case !claimedBy.Valid:
+			person = models.Person{ID: models.NewUUIDv7(), DisplayName: claims.DisplayName, IsCurator: true, CreatedAt: now}
+			if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+			if err := claimInstallation(ctx, tx, person.ID, now); err != nil {
+				return err
+			}
+			if linked, err = link(ctx, tx, &person, claims.Email, now); err != nil {
+				return err
+			}
+		default:
+			person, err = m.resolvePreauthorization(ctx, tx, claims.Email)
+			if errors.Is(err, errNoPreauthorization) {
+				unlinked, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("email = ?", claims.Email).Exists(ctx)
+				if err != nil {
+					return errorstack.CaptureContext(ctx, err)
+				}
+				if unlinked {
+					return ErrAccessDenied
+				}
+				// Commit the request while refusing the session.
+				requested = true
+				return m.recordAccessRequest(ctx, tx, claims)
 			}
 			if err != nil {
 				return err
 			}
-			if approved.ID != person.ID {
-				return ErrAccessDenied
-			}
-		}
-		if _, err := tx.NewUpdate().Model(&linked).Set("email = ?, unlinked_at = NULL", claims.Email).WherePK().Exec(ctx); err != nil {
-			return errorstack.CaptureContext(ctx, err)
-		}
-		if linked.Email != claims.Email && person.UpdateIdentityID != nil && *person.UpdateIdentityID == linked.ID {
-			person.UpdateEmail = ""
-			person.UpdateIdentityID = nil
-			person.EmailUpdates = false
-			if _, err := tx.NewUpdate().Model(&person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
-				return errorstack.CaptureContext(ctx, err)
+			if linked, err = link(ctx, tx, &person, claims.Email, now); err != nil {
+				return err
 			}
 		}
 		session, err := insertSession(ctx, tx, linked.ID, browserDevice(ctx), hash, now)
@@ -210,6 +174,46 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 		return Session{}, ErrAccessRequested
 	}
 	return result, err
+}
+
+// link adds a Linked Email to the Person. The first one a Person ever links
+// also becomes where their update emails go.
+func link(ctx context.Context, tx bun.Tx, person *models.Person, email string, now time.Time) (models.Identity, error) {
+	linkedBefore, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("person_id = ?", person.ID).Exists(ctx)
+	if err != nil {
+		return models.Identity{}, errorstack.CaptureContext(ctx, err)
+	}
+	linked := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Email: email, CreatedAt: now}
+	if _, err := tx.NewInsert().Model(&linked).Exec(ctx); err != nil {
+		return models.Identity{}, errorstack.CaptureContext(ctx, err)
+	}
+	if !linkedBefore {
+		person.UpdateIdentityID = &linked.ID
+		person.UpdateEmail = linked.Email
+		person.EmailUpdates = true
+		if _, err := tx.NewUpdate().Model(person).Column("update_identity_id", "email_updates").WherePK().Exec(ctx); err != nil {
+			return models.Identity{}, errorstack.CaptureContext(ctx, err)
+		}
+	}
+	return linked, nil
+}
+
+// claimInstallation makes the Person the first Curator, once.
+func claimInstallation(ctx context.Context, tx bun.Tx, personID models.UUID, now time.Time) error {
+	updated, err := tx.NewUpdate().Table("installation").
+		Set("claimed_by = ?", personID).Set("claimed_at = ?", now).
+		Where("singleton = true").Where("claimed_by IS NULL").Exec(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	count, err := updated.RowsAffected()
+	if err != nil {
+		return errorstack.Capture(err)
+	}
+	if count != 1 {
+		return ErrAccessDenied
+	}
+	return nil
 }
 
 // newSecret is an opaque credential and the hash that is stored in its place.

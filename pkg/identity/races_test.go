@@ -40,7 +40,7 @@ func TestDeactivationRacesSignInAndRenewal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, first.Person.ID, identity.PreauthorizeRequest{Email: "other@example.test"})
 	require.NoError(t, err)
-	otherClaims := identity.Claims{Provider: "google", Subject: "other", Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"}
+	otherClaims := identity.Claims{Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"}
 	other, err := module.SignIn(t.Context(), otherClaims)
 	require.NoError(t, err)
 	now = now.Add(24 * time.Hour)
@@ -105,7 +105,7 @@ func TestUnlinkRacesSignInAndRenewal(t *testing.T) {
 	retained := authorizePerson(t, module, curator, "Alex", "alex@example.test")
 	_, err := module.Preauthorize(t.Context(), curator.Token, retained.Person.ID, identity.PreauthorizeRequest{Email: "removed@example.test"})
 	require.NoError(t, err)
-	claims := identity.Claims{Provider: "google", Subject: "removed", Email: "removed@example.test", EmailVerified: true, DisplayName: "Alex"}
+	claims := identity.Claims{Email: "removed@example.test", EmailVerified: true, DisplayName: "Alex"}
 	first, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
 	second, err := module.SignIn(t.Context(), claims)
@@ -180,7 +180,7 @@ func TestSignOutEverywhereRacesRenewal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, first.Person.ID, identity.PreauthorizeRequest{Email: "other@example.test"})
 	require.NoError(t, err)
-	other, err := module.SignIn(t.Context(), identity.Claims{Provider: "google", Subject: "other", Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"})
+	other, err := module.SignIn(t.Context(), identity.Claims{Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"})
 	require.NoError(t, err)
 	now = now.Add(24 * time.Hour)
 

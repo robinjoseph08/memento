@@ -30,18 +30,18 @@ export function LinkedIdentities({
   const keepLast = !canUnlinkLast && identities.length === 1;
   return (
     <section
-      aria-labelledby="linked-accounts"
+      aria-labelledby="linked-emails"
       className="min-w-0 border-t border-border py-8"
     >
-      <SectionHeading icon={Link2} id="linked-accounts">
-        Linked accounts
+      <SectionHeading icon={Link2} id="linked-emails">
+        Linked emails
       </SectionHeading>
       <p className="mt-3 mb-5 max-w-150 text-sm text-muted">
-        Unlinking an account signs out all browsers using it.
+        Unlinking an email signs out all browsers using it.
       </p>
       {identities.length ? (
         <Table
-          aria-labelledby="linked-accounts"
+          aria-labelledby="linked-emails"
           className="table-fixed sm:table-auto"
         >
           <TableHeader>
@@ -73,7 +73,7 @@ export function LinkedIdentities({
                 <TableCell className="py-2.5 text-right">
                   <ConfirmAction
                     compact
-                    description="This account will no longer be able to sign in, and its browser sessions will end."
+                    description="This email will no longer be able to sign in, and its browser sessions will end."
                     disabled={keepLast}
                     error={error}
                     icon={Unlink}
@@ -88,11 +88,11 @@ export function LinkedIdentities({
           </TableBody>
         </Table>
       ) : (
-        <EmptyState icon={Link2}>No accounts linked yet.</EmptyState>
+        <EmptyState icon={Link2}>No emails linked yet.</EmptyState>
       )}
       {keepLast && (
         <p className="mt-3 text-xs text-muted">
-          Keep at least one linked account so you can sign in.
+          Keep at least one linked email so you can sign in.
         </p>
       )}
     </section>

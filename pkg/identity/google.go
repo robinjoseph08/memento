@@ -144,5 +144,5 @@ func (p *GoogleProvider) Exchange(ctx context.Context, code, nonce, verifier str
 	if profile.Name == "" {
 		profile.Name = profile.Email
 	}
-	return Claims{Provider: "google", Subject: id.Subject, Email: profile.Email, EmailVerified: true, DisplayName: profile.Name}, nil
+	return Claims{Email: profile.Email, EmailVerified: true, DisplayName: profile.Name}, nil
 }

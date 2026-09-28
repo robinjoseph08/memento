@@ -30,7 +30,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	_, err = module.UpdateProfile(t.Context(), quiet.Token, identity.UpdateProfileRequest{DisplayName: "Quiet Curator", UpdateEmail: "", EmailUpdates: false})
 	require.NoError(t, err)
 	authorizePerson(t, module, curator, "Member", "member@example.test")
-	stranger := identity.Claims{Provider: "google", Subject: "stranger-subject", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Stranger"}
+	stranger := identity.Claims{Email: "stranger@example.test", EmailVerified: true, DisplayName: "Stranger"}
 	for range 3 {
 		_, err := module.SignIn(t.Context(), stranger)
 		require.ErrorIs(t, err, identity.ErrAccessRequested)
@@ -57,7 +57,6 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	assert.Equal(t, "join", pending.Kind)
 	assert.Equal(t, "pending", pending.Status)
 	assert.Equal(t, 4, pending.SignInCount)
-	assert.Equal(t, "google", pending.Provider)
 	assert.Equal(t, "stranger@example.test", pending.Email)
 	assert.True(t, pending.EmailVerified)
 	assert.Equal(t, "Stranger Renamed", pending.DisplayName)
@@ -134,7 +133,7 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	// A second identity can be linked to an existing Person without a duplicate Person.
 	alex, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Alex"})
 	require.NoError(t, err)
-	second := identity.Claims{Provider: "google", Subject: "second-subject", Email: "alex@example.test", EmailVerified: true, DisplayName: "Alex G"}
+	second := identity.Claims{Email: "alex@example.test", EmailVerified: true, DisplayName: "Alex G"}
 	_, err = module.SignIn(t.Context(), second)
 	require.ErrorIs(t, err, identity.ErrAccessRequested)
 	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
@@ -160,14 +159,29 @@ func TestUnknownIdentityCreatesOneRequestThatCuratorsResolveDeliberately(t *test
 	require.NoError(t, err)
 	assert.Equal(t, alex.ID, admittedAlex.Person.ID)
 
-	// An email already linked to someone else cannot be approved onto another Person.
-	conflict := identity.Claims{Provider: "google", Subject: "conflict-subject", Email: "curator@example.test", EmailVerified: true, DisplayName: "Impostor"}
+	// An address that a Curator preauthorized and linked elsewhere after the
+	// request was filed cannot be approved onto another Person.
+	conflict := identity.Claims{Email: "conflict@example.test", EmailVerified: true, DisplayName: "Impostor"}
 	_, err = module.SignIn(t.Context(), conflict)
 	require.ErrorIs(t, err, identity.ErrAccessRequested)
+	_, err = module.Preauthorize(t.Context(), curator.Token, alex.ID, identity.PreauthorizeRequest{Email: "conflict@example.test"})
+	require.NoError(t, err)
+	_, err = module.SignIn(t.Context(), conflict)
+	require.NoError(t, err)
 	requests, err = module.ListAccessRequests(t.Context(), curator.Token)
 	require.NoError(t, err)
+	assert.Equal(t, "conflict@example.test", requests[0].Email)
 	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, requests[0].ID, identity.ApproveAccessRequestRequest{DisplayName: "Impostor"})
 	require.ErrorIs(t, err, identity.ErrEmailInUse)
+	settled, err := module.ApproveAccessRequest(t.Context(), curator.Token, requests[0].ID, identity.ApproveAccessRequestRequest{PersonID: alex.ID})
+	require.NoError(t, err, "approving onto the Person who already holds the address needs no new Preauthorization")
+	assert.Equal(t, "approved", settled.Status)
+	alexDetail, err := module.GetPerson(t.Context(), curator.Token, alex.ID)
+	require.NoError(t, err)
+	assert.Len(t, alexDetail.Preauthorizations, 2)
+	for _, approval := range alexDetail.Preauthorizations {
+		assert.NotNil(t, approval.ConsumedAt)
+	}
 	people, err = module.ListPeople(t.Context(), curator.Token, "")
 	require.NoError(t, err)
 	assert.Len(t, people, 7, "a refused approval creates no Person")

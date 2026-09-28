@@ -221,7 +221,7 @@ function Sessions() {
         </div>
       )}
       <ConfirmAction
-        description="You'll be signed out of every browser, including this one. Unsaved profile changes will be lost. Sign in again with a linked account to return."
+        description="You'll be signed out of every browser, including this one. Unsaved profile changes will be lost. Sign in again with a linked email to return."
         error={signOut.error}
         icon={LogOut}
         label="Sign out everywhere"

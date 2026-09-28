@@ -90,9 +90,9 @@ type UpdateProfileRequest struct {
 	EmailUpdates bool   `json:"email_updates"`
 }
 
+// LinkedIdentity is a Linked Email as the Person page and profile show it.
 type LinkedIdentity struct {
 	ID        string    `json:"id"`
-	Provider  string    `json:"provider"`
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -171,12 +171,11 @@ type AnnouncedContent struct {
 }
 
 // AccessRequest shows what a Curator may inspect. It never asserts that the
-// identity and any Person are the same human.
+// address and any Person are the same human.
 type AccessRequest struct {
 	ID string `json:"id"`
-	// Kind is join for an unknown identity and album for an existing Person's request.
+	// Kind is join for an unknown address and album for an existing Person's request.
 	Kind          string     `json:"kind"`
-	Provider      string     `json:"provider"`
 	Email         string     `json:"email"`
 	EmailVerified bool       `json:"email_verified"`
 	DisplayName   string     `json:"display_name"`
@@ -192,7 +191,7 @@ type AccessRequest struct {
 	ResolvedBy    string     `json:"resolved_by"`
 }
 
-// ApproveAccessRequestRequest links an unknown identity to an existing Person
+// ApproveAccessRequestRequest links an unknown address to an existing Person
 // or creates one. Requests from an existing Person need neither field.
 type ApproveAccessRequestRequest struct {
 	PersonID    string `json:"person_id" validate:"omitempty,uuid"`

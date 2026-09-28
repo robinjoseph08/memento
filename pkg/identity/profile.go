@@ -12,7 +12,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-var ErrLastAccount = &errcodes.Error{HTTPCode: 409, Code: "last_account", Message: "Link another sign-in account before removing your last account, or ask a Curator to remove it for you."}
+var ErrLastAccount = &errcodes.Error{HTTPCode: 409, Code: "last_account", Message: "Link another email before removing your last one, or ask a Curator to remove it for you."}
 
 func (m *Module) Profile(ctx context.Context, token string) (Profile, error) {
 	var result Profile
@@ -54,7 +54,7 @@ func applyProfile(ctx context.Context, tx bun.Tx, person *models.Person, request
 		}
 	}
 	if !allowed {
-		return nil, fieldError("update_email", "Choose an email from your linked identities.")
+		return nil, fieldError("update_email", "Choose one of your linked emails.")
 	}
 	person.DisplayName = name
 	person.UpdateEmail = request.UpdateEmail
@@ -82,8 +82,9 @@ func (m *Module) UpdateProfile(ctx context.Context, token string, request Update
 	return result, err
 }
 
-// UnlinkIdentity retains the subject's ownership and history but removes login access.
-// An empty personID selects the signed-in Person for self-service.
+// UnlinkIdentity keeps the address on record but removes its sign-in access,
+// ending its sessions. An empty personID selects the signed-in Person. The
+// address is admitted again only through a new Preauthorization.
 func (m *Module) UnlinkIdentity(ctx context.Context, token, personID, identityID string) error {
 	return m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		actor, err := m.actor(ctx, tx, token, personID != "")

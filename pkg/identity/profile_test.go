@@ -96,23 +96,6 @@ func TestLaterSignInsAndIdentityLinksPreserveEmailOptOut(t *testing.T) {
 	assert.Equal(t, third.Person, persisted.Person)
 }
 
-func TestSelectedIdentityEmailChangeClearsEmailUpdates(t *testing.T) {
-	t.Parallel()
-	module := identity.New(testdb.New(t), nil)
-	curator := claimCurator(t, module)
-	claims := identity.FakeClaims(identity.SignInRequest{Email: "curator@example.test", DisplayName: "Curator"})
-	claims.Email = "changed@example.test"
-	changed, err := module.SignIn(t.Context(), claims)
-	require.NoError(t, err)
-	assert.Empty(t, changed.Person.UpdateEmail)
-	assert.False(t, changed.Person.EmailUpdates)
-	profile, err := module.Profile(t.Context(), curator.Token)
-	require.NoError(t, err)
-	assert.Equal(t, changed.Person, profile.Person)
-	require.Len(t, profile.Identities, 1)
-	assert.Equal(t, "changed@example.test", profile.Identities[0].Email)
-}
-
 func TestProfileAndMultipleIdentities(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -139,26 +122,6 @@ func TestProfileAndMultipleIdentities(t *testing.T) {
 	current, err := module.Authenticate(t.Context(), second.Token)
 	require.NoError(t, err)
 	assert.Equal(t, profile.Person, current.Person)
-}
-
-func TestUnselectedIdentityEmailChangeKeepsNotificationPreference(t *testing.T) {
-	t.Parallel()
-	module := identity.New(testdb.New(t), nil)
-	curator := claimCurator(t, module)
-	member := authorizePerson(t, module, curator, "Alex", "alex@example.test")
-	_, err := module.Preauthorize(t.Context(), curator.Token, member.Person.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
-	require.NoError(t, err)
-	secondClaims := identity.Claims{Provider: "google", Subject: "another-subject", Email: "alex@example.test", EmailVerified: true, DisplayName: "Alex"}
-	_, err = module.SignIn(t.Context(), secondClaims)
-	require.NoError(t, err)
-	before, err := module.UpdateProfile(t.Context(), member.Token, identity.UpdateProfileRequest{DisplayName: "Alex", UpdateEmail: "alex@example.test", EmailUpdates: true})
-	require.NoError(t, err)
-	secondClaims.Email = "new@example.test"
-	_, err = module.SignIn(t.Context(), secondClaims)
-	require.NoError(t, err)
-	after, err := module.Profile(t.Context(), member.Token)
-	require.NoError(t, err)
-	assert.Equal(t, before.Person, after.Person)
 }
 
 func TestLastCuratorKeepsASignInAccount(t *testing.T) {

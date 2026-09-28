@@ -25,7 +25,6 @@ func TestProviderIdentityContract(t *testing.T) {
 				substitute := newOIDCSubstitute(t)
 				google := substitute.provider()
 				claimsFor = func(email, name string) identity.Claims {
-					// Test subjects are stable for each fixture account, never linked by name.
 					substitute.claims["sub"] = email
 					substitute.claims["email"] = email
 					substitute.claims["name"] = name
@@ -45,8 +44,6 @@ func TestProviderIdentityContract(t *testing.T) {
 			require.ErrorIs(t, err, identity.ErrAccessRequested)
 			_, err = module.Preauthorize(t.Context(), curator.Token, alex.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 			require.NoError(t, err)
-			_, err = module.SignIn(t.Context(), claimsFor("Alex@example.test", "Alex"))
-			require.ErrorIs(t, err, identity.ErrAccessRequested)
 			memberClaims := claimsFor("alex@example.test", "Provider name")
 			member, err := module.SignIn(t.Context(), memberClaims)
 			require.NoError(t, err)

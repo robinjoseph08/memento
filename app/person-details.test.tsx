@@ -31,7 +31,6 @@ const alex = {
 };
 const account = {
   id: "account",
-  provider: "fake",
   email: "alex@example.test",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -111,7 +110,7 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
   expect(await screen.findByRole("status")).toHaveTextContent("Avatar saved.");
 });
 
-it("puts linked accounts first and keeps previous emails collapsed outside active approvals", async () => {
+it("puts linked emails first and keeps previous emails collapsed outside active approvals", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
@@ -169,7 +168,7 @@ it("puts linked accounts first and keeps previous emails collapsed outside activ
   const headings = screen
     .getAllByRole("heading", { level: 2 })
     .map((heading) => heading.textContent);
-  expect(headings.indexOf("Linked accounts")).toBeLessThan(
+  expect(headings.indexOf("Linked emails")).toBeLessThan(
     headings.indexOf("Preauthorizations"),
   );
   const summary = screen.getByText("Previous emails (2)");
@@ -252,7 +251,7 @@ it.each([false, true])(
   },
 );
 
-it("lets a Curator remove another person's final linked account without losing a name draft", async () => {
+it("lets a Curator remove another person's final linked email without losing a name draft", async () => {
   let identities = [account];
   vi.stubGlobal(
     "fetch",
@@ -295,7 +294,7 @@ it("lets a Curator remove another person's final linked account without losing a
   await user.click(
     within(dialog).getByRole("button", { name: "Unlink alex@example.test" }),
   );
-  expect(await screen.findByText("No accounts linked yet.")).toBeVisible();
+  expect(await screen.findByText("No emails linked yet.")).toBeVisible();
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );

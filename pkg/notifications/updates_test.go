@@ -98,7 +98,7 @@ func seedPerson(t *testing.T, db *bun.DB, name string, options personOptions) mo
 	_, err := db.NewInsert().Model(&person).Exec(t.Context())
 	require.NoError(t, err)
 	if options.email != "" {
-		identity := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: "fake", Subject: options.email, Email: options.email, CreatedAt: now}
+		identity := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Email: options.email, CreatedAt: now}
 		_, err = db.NewInsert().Model(&identity).Exec(t.Context())
 		require.NoError(t, err)
 		_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_identity_id = ?", identity.ID).Set("email_updates = ?", options.emailUpdates).Where("id = ?", person.ID).Exec(t.Context())

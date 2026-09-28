@@ -21,12 +21,12 @@ type Person struct {
 	CreatedAt             time.Time
 }
 
+// Identity is one Linked Email: a verified, lowercased address that signs
+// its Person in. Unlinking keeps the row so the address stays known.
 type Identity struct {
 	bun.BaseModel `bun:"table:identities"`
 	ID            UUID `bun:"id,pk,type:uuid"`
 	PersonID      UUID `bun:"person_id,type:uuid"`
-	Provider      string
-	Subject       string
 	Email         string
 	UnlinkedAt    *time.Time
 	CreatedAt     time.Time
@@ -84,8 +84,6 @@ type AccessRequest struct {
 	bun.BaseModel `bun:"table:access_requests,alias:request"`
 	ID            UUID `bun:"id,pk,type:uuid"`
 	Kind          string
-	Provider      string
-	Subject       string
 	Email         string
 	EmailVerified bool
 	DisplayName   string

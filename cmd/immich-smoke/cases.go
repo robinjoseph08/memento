@@ -112,7 +112,7 @@ func verifyCaseImport(ctx context.Context, db *bun.DB, library *fixture.Library,
 		return fmt.Errorf("stack was not flattened or Live Photo motion became a separate entry")
 	}
 	people := identity.New(db, nil)
-	curator, err := people.SignIn(ctx, identity.Claims{Provider: "fake", Subject: "smoke-curator", Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
+	curator, err := people.SignIn(ctx, identity.Claims{Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
 	if err != nil {
 		return err
 	}

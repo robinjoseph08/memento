@@ -32,7 +32,6 @@ const curator = {
 };
 const account = {
   id: "account",
-  provider: "fake",
   email: "alex@example.test",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -106,7 +105,6 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
   const request = {
     id: "request-1",
     kind: "join",
-    provider: "google",
     email: "stranger@example.test",
     email_verified: true,
     display_name: "Stranger",

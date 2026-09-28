@@ -31,7 +31,6 @@ const robin = {
 };
 const account = {
   id: "google-alex",
-  provider: "google",
   email: "alex@example.test",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -374,7 +373,7 @@ it("leaves the profile once the person confirms losing their edits", async () =>
 });
 
 it.each([false, true])(
-  "protects the last linked account in your profile, Curator=%s",
+  "protects the last linked email in your profile, Curator=%s",
   async (isCurator) => {
     const person = { ...alex, is_curator: isCurator };
     vi.stubGlobal(
@@ -390,20 +389,20 @@ it.each([false, true])(
     );
     window.history.replaceState(null, "", "/profile");
     render(<App />);
-    const accounts = await screen.findByRole("table", {
-      name: "Linked accounts",
+    const emails = await screen.findByRole("table", {
+      name: "Linked emails",
     });
     expect(
-      within(accounts).queryByRole("columnheader", { name: "Provider" }),
+      within(emails).queryByRole("columnheader", { name: "Provider" }),
     ).not.toBeInTheDocument();
-    expect(within(accounts).queryByText("Google")).not.toBeInTheDocument();
+    expect(within(emails).queryByText("Google")).not.toBeInTheDocument();
     expect(
-      within(accounts).getByRole("button", {
+      within(emails).getByRole("button", {
         name: "Unlink alex@example.test",
       }),
     ).toBeDisabled();
     expect(
-      screen.getByText("Keep at least one linked account so you can sign in."),
+      screen.getByText("Keep at least one linked email so you can sign in."),
     ).toBeVisible();
   },
 );
@@ -523,7 +522,7 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
   expect(updates).not.toBeChecked();
 });
 
-it("keeps another linked account available after unlinking one from your profile", async () => {
+it("keeps another linked email available after unlinking one from your profile", async () => {
   let identities = [
     account,
     { ...account, id: "second", email: "second@example.test" },

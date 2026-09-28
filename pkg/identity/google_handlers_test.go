@@ -28,7 +28,7 @@ func (m *googleHTTPModule) SignIn(_ context.Context, claims identity.Claims) (id
 	if m.signInError != nil {
 		return identity.Session{}, m.signInError
 	}
-	if claims.Subject != "google-subject" || !claims.EmailVerified {
+	if claims.Email != "alex@example.com" || !claims.EmailVerified {
 		return identity.Session{}, identity.ErrUnauthenticated
 	}
 	return identity.Session{Token: "opaque-session", ExpiresAt: time.Now().Add(time.Hour)}, nil

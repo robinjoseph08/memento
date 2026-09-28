@@ -199,7 +199,7 @@ func TestGoogleVerifiedClaims(t *testing.T) {
 	require.Equal(t, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", query.Get("code_challenge"))
 	claims, err := provider.Exchange(t.Context(), "authorization-code", "request-nonce", "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")
 	require.NoError(t, err)
-	require.Equal(t, identity.Claims{Provider: "google", Subject: "google-subject", Email: "alex@example.com", EmailVerified: true, DisplayName: "Alex"}, claims)
+	require.Equal(t, identity.Claims{Email: "alex@example.com", EmailVerified: true, DisplayName: "Alex"}, claims)
 	require.Equal(t, "authorization-code", s.tokenForm.Get("code"))
 	require.Equal(t, "authorization_code", s.tokenForm.Get("grant_type"))
 	require.Equal(t, "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk", s.tokenForm.Get("code_verifier"))
