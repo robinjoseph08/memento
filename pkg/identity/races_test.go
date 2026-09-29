@@ -309,10 +309,10 @@ func TestRacingOwnAccountUnlinksLeaveOneLinkedAccount(t *testing.T) {
 		)
 		survivingToken := second.Token
 		if firstErr == nil {
-			require.ErrorIs(t, secondErr, identity.ErrLastAccount, scenario.name)
+			require.ErrorIs(t, secondErr, identity.ErrLastEmail, scenario.name)
 		} else {
 			require.NoError(t, secondErr, scenario.name)
-			require.ErrorIs(t, firstErr, identity.ErrLastAccount, scenario.name)
+			require.ErrorIs(t, firstErr, identity.ErrLastEmail, scenario.name)
 			survivingToken = first.Token
 		}
 		remaining, err := module.Profile(t.Context(), survivingToken)

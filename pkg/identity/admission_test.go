@@ -109,7 +109,7 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 	profile, err := module.Profile(t.Context(), second.Token)
 	require.NoError(t, err)
 	require.Len(t, profile.Emails, 1)
-	secondIdentity := profile.Emails[0].ID
+	secondEmailID := profile.Emails[0].ID
 	approval, err := module.Preauthorize(t.Context(), curator.Token, second.Person.ID, identity.PreauthorizeRequest{Email: "sam-extra@example.test"})
 	require.NoError(t, err)
 
@@ -140,8 +140,8 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 		{name: "revoke another Person approval", operation: func() error {
 			return module.RevokePreauthorization(t.Context(), first.Token, second.Person.ID, approval.ID)
 		}},
-		{name: "unlink another Person identity", operation: func() error {
-			return module.UnlinkEmail(t.Context(), first.Token, second.Person.ID, secondIdentity)
+		{name: "unlink another Person's email", operation: func() error {
+			return module.UnlinkEmail(t.Context(), first.Token, second.Person.ID, secondEmailID)
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -149,9 +149,9 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 		})
 	}
 	// Self-service and Curator routes must also enforce identity-to-Person ownership.
-	err = module.UnlinkEmail(t.Context(), first.Token, "", secondIdentity)
+	err = module.UnlinkEmail(t.Context(), first.Token, "", secondEmailID)
 	require.Error(t, err)
-	err = module.UnlinkEmail(t.Context(), curator.Token, first.Person.ID, secondIdentity)
+	err = module.UnlinkEmail(t.Context(), curator.Token, first.Person.ID, secondEmailID)
 	require.Error(t, err)
 	err = module.RevokePreauthorization(t.Context(), curator.Token, first.Person.ID, approval.ID)
 	require.Error(t, err)
@@ -161,7 +161,7 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 	assert.Equal(t, "Sam", detail.Person.DisplayName)
 	assert.Nil(t, detail.Person.DeactivatedAt)
 	require.Len(t, detail.Emails, 1)
-	assert.Equal(t, secondIdentity, detail.Emails[0].ID)
+	assert.Equal(t, secondEmailID, detail.Emails[0].ID)
 	_, err = module.Authenticate(t.Context(), second.Token)
 	require.NoError(t, err)
 	linked, err := module.SignIn(t.Context(), identity.Claims{Email: "sam-extra@example.test", EmailVerified: true, DisplayName: "Sam"})

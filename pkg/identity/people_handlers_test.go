@@ -103,12 +103,12 @@ func TestUnlinkHTTPReturnsLastAccountConflictOnBothRoutes(t *testing.T) {
 		status  int
 		code    string
 	}{
-		{"/api/identity/linked_emails/account/unlink", false, 409, "last_account"},
-		{"/api/identity/linked_emails/account/unlink", true, 409, "last_account"},
-		{"/api/people/self/linked_emails/account/unlink", true, 409, "last_account"},
-		{"/api/people/self/linked_emails/account/unlink", false, 403, "access_denied"},
+		{"/api/identity/emails/account/unlink", false, 409, "last_email"},
+		{"/api/identity/emails/account/unlink", true, 409, "last_email"},
+		{"/api/people/self/emails/account/unlink", true, 409, "last_email"},
+		{"/api/people/self/emails/account/unlink", false, 403, "access_denied"},
 	} {
-		module := &managementIdentity{changeErr: identity.ErrLastAccount}
+		module := &managementIdentity{changeErr: identity.ErrLastEmail}
 		module.claimed = true
 		module.session.Person.IsCurator = scenario.curator
 		e := identityHTTP(t, config.NewForTest(), &module.fakeIdentity)

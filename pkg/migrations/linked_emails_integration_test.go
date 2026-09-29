@@ -99,9 +99,9 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	var linked []models.UUID
 	require.NoError(t, db.NewSelect().Table("linked_emails").Column("id").Where("unlinked_at IS NULL").Order("email").Scan(ctx, &linked))
 	assert.Equal(t, []models.UUID{alexGoogle, dupOne, samGoogle}, linked, "an unlinked sign-in may share its address with a linked one")
-	var sessionIdentities []models.UUID
-	require.NoError(t, db.NewSelect().Table("sessions").Column("linked_email_id").Order("created_at", "id").Scan(ctx, &sessionIdentities))
-	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle}, sessionIdentities, "every session keeps its Linked Email")
+	var sessionEmails []models.UUID
+	require.NoError(t, db.NewSelect().Table("sessions").Column("linked_email_id").Order("created_at", "id").Scan(ctx, &sessionEmails))
+	assert.ElementsMatch(t, []models.UUID{alexGoogle, samGoogle}, sessionEmails, "every session keeps its Linked Email")
 	var person models.Person
 	require.NoError(t, db.NewSelect().Model(&person).Column("update_email_id", "email_updates").Where("id = ?", alex).Scan(ctx))
 	require.NotNil(t, person.UpdateEmailID)

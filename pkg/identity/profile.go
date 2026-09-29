@@ -12,7 +12,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-var ErrLastAccount = &errcodes.Error{HTTPCode: 409, Code: "last_account", Message: "Link another email before removing your last one, or ask a Curator to remove it for you."}
+var ErrLastEmail = &errcodes.Error{HTTPCode: 409, Code: "last_email", Message: "Link another email before removing your last one, or ask a Curator to remove it for you."}
 
 func (m *Module) Profile(ctx context.Context, token string) (Profile, error) {
 	var result Profile
@@ -112,13 +112,13 @@ func (m *Module) UnlinkEmail(ctx context.Context, token, personID, emailID strin
 		if linked.UnlinkedAt != nil {
 			return nil
 		}
-		otherAccount, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("person_id = ? AND id <> ? AND unlinked_at IS NULL", person.ID, linked.ID).Exists(ctx)
+		otherEmail, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("person_id = ? AND id <> ? AND unlinked_at IS NULL", person.ID, linked.ID).Exists(ctx)
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
-		if !otherAccount {
+		if !otherEmail {
 			if person.ID == actor.ID {
-				return ErrLastAccount
+				return ErrLastEmail
 			}
 			if person.IsCurator && person.DeactivatedAt == nil {
 				if err := protectCuratorAccess(ctx, tx, person.ID); err != nil {

@@ -50,7 +50,7 @@ func TestFirstLinkedEmailEnablesEmailUpdates(t *testing.T) {
 	}
 }
 
-func TestLaterSignInsAndIdentityLinksPreserveEmailOptOut(t *testing.T) {
+func TestLaterSignInsAndLinkedEmailsPreserveEmailOptOut(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	curator := claimCurator(t, module)
@@ -96,7 +96,7 @@ func TestLaterSignInsAndIdentityLinksPreserveEmailOptOut(t *testing.T) {
 	assert.Equal(t, third.Person, persisted.Person)
 }
 
-func TestProfileAndMultipleIdentities(t *testing.T) {
+func TestProfileAndMultipleLinkedEmails(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	module := identity.New(testdb.New(t), func() time.Time { return now })
@@ -132,7 +132,7 @@ func TestLastCuratorKeepsASignInAccount(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, profile.Emails, 1)
 	err = module.UnlinkEmail(t.Context(), curator.Token, "", profile.Emails[0].ID)
-	require.ErrorIs(t, err, identity.ErrLastAccount)
+	require.ErrorIs(t, err, identity.ErrLastEmail)
 	// A role assigned to a name-only Person cannot recover a locked installation.
 	nameOnly, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "No login"})
 	require.NoError(t, err)
@@ -141,13 +141,13 @@ func TestLastCuratorKeepsASignInAccount(t *testing.T) {
 	_, err = module.UpdatePerson(t.Context(), curator.Token, curator.Person.ID, identity.UpdatePersonRequest{DisplayName: "Curator"})
 	requirePersonFieldError(t, err, "is_curator")
 	err = module.UnlinkEmail(t.Context(), curator.Token, "", profile.Emails[0].ID)
-	require.ErrorIs(t, err, identity.ErrLastAccount)
+	require.ErrorIs(t, err, identity.ErrLastEmail)
 	other := authorizePerson(t, module, curator, "Other", "other@example.test")
 	_, err = module.UpdatePerson(t.Context(), curator.Token, other.Person.ID, identity.UpdatePersonRequest{DisplayName: "Other", IsCurator: true})
 	require.NoError(t, err)
 	for _, personID := range []string{"", curator.Person.ID} {
 		err := module.UnlinkEmail(t.Context(), curator.Token, personID, profile.Emails[0].ID)
-		require.ErrorIs(t, err, identity.ErrLastAccount)
+		require.ErrorIs(t, err, identity.ErrLastEmail)
 	}
 	require.NoError(t, module.UnlinkEmail(t.Context(), other.Token, curator.Person.ID, profile.Emails[0].ID))
 	_, err = module.Authenticate(t.Context(), curator.Token)
@@ -169,7 +169,7 @@ func TestMemberKeepsLastAccountUnlessAnotherCuratorUnlinksIt(t *testing.T) {
 	require.Len(t, profile.Emails, 1)
 	id := profile.Emails[0].ID
 	err = module.UnlinkEmail(t.Context(), member.Token, "", id)
-	require.ErrorIs(t, err, identity.ErrLastAccount)
+	require.ErrorIs(t, err, identity.ErrLastEmail)
 	_, err = module.Authenticate(t.Context(), member.Token)
 	require.NoError(t, err)
 	err = module.UnlinkEmail(t.Context(), member.Token, member.Person.ID, id)

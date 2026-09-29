@@ -140,6 +140,32 @@ test("a Curator approves access, a member manages their profile and sessions, an
     await page.getByRole("button", { name: "Save person" }).click();
     await expect(page.getByRole("status")).toHaveText("Person saved.");
 
+    // Unlinking an address ends its sessions and refuses it until a Curator
+    // preauthorizes it again, while the Person's other address keeps working.
+    await signIn(other, "alex.other@example.test");
+    await expect(
+      other.getByRole("heading", { name: "No albums yet" }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Unlink alex.other@example.test" })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Unlink alex.other@example.test?" })
+      .getByRole("button", { name: "Unlink alex.other@example.test" })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Unlink alex.other@example.test" }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Unlink alex@example.test" }),
+    ).toBeVisible();
+    await other.reload();
+    await expect(
+      other.getByRole("heading", { name: "Welcome back" }),
+    ).toBeVisible();
+    await signIn(other, "alex.other@example.test");
+    await expect(other.getByRole("alert")).toBeVisible();
+
     let started!: () => void;
     let release!: () => void;
     const requestStarted = new Promise<void>((resolve) => {
