@@ -262,7 +262,10 @@ it("lets a Curator remove another person's final linked email without losing a n
           person: robin,
           auth_mode: "fake",
         });
-      if (options?.method === "POST") {
+      if (
+        options?.method === "POST" &&
+        path.endsWith("/api/people/alex/emails/account/unlink")
+      ) {
         emails = [];
         return new Response(null, { status: 204 });
       }

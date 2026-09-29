@@ -66,8 +66,8 @@ INSERT INTO sessions (id, token_hash, identity_id, device, created_at, renewed_a
 INSERT INTO mobile_sign_in_codes (code_hash, identity_id, expires_at) VALUES (?, ?, ?);
 INSERT INTO preauthorizations (id, person_id, email, created_at) VALUES (?, ?, 'Second@Example.test', ?), (?, ?, 'second@example.test', ?);
 INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, status, created_at, updated_at, resolved_at) VALUES
- (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'denied', ?, ?, ?),
- (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'pending', ?, ?, NULL);
+ (?, 'join', 'google', 'stranger-old', 'Stranger@Example.test', true, 'Stranger', 'pending', ?, ?, NULL),
+ (?, 'join', 'google', 'stranger-new', 'stranger@example.test', true, 'Stranger Again', 'denied', ?, ?, ?);
 INSERT INTO access_requests (id, kind, provider, subject, email, email_verified, display_name, person_id, status, created_at, updated_at) VALUES
  (?, 'album', 'google', 'sam-subject', 'sam@example.test', true, 'Sam', ?, 'pending', ?, ?);
 `,
@@ -77,7 +77,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 		models.NewUUIDv7(), hash(1), alexGoogle, now, now, now.Add(time.Hour), models.NewUUIDv7(), hash(2), samGoogle, now, now, now.Add(time.Hour),
 		hash(3), alexGoogle, now.Add(time.Hour),
 		samApproval, sam, now, models.NewUUIDv7(), sam, now,
-		olderRequest, earlier, earlier, earlier, newerRequest, now, now,
+		olderRequest, earlier, earlier, newerRequest, now, now, now,
 		models.NewUUIDv7(), sam, now, now,
 	)
 	require.NoError(t, err)
@@ -115,8 +115,8 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	assert.Equal(t, []string{"second@example.test", "second@example.test"}, approved)
 	var requested []models.AccessRequest
 	require.NoError(t, db.NewSelect().Model(&requested).Where("kind = 'join'").Scan(ctx))
-	require.Len(t, requested, 1, "open join requests for one address keep the most recent")
-	assert.Equal(t, newerRequest, requested[0].ID)
+	require.Len(t, requested, 1, "open join requests for one address keep one")
+	assert.Equal(t, olderRequest, requested[0].ID, "a pending request outlives a newer denied one")
 	assert.Equal(t, "pending", requested[0].Status)
 	var albumRequest string
 	require.NoError(t, db.NewSelect().Table("access_requests").Column("email").Where("kind = 'album'").Scan(ctx, &albumRequest))

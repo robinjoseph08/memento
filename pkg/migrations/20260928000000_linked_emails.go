@@ -38,13 +38,15 @@ func init() {
 			// constraints or renames, and PostgreSQL wants each RENAME on its
 			// own. Dropping provider and subject also drops the unique constraint
 			// and partial index built on them. Open join requests that differ
-			// only by case keep the most recent one. The identities table
+			// only by case keep one: a pending one over a denied one, then the
+			// most recent. The identities table
 			// becomes linked_emails, and the browser-to-app code becomes a
 			// Hand-off Code, since a Sign-in Code is the emailed verification.
 			_, err = tx.ExecContext(ctx, `
 DELETE FROM access_requests AS older USING access_requests AS newer
  WHERE older.kind = 'join' AND older.status <> 'approved' AND newer.kind = 'join' AND newer.status <> 'approved'
- AND lower(older.email) = lower(newer.email) AND (older.updated_at, older.id) < (newer.updated_at, newer.id);
+ AND lower(older.email) = lower(newer.email)
+ AND (older.status = 'pending', older.updated_at, older.id) < (newer.status = 'pending', newer.updated_at, newer.id);
 UPDATE identities SET email = lower(email);
 UPDATE preauthorizations SET email = lower(email);
 UPDATE access_requests SET email = lower(email);

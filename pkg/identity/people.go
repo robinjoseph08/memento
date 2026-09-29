@@ -14,7 +14,7 @@ import (
 	"github.com/uptrace/bun"
 )
 
-var ErrFinalCurator = &errcodes.Error{HTTPCode: 409, Code: "final_curator", Message: "Keep at least one active Curator with a linked sign-in account before making this change."}
+var ErrFinalCurator = &errcodes.Error{HTTPCode: 409, Code: "final_curator", Message: "Keep at least one active Curator with a linked email before making this change."}
 
 // protectCuratorAccess prevents both role changes and unlinking from leaving
 // an installation that no Curator can sign in to administer.

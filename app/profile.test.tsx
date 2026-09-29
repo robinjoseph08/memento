@@ -539,7 +539,10 @@ it("keeps another linked email available after unlinking one from your profile",
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });
-      if (options?.method === "POST") {
+      if (
+        options?.method === "POST" &&
+        path.endsWith("/api/identity/emails/second/unlink")
+      ) {
         emails = emails.filter((linked) => linked.id !== "second");
         return new Response(null, { status: 204 });
       }
