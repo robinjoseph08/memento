@@ -40,8 +40,16 @@ _Avoid_: User, Recipient, Immich Person
 **Curator**:
 A Person who can organize Albums, manage access, and invite people. One Installation may have multiple Curators.
 
+**Linked Email**:
+A verified email address a Person can sign in with. A Person may have several, and Google or a Sign-in Code are the two ways to verify one.
+_Avoid_: Identity, Account, Linked account
+
+**Sign-in Code**:
+A short-lived code emailed to an address so its owner can prove they control it. Verifying one signs in a known Person or starts an Access Request for an unknown address.
+_Avoid_: OTP, Token, Magic Link, Passcode
+
 **Preauthorization**:
-A Curator's approval for a specific email address to join Memento when its owner signs in with Google.
+A Curator's approval for a specific email address to join Memento once its owner verifies that address.
 _Avoid_: Allowlist
 
 **Invitation**:
@@ -82,6 +90,10 @@ _Avoid_: Instance, Site
 **Mobile App**:
 The viewer-only Memento app for phones. It connects to an Installation and offers viewing and Update Notifications; curation stays on the web.
 _Avoid_: Native app, Client
+
+**Hand-off Code**:
+A single-use code the web sign-in gives the Mobile App so the phone gets a session of its own. It verifies nothing and only moves an already signed-in Person onto their phone, unlike a Sign-in Code.
+_Avoid_: Mobile sign-in code, Exchange code
 
 **Onboarding**:
 The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible to them.

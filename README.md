@@ -429,17 +429,27 @@ HttpOnly, and SameSite=Lax. Google discovery happens on the first sign-in, not
 at startup. A Google outage does not prevent database health checks or use of
 existing Memento sessions.
 
+Memento identifies a Person by their Linked Emails: the verified addresses
+they have signed in with, stored lowercased. Google sign-in is one way to
+verify an address, and every verified address goes through the same rules. A
+Person may have several Linked Emails, and a Curator can unlink one from the
+Person page, which ends its sessions and refuses it until a Curator
+preauthorizes it again. Because the address is the identity, an address handed
+to a new owner still signs in as its Person, so unlink it or deactivate the
+Person when someone leaves.
+
 The first successful sign-in claims an empty installation and creates its first
 Curator. Keep a new installation private until you have claimed it. For later
-people, a Curator must create the Person and preauthorize the exact email Google
-reports. A verified Google email alone does not grant access. Google sign-in
-availability does not bypass Memento's preauthorizations.
+people, a Curator must create the Person and preauthorize the email address
+they will verify. Signing in with that address links it to the Person and uses up
+the Preauthorization. A verified email alone does not grant access, and Google
+sign-in availability does not bypass Memento's preauthorizations.
 
-A verified Google account that Memento does not know creates one pending Access
-Request instead of an account. Repeated sign-ins refresh that request rather
-than creating more, and a denied request absorbs later attempts silently until
-a Curator reconsiders it. Curators review requests under Requests, where
-approval links the identity to an existing Person or creates one and approves
+A verified email that Memento does not know creates one pending Access Request
+instead of a Person. Repeated sign-ins refresh that request rather than
+creating more, and a denied request absorbs later attempts silently until a
+Curator reconsiders it. Curators review requests under Requests, where
+approval links the address to an existing Person or creates one and approves
 the exact email; Album access remains a separate decision in each Album. An
 existing Person who reaches an Album they cannot see gets an explicit Request
 access action, and visiting alone records nothing. Each new request also
@@ -484,9 +494,9 @@ and the bundled ffprobe on request.
   newer login in the same browser cancels the previous pending login.
 - Google unavailable: retry later. Discovery and token requests have a timeout;
   later attempts retry failed discovery.
-- Access denied: use the preauthorized Google account or ask a Curator to
-  preauthorize its exact email. Do not switch production to fake authentication.
-- Access requested: the account is unknown and a Curator now has a pending
+- Access denied: sign in with a Linked Email or ask a Curator to preauthorize
+  the exact address. Do not switch production to fake authentication.
+- Access requested: the address is unknown and a Curator now has a pending
   request for it. Nothing more is needed from the person signing in.
 
 Pending Google logins stay in one server process. The normal single-process
@@ -620,8 +630,8 @@ build of the app accepts `https` addresses only.
 Tap Sign in to open this worktree's web sign-in in the phone's browser sheet.
 It is the same page as on the web, so in development it is the fake sign-in
 form, and a first-time Person completes Onboarding there too. When the page is
-done, Memento sends the sheet back to the app with a single-use code, which the
-app exchanges for a session of its own. The session shows up on the profile
+done, Memento sends the sheet back to the app with a single-use Hand-off
+Code, which the app exchanges for a session of its own. The session shows up on the profile
 page as "Memento on iPhone" or "Memento on Android". The return link is the
 app's own; in Expo Go that is Expo Go's `exp://` link, which the server only
 accepts while `app_env` is `development`.

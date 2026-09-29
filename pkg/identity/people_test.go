@@ -87,11 +87,10 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, other.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 	require.Error(t, err)
-	claims := identity.Claims{Provider: "google", Subject: "alex-subject", Email: "alex@example.test", EmailVerified: true, DisplayName: "Different name"}
+	claims := identity.Claims{Email: "alex@example.test", EmailVerified: true, DisplayName: "Different name"}
 	for _, rejected := range []identity.Claims{
-		{Provider: "google", Subject: "alex-subject", Email: "Alex@example.test", EmailVerified: true, DisplayName: "Alex"},
-		{Provider: "google", Subject: "alex-subject", Email: "alex@example.test", DisplayName: "Alex"},
-		{Provider: "google", Subject: "alex-subject", Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"},
+		{Email: "alex@example.test", DisplayName: "Alex"},
+		{Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"},
 	} {
 		_, err := module.SignIn(t.Context(), rejected)
 		require.Error(t, err)
@@ -106,12 +105,8 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	require.Len(t, detail.Preauthorizations, 1)
 	assert.Equal(t, authorization.ID, detail.Preauthorizations[0].ID)
 	assert.NotNil(t, detail.Preauthorizations[0].ConsumedAt)
-	require.Len(t, detail.Identities, 1)
-	claims.Subject = "another-subject"
-	_, err = module.SignIn(t.Context(), claims)
-	require.ErrorIs(t, err, identity.ErrAccessRequested)
-	claims.Subject = "alex-subject"
-	claims.Email = "changed@example.test"
+	require.Len(t, detail.Emails, 1)
+	claims.DisplayName = "Renamed at the provider"
 	returning, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
 	assert.Equal(t, person.ID, returning.Person.ID)
@@ -120,34 +115,9 @@ func TestPreauthorizationLinksExactVerifiedEmail(t *testing.T) {
 	revoked, err := module.Preauthorize(t.Context(), curator.Token, person.ID, identity.PreauthorizeRequest{Email: "revoked@example.test"})
 	require.NoError(t, err)
 	require.NoError(t, module.RevokePreauthorization(t.Context(), curator.Token, person.ID, revoked.ID))
-	claims.Subject = "revoked-subject"
 	claims.Email = "revoked@example.test"
 	_, err = module.SignIn(t.Context(), claims)
 	require.ErrorIs(t, err, identity.ErrAccessRequested)
-}
-
-func TestPreauthorizationRechecksEmailOwnershipAtConsumption(t *testing.T) {
-	t.Parallel()
-	module := identity.New(testdb.New(t), nil)
-	curator := claimCurator(t, module)
-	first := authorizePerson(t, module, curator, "First", "old@example.test")
-	second, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Second"})
-	require.NoError(t, err)
-	approval, err := module.Preauthorize(t.Context(), curator.Token, second.ID, identity.PreauthorizeRequest{Email: "shared@example.test"})
-	require.NoError(t, err)
-	changed := identity.FakeClaims(identity.SignInRequest{Email: "old@example.test", DisplayName: "First"})
-	changed.Email = "shared@example.test"
-	returning, err := module.SignIn(t.Context(), changed)
-	require.NoError(t, err)
-	assert.Equal(t, first.Person.ID, returning.Person.ID)
-	_, err = module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "shared@example.test", DisplayName: "Second"}))
-	require.ErrorIs(t, err, identity.ErrAccessDenied)
-	detail, err := module.GetPerson(t.Context(), curator.Token, second.ID)
-	require.NoError(t, err)
-	require.Len(t, detail.Preauthorizations, 1)
-	assert.Equal(t, approval.ID, detail.Preauthorizations[0].ID)
-	assert.Nil(t, detail.Preauthorizations[0].ConsumedAt)
-	assert.Empty(t, detail.Identities)
 }
 
 func requirePersonFieldError(t *testing.T, err error, field string) {
@@ -269,7 +239,7 @@ func TestPeopleWithoutLogin(t *testing.T) {
 	assert.Nil(t, people[0].LastSeenAt)
 	detail, err := module.GetPerson(t.Context(), curator.Token, person.ID)
 	require.NoError(t, err)
-	assert.Empty(t, detail.Identities)
+	assert.Empty(t, detail.Emails)
 	assert.Empty(t, detail.Preauthorizations)
 	renamed, err := module.UpdatePerson(t.Context(), curator.Token, person.ID, identity.UpdatePersonRequest{DisplayName: "Alex Smith"})
 	require.NoError(t, err)

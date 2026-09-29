@@ -69,26 +69,26 @@ func (m *Module) personSessions(ctx context.Context, tx bun.Tx, personID models.
 	result := []BrowserSession{}
 	hash := sha256.Sum256([]byte(token))
 	var rows []struct {
-		ID         models.UUID
-		IdentityID models.UUID
-		Email      string
-		Device     string
-		CreatedAt  time.Time
-		RenewedAt  time.Time
-		ExpiresAt  time.Time
-		Current    bool
+		ID            models.UUID
+		LinkedEmailID models.UUID
+		Email         string
+		Device        string
+		CreatedAt     time.Time
+		RenewedAt     time.Time
+		ExpiresAt     time.Time
+		Current       bool
 	}
 	err := tx.NewSelect().TableExpr("sessions AS s").
-		Column("s.id", "s.identity_id", "i.email", "s.device", "s.created_at", "s.renewed_at", "s.expires_at").
+		Column("s.id", "s.linked_email_id", "i.email", "s.device", "s.created_at", "s.renewed_at", "s.expires_at").
 		ColumnExpr("s.token_hash = ? AS current", hash[:]).
-		Join("JOIN identities AS i ON i.id = s.identity_id").
+		Join("JOIN linked_emails AS i ON i.id = s.linked_email_id").
 		Where("i.person_id = ?", personID).Where("i.unlinked_at IS NULL").
 		Where("s.expires_at > ?", m.now().UTC()).Order("s.created_at", "s.id").Scan(ctx, &rows)
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
 	for _, row := range rows {
-		result = append(result, BrowserSession{ID: row.ID.String(), IdentityID: row.IdentityID.String(), Email: row.Email, Device: row.Device, CreatedAt: row.CreatedAt, LastUsedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt, Current: row.Current})
+		result = append(result, BrowserSession{ID: row.ID.String(), LinkedEmailID: row.LinkedEmailID.String(), Email: row.Email, Device: row.Device, CreatedAt: row.CreatedAt, LastUsedAt: row.RenewedAt, ExpiresAt: row.ExpiresAt, Current: row.Current})
 	}
 	return result, nil
 }
@@ -104,8 +104,8 @@ func (m *Module) SignOutEverywhere(ctx context.Context, token string) error {
 }
 
 func revokePersonSessions(ctx context.Context, tx bun.Tx, personID models.UUID) error {
-	identities := tx.NewSelect().Table("identities").Column("id").Where("person_id = ?", personID)
-	_, err := tx.NewDelete().Model((*models.Session)(nil)).Where("identity_id IN (?)", identities).Exec(ctx)
+	emails := tx.NewSelect().Table("linked_emails").Column("id").Where("person_id = ?", personID)
+	_, err := tx.NewDelete().Model((*models.Session)(nil)).Where("linked_email_id IN (?)", emails).Exec(ctx)
 	return errorstack.CaptureContext(ctx, err)
 }
 
@@ -117,8 +117,8 @@ func (m *Module) sessionPerson(ctx context.Context, tx bun.Tx, token string) (mo
 	}
 	hash := sha256.Sum256([]byte(token))
 	err := selectPeople(tx, &person).
-		Join("JOIN identities AS i ON i.person_id = person.id").
-		Join("JOIN sessions AS s ON s.identity_id = i.id").
+		Join("JOIN linked_emails AS i ON i.person_id = person.id").
+		Join("JOIN sessions AS s ON s.linked_email_id = i.id").
 		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).
 		Where("person.deactivated_at IS NULL").Where("i.unlinked_at IS NULL").Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {

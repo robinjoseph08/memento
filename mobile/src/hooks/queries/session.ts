@@ -4,7 +4,7 @@ import { HTTPError } from "@/lib/http";
 import { openSignIn, platformLabel } from "@/lib/sign-in";
 import { useConnection, useCreateHTTP } from "@/providers";
 import type {
-  ExchangeMobileCodeRequest,
+  ExchangeHandoffCodeRequest,
   MobileSession,
   Person,
 } from "@/types/generated/identity";
@@ -27,7 +27,7 @@ export function useSignIn(origin: string) {
         if (code === null) {
           return null;
         }
-        const request: ExchangeMobileCodeRequest = {
+        const request: ExchangeHandoffCodeRequest = {
           code,
           platform: platformLabel(),
         };

@@ -301,10 +301,10 @@ func TestApprovedUpdateEmailRunsOnTheMailQueue(t *testing.T) {
 	person := models.Person{ID: models.NewUUIDv7(), DisplayName: "Alex", OnboardingCompletedAt: &now, CreatedAt: now}
 	_, err = db.NewInsert().Model(&person).Exec(ctx)
 	require.NoError(t, err)
-	identity := models.Identity{ID: models.NewUUIDv7(), PersonID: person.ID, Provider: "fake", Subject: "alex", Email: "alex@example.test", CreatedAt: now}
-	_, err = db.NewInsert().Model(&identity).Exec(ctx)
+	linked := models.LinkedEmail{ID: models.NewUUIDv7(), PersonID: person.ID, Email: "alex@example.test", CreatedAt: now}
+	_, err = db.NewInsert().Model(&linked).Exec(ctx)
 	require.NoError(t, err)
-	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_identity_id = ?, email_updates = true", identity.ID).Where("id = ?", person.ID).Exec(ctx)
+	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_email_id = ?, email_updates = true", linked.ID).Where("id = ?", person.ID).Exec(ctx)
 	require.NoError(t, err)
 	content := staticContent{person.ID.String(): {{AlbumID: album.ID.String(), AlbumTitle: "Coast", EntryID: entry.ID.String(), Kind: "VIDEO"}}}
 

@@ -47,7 +47,7 @@ func (h *Handlers) mobileReturn(c *echo.Context) error {
 		return errorstack.CaptureContext(c.Request().Context(), c.Redirect(http.StatusFound, "/welcome?return_to="+url.QueryEscape(returnTo.String())))
 	}
 	token, bearer := h.credential(c)
-	code, err := h.module.IssueMobileCode(c.Request().Context(), token)
+	code, err := h.module.IssueHandoffCode(c.Request().Context(), token)
 	if err != nil {
 		return err
 	}
@@ -62,11 +62,11 @@ func (h *Handlers) mobileReturn(c *echo.Context) error {
 }
 
 func (h *Handlers) mobileExchange(c *echo.Context) error {
-	var request ExchangeMobileCodeRequest
+	var request ExchangeHandoffCodeRequest
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	session, err := h.module.ExchangeMobileCode(c.Request().Context(), request.Code, request.Platform)
+	session, err := h.module.ExchangeHandoffCode(c.Request().Context(), request.Code, request.Platform)
 	if err != nil {
 		return err
 	}

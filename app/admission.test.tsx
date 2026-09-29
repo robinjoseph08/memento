@@ -32,7 +32,6 @@ const curator = {
 };
 const account = {
   id: "account",
-  provider: "fake",
   email: "alex@example.test",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -46,7 +45,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
       if (path.endsWith("/status"))
         return Response.json({ claimed: true, person, auth_mode: "fake" });
       if (path.endsWith("/identity/profile"))
-        return Response.json({ person, identities: [account] });
+        return Response.json({ person, emails: [account] });
       if (path.endsWith("/identity/onboarding")) {
         completions.push(JSON.parse(String(options?.body)));
         person = {
@@ -106,7 +105,6 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
   const request = {
     id: "request-1",
     kind: "join",
-    provider: "google",
     email: "stranger@example.test",
     email_verified: true,
     display_name: "Stranger",
@@ -159,7 +157,7 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
             avatar_url: "",
           },
           faces: [],
-          identities: [],
+          emails: [],
           preauthorizations: [
             {
               id: "approval",

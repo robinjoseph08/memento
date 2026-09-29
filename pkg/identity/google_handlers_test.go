@@ -28,7 +28,7 @@ func (m *googleHTTPModule) SignIn(_ context.Context, claims identity.Claims) (id
 	if m.signInError != nil {
 		return identity.Session{}, m.signInError
 	}
-	if claims.Subject != "google-subject" || !claims.EmailVerified {
+	if claims.Email != "alex@example.com" || !claims.EmailVerified {
 		return identity.Session{}, identity.ErrUnauthenticated
 	}
 	return identity.Session{Token: "opaque-session", ExpiresAt: time.Now().Add(time.Hour)}, nil
@@ -136,7 +136,7 @@ func TestGoogleHTTPFailures(t *testing.T) {
 		}},
 		{"token rejected", "sign_in_failed", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) { s.tokenStatus = 400 }},
 		{"provider unavailable", "provider_unavailable", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) { s.tokenStatus = 503 }},
-		{"unverified email", "unverified_identity", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
+		{"unverified email", "unverified_email", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {
 			s.claims["email_verified"] = false
 		}},
 		{"no access", "access_denied", func(s *oidcSubstitute, m *googleHTTPModule, c *http.Cookie, q url.Values) {

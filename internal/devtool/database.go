@@ -240,8 +240,12 @@ func (d *DockerDatabase) Rollback(ctx context.Context, env Environment, name str
 	return nil
 }
 
+// dumpAndRestore copies one database into another. Unlogged tables travel
+// without their rows: River's leader election lives in one, its rows belong
+// to the source's own worker, and PostgreSQL empties such tables after any
+// unclean stop, which can leave them unreadable by pg_dump.
 func (d *DockerDatabase) dumpAndRestore(ctx context.Context, env Environment, source, target string) error {
-	dump, err := d.composeCommand(ctx, env, "exec", "-T", "postgres", "pg_dump", "-U", "postgres", "--format=custom", "--no-owner", "--no-privileges", "--dbname="+source)
+	dump, err := d.composeCommand(ctx, env, "exec", "-T", "postgres", "pg_dump", "-U", "postgres", "--format=custom", "--no-owner", "--no-privileges", "--no-unlogged-table-data", "--dbname="+source)
 	if err != nil {
 		return err
 	}

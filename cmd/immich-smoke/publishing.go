@@ -26,7 +26,7 @@ import (
 // Only sign-in middleware is replaced, with a fixed actor per in-process handler.
 func verifyPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, imported []publishing.AlbumDetail, uploaded []fixture.Asset) error {
 	people := identity.New(db, nil)
-	curator, err := people.SignIn(ctx, identity.Claims{Provider: "fake", Subject: "smoke-curator", Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
+	curator, err := people.SignIn(ctx, identity.Claims{Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
 	if err != nil {
 		return err
 	}
@@ -359,7 +359,7 @@ func isNotFound(err error) bool {
 // Memento's validators. Sam has no access and preview cannot download.
 func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, album publishing.AlbumDetail, video fixture.Video) error {
 	people := identity.New(db, nil)
-	curator, err := people.SignIn(ctx, identity.Claims{Provider: "fake", Subject: "smoke-curator", Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
+	curator, err := people.SignIn(ctx, identity.Claims{Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
 	if err != nil {
 		return err
 	}

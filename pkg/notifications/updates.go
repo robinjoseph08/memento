@@ -52,7 +52,7 @@ func notifiablePeople(db bun.IDB, model any) *bun.SelectQuery {
 	return db.NewSelect().Model(model).
 		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.email_updates").
 		ColumnExpr("coalesce(updates.email, '') AS update_email").
-		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id AND updates.unlinked_at IS NULL")
+		Join("LEFT JOIN linked_emails AS updates ON updates.id = person.update_email_id AND updates.unlinked_at IS NULL")
 }
 
 // emailEligible reports whether an update email could go anywhere for an

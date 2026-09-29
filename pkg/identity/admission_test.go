@@ -11,7 +11,7 @@ import (
 )
 
 //nolint:tparallel // Rejected claims must finish before the parent consumes their shared approval.
-func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
+func TestPreauthorizationRaceLinksOneEmail(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	curator := claimCurator(t, module)
@@ -25,9 +25,8 @@ func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
 		claims identity.Claims
 		err    error
 	}{
-		{name: "unverified exact email", claims: identity.Claims{Provider: "google", Subject: "unverified", Email: "alex@example.test", DisplayName: "Alex"}, err: identity.ErrUnverifiedIdentity},
-		{name: "matching name only", claims: identity.Claims{Provider: "google", Subject: "matching-name", Email: "stranger@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessRequested},
-		{name: "email case differs", claims: identity.Claims{Provider: "google", Subject: "case-differs", Email: "Alex@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessRequested},
+		{name: "unverified exact email", claims: identity.Claims{Email: "alex@example.test", DisplayName: "Alex"}, err: identity.ErrUnverifiedEmail},
+		{name: "matching name only", claims: identity.Claims{Email: "stranger@example.test", EmailVerified: true, DisplayName: "Alex"}, err: identity.ErrAccessRequested},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			_, err := module.SignIn(t.Context(), scenario.claims)
@@ -35,55 +34,36 @@ func TestPreauthorizationRaceAdmitsExactlyOneSubject(t *testing.T) {
 		})
 	}
 
+	// Simultaneous sign-ins with the approved address all reach the same
+	// Person through one Linked Email, whichever of them consumed the approval.
 	const attempts = 8
-	type outcome struct {
-		claims  identity.Claims
-		session identity.Session
-		err     error
-	}
-	results := make([]outcome, attempts)
+	sessions := make([]identity.Session, attempts)
+	errs := make([]error, attempts)
 	operations := make([]func(), attempts)
 	for i := range attempts {
-		results[i].claims = identity.Claims{Provider: "google", Subject: fmt.Sprintf("subject-%d", i), Email: "alex@example.test", EmailVerified: true, DisplayName: "Provider name"}
 		operations[i] = func() {
-			results[i].session, results[i].err = module.SignIn(t.Context(), results[i].claims)
+			sessions[i], errs[i] = module.SignIn(t.Context(), identity.Claims{Email: fmt.Sprintf("%s@Example.test", []string{"alex", "Alex", "ALEX"}[i%3]), EmailVerified: true, DisplayName: "Provider name"})
 		}
 	}
 	raceIdentityOperations(operations...)
-	var winner outcome
-	wins := 0
-	for _, result := range results {
-		if result.err == nil {
-			wins++
-			winner = result
-			assert.Equal(t, person.ID, result.session.Person.ID)
-			assert.Equal(t, "Alex", result.session.Person.DisplayName)
-		} else {
-			require.ErrorIs(t, result.err, identity.ErrAccessRequested)
-		}
+	for i := range attempts {
+		require.NoError(t, errs[i])
+		assert.Equal(t, person.ID, sessions[i].Person.ID)
+		assert.Equal(t, "Alex", sessions[i].Person.DisplayName)
 	}
-	require.Equal(t, 1, wins)
 	detail, err := module.GetPerson(t.Context(), curator.Token, person.ID)
 	require.NoError(t, err)
-	require.Len(t, detail.Identities, 1)
+	require.Len(t, detail.Emails, 1)
+	assert.Equal(t, "alex@example.test", detail.Emails[0].Email)
 	require.Len(t, detail.Preauthorizations, 1)
 	assert.Equal(t, approval.ID, detail.Preauthorizations[0].ID)
 	assert.NotNil(t, detail.Preauthorizations[0].ConsumedAt)
 	assert.Nil(t, detail.Person.OnboardingCompletedAt)
+	assert.Len(t, detail.Sessions, attempts)
 
-	// The admitted subject can return without consuming another approval.
-	winner.claims.Email = "changed@example.test"
-	winner.claims.DisplayName = "Changed provider name"
-	returning, err := module.SignIn(t.Context(), winner.claims)
-	require.NoError(t, err)
-	assert.Equal(t, person.ID, returning.Person.ID)
-	assert.Equal(t, "Alex", returning.Person.DisplayName)
-	for _, result := range results {
-		if result.err != nil {
-			_, err := module.SignIn(t.Context(), result.claims)
-			require.ErrorIs(t, err, identity.ErrAccessRequested)
-		}
-	}
+	// A different address is a stranger, whatever name it reports.
+	_, err = module.SignIn(t.Context(), identity.Claims{Email: "changed@example.test", EmailVerified: true, DisplayName: "Alex"})
+	require.ErrorIs(t, err, identity.ErrAccessRequested)
 }
 
 func TestPreauthorizationRaceCannotAuthorizeCompetingPeople(t *testing.T) {
@@ -108,7 +88,7 @@ func TestPreauthorizationRaceCannotAuthorizeCompetingPeople(t *testing.T) {
 	if secondErr == nil {
 		winner, loser = second, first
 	}
-	session, err := module.SignIn(t.Context(), identity.Claims{Provider: "google", Subject: "shared", Email: "shared@example.test", EmailVerified: true, DisplayName: "Shared"})
+	session, err := module.SignIn(t.Context(), identity.Claims{Email: "shared@example.test", EmailVerified: true, DisplayName: "Shared"})
 	require.NoError(t, err)
 	assert.Equal(t, winner.ID, session.Person.ID)
 	_, err = module.Preauthorize(t.Context(), curator.Token, loser.ID, identity.PreauthorizeRequest{Email: "shared@example.test"})
@@ -116,7 +96,7 @@ func TestPreauthorizationRaceCannotAuthorizeCompetingPeople(t *testing.T) {
 	detail, err := module.GetPerson(t.Context(), curator.Token, loser.ID)
 	require.NoError(t, err)
 	assert.Empty(t, detail.Preauthorizations)
-	assert.Empty(t, detail.Identities)
+	assert.Empty(t, detail.Emails)
 }
 
 //nolint:tparallel // Rejected mutations must finish before the parent checks the shared Persons and approval.
@@ -128,8 +108,8 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 	second := authorizePerson(t, module, curator, "Sam", "sam@example.test")
 	profile, err := module.Profile(t.Context(), second.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 1)
-	secondIdentity := profile.Identities[0].ID
+	require.Len(t, profile.Emails, 1)
+	secondEmailID := profile.Emails[0].ID
 	approval, err := module.Preauthorize(t.Context(), curator.Token, second.Person.ID, identity.PreauthorizeRequest{Email: "sam-extra@example.test"})
 	require.NoError(t, err)
 
@@ -160,8 +140,8 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 		{name: "revoke another Person approval", operation: func() error {
 			return module.RevokePreauthorization(t.Context(), first.Token, second.Person.ID, approval.ID)
 		}},
-		{name: "unlink another Person identity", operation: func() error {
-			return module.UnlinkIdentity(t.Context(), first.Token, second.Person.ID, secondIdentity)
+		{name: "unlink another Person's email", operation: func() error {
+			return module.UnlinkEmail(t.Context(), first.Token, second.Person.ID, secondEmailID)
 		}},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -169,9 +149,9 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 		})
 	}
 	// Self-service and Curator routes must also enforce identity-to-Person ownership.
-	err = module.UnlinkIdentity(t.Context(), first.Token, "", secondIdentity)
+	err = module.UnlinkEmail(t.Context(), first.Token, "", secondEmailID)
 	require.Error(t, err)
-	err = module.UnlinkIdentity(t.Context(), curator.Token, first.Person.ID, secondIdentity)
+	err = module.UnlinkEmail(t.Context(), curator.Token, first.Person.ID, secondEmailID)
 	require.Error(t, err)
 	err = module.RevokePreauthorization(t.Context(), curator.Token, first.Person.ID, approval.ID)
 	require.Error(t, err)
@@ -180,11 +160,11 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Sam", detail.Person.DisplayName)
 	assert.Nil(t, detail.Person.DeactivatedAt)
-	require.Len(t, detail.Identities, 1)
-	assert.Equal(t, secondIdentity, detail.Identities[0].ID)
+	require.Len(t, detail.Emails, 1)
+	assert.Equal(t, secondEmailID, detail.Emails[0].ID)
 	_, err = module.Authenticate(t.Context(), second.Token)
 	require.NoError(t, err)
-	linked, err := module.SignIn(t.Context(), identity.Claims{Provider: "google", Subject: "sam-extra", Email: "sam-extra@example.test", EmailVerified: true, DisplayName: "Sam"})
+	linked, err := module.SignIn(t.Context(), identity.Claims{Email: "sam-extra@example.test", EmailVerified: true, DisplayName: "Sam"})
 	require.NoError(t, err)
 	assert.Equal(t, second.Person.ID, linked.Person.ID)
 	self, err := module.Profile(t.Context(), first.Token)
@@ -193,7 +173,10 @@ func TestIdentityOperationsRejectWrongPerson(t *testing.T) {
 	assert.False(t, self.Person.IsCurator)
 }
 
-func TestKnownSubjectCannotMoveToAnotherPreauthorizedPerson(t *testing.T) {
+// TestUnlinkedEmailFollowsTheNextPreauthorization covers the address a
+// Curator unlinked: refused on its own, admitted to whichever Person a Curator
+// preauthorizes next, whether or not its old Person is deactivated.
+func TestUnlinkedEmailFollowsTheNextPreauthorization(t *testing.T) {
 	t.Parallel()
 	module := identity.New(testdb.New(t), nil)
 	curator := claimCurator(t, module)
@@ -205,33 +188,30 @@ func TestKnownSubjectCannotMoveToAnotherPreauthorizedPerson(t *testing.T) {
 			claims := identity.FakeClaims(identity.SignInRequest{Email: email, DisplayName: "Original"})
 			profile, err := module.Profile(t.Context(), original.Token)
 			require.NoError(t, err)
-			require.Len(t, profile.Identities, 1)
-			originalIdentityID := profile.Identities[0].ID
-			require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, original.Person.ID, originalIdentityID))
+			require.Len(t, profile.Emails, 1)
+			originalLinkedEmailID := profile.Emails[0].ID
+			require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, original.Person.ID, originalLinkedEmailID))
 			if deactivated {
 				_, err = module.UpdatePerson(t.Context(), curator.Token, original.Person.ID, identity.UpdatePersonRequest{DisplayName: "Original", Deactivated: true})
 				require.NoError(t, err)
 			}
-			other, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Other"})
-			require.NoError(t, err)
-			approval, err := module.Preauthorize(t.Context(), curator.Token, other.ID, identity.PreauthorizeRequest{Email: email})
-			require.NoError(t, err)
 			_, err = module.SignIn(t.Context(), claims)
 			require.ErrorIs(t, err, identity.ErrAccessDenied)
 			_, err = module.Authenticate(t.Context(), original.Token)
 			require.ErrorIs(t, err, identity.ErrUnauthenticated)
-			detail, err := module.GetPerson(t.Context(), curator.Token, other.ID)
+			other, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Other"})
 			require.NoError(t, err)
-			assert.Empty(t, detail.Identities)
-			require.Len(t, detail.Preauthorizations, 1)
-			assert.Equal(t, approval.ID, detail.Preauthorizations[0].ID)
-			assert.Nil(t, detail.Preauthorizations[0].ConsumedAt)
-
-			newClaims := claims
-			newClaims.Subject += "-different-subject"
-			admitted, err := module.SignIn(t.Context(), newClaims)
+			approval, err := module.Preauthorize(t.Context(), curator.Token, other.ID, identity.PreauthorizeRequest{Email: email})
+			require.NoError(t, err)
+			admitted, err := module.SignIn(t.Context(), claims)
 			require.NoError(t, err)
 			assert.Equal(t, other.ID, admitted.Person.ID)
+			detail, err := module.GetPerson(t.Context(), curator.Token, other.ID)
+			require.NoError(t, err)
+			require.Len(t, detail.Emails, 1)
+			require.Len(t, detail.Preauthorizations, 1)
+			assert.Equal(t, approval.ID, detail.Preauthorizations[0].ID)
+			assert.NotNil(t, detail.Preauthorizations[0].ConsumedAt)
 			_, err = module.UpdatePerson(t.Context(), curator.Token, original.Person.ID, identity.UpdatePersonRequest{DisplayName: "Original"})
 			require.NoError(t, err)
 			claims.Email = fmt.Sprintf("relinked-%t@example.test", deactivated)
@@ -242,8 +222,8 @@ func TestKnownSubjectCannotMoveToAnotherPreauthorizedPerson(t *testing.T) {
 			assert.Equal(t, original.Person.ID, relinked.Person.ID)
 			profile, err = module.Profile(t.Context(), relinked.Token)
 			require.NoError(t, err)
-			require.Len(t, profile.Identities, 1)
-			assert.Equal(t, originalIdentityID, profile.Identities[0].ID)
+			require.Len(t, profile.Emails, 1)
+			assert.NotEqual(t, originalLinkedEmailID, profile.Emails[0].ID, "the unlinked address stays unlinked")
 		})
 	}
 }

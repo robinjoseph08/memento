@@ -1,7 +1,7 @@
 import { Link2, Unlink } from "lucide-react";
 
 import { formatDate } from "../../lib/utils";
-import type { LinkedIdentity } from "../../types/generated/identity";
+import type { LinkedEmail } from "../../types/generated/identity";
 import { ConfirmAction } from "../forms/confirm-action";
 import { SectionHeading } from "../people/form-fields";
 import { EmptyState } from "../shell/empty-state";
@@ -14,34 +14,34 @@ import {
   TableRow,
 } from "../ui/table";
 
-export function LinkedIdentities({
-  identities,
+export function LinkedEmails({
+  emails,
   canUnlinkLast,
   pending,
   error,
   unlink,
 }: {
-  identities: LinkedIdentity[];
+  emails: LinkedEmail[];
   canUnlinkLast: boolean;
   pending: boolean;
   error: unknown;
   unlink: (id: string) => Promise<unknown>;
 }) {
-  const keepLast = !canUnlinkLast && identities.length === 1;
+  const keepLast = !canUnlinkLast && emails.length === 1;
   return (
     <section
-      aria-labelledby="linked-accounts"
+      aria-labelledby="linked-emails"
       className="min-w-0 border-t border-border py-8"
     >
-      <SectionHeading icon={Link2} id="linked-accounts">
-        Linked accounts
+      <SectionHeading icon={Link2} id="linked-emails">
+        Linked emails
       </SectionHeading>
       <p className="mt-3 mb-5 max-w-150 text-sm text-muted">
-        Unlinking an account signs out all browsers using it.
+        Unlinking an email signs out all browsers using it.
       </p>
-      {identities.length ? (
+      {emails.length ? (
         <Table
-          aria-labelledby="linked-accounts"
+          aria-labelledby="linked-emails"
           className="table-fixed sm:table-auto"
         >
           <TableHeader>
@@ -56,29 +56,29 @@ export function LinkedIdentities({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {identities.map((identity) => (
-              <TableRow key={identity.id}>
+            {emails.map((linked) => (
+              <TableRow key={linked.id}>
                 <TableCell className="wrap-anywhere sm:min-w-40">
-                  <p>{identity.email}</p>
+                  <p>{linked.email}</p>
                   <p className="mt-2 text-xs text-muted sm:hidden">
                     Linked{" "}
                     <span className="inline-block">
-                      {formatDate(identity.created_at)}
+                      {formatDate(linked.created_at)}
                     </span>
                   </p>
                 </TableCell>
                 <TableCell className="hidden text-xs whitespace-nowrap text-muted sm:table-cell">
-                  {formatDate(identity.created_at)}
+                  {formatDate(linked.created_at)}
                 </TableCell>
                 <TableCell className="py-2.5 text-right">
                   <ConfirmAction
                     compact
-                    description="This account will no longer be able to sign in, and its browser sessions will end."
+                    description="This email will no longer be able to sign in, and its browser sessions will end."
                     disabled={keepLast}
                     error={error}
                     icon={Unlink}
-                    label={`Unlink ${identity.email}`}
-                    onConfirm={() => unlink(identity.id)}
+                    label={`Unlink ${linked.email}`}
+                    onConfirm={() => unlink(linked.id)}
                     pending={pending}
                     triggerLabel="Unlink"
                   />
@@ -88,11 +88,11 @@ export function LinkedIdentities({
           </TableBody>
         </Table>
       ) : (
-        <EmptyState icon={Link2}>No accounts linked yet.</EmptyState>
+        <EmptyState icon={Link2}>No emails linked yet.</EmptyState>
       )}
       {keepLast && (
         <p className="mt-3 text-xs text-muted">
-          Keep at least one linked account so you can sign in.
+          Keep at least one linked email so you can sign in.
         </p>
       )}
     </section>

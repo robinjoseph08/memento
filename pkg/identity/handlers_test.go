@@ -53,17 +53,17 @@ func (f *fakeIdentity) Sessions(_ context.Context, token string) ([]identity.Bro
 	f.listedFor = token
 	return []identity.BrowserSession{}, f.err
 }
-func (f *fakeIdentity) IssueMobileCode(_ context.Context, token string) (string, error) {
+func (f *fakeIdentity) IssueHandoffCode(_ context.Context, token string) (string, error) {
 	f.issuedFor = token
 	if f.expectedToken != "" && token != f.expectedToken {
 		return "", identity.ErrUnauthenticated
 	}
 	return strings.Repeat("c", 43), f.err
 }
-func (f *fakeIdentity) ExchangeMobileCode(_ context.Context, code, platform string) (identity.Session, error) {
+func (f *fakeIdentity) ExchangeHandoffCode(_ context.Context, code, platform string) (identity.Session, error) {
 	f.exchanged = [2]string{code, platform}
 	if code != strings.Repeat("c", 43) {
-		return identity.Session{}, identity.ErrMobileCodeInvalid
+		return identity.Session{}, identity.ErrHandoffCodeInvalid
 	}
 	return f.session, f.err
 }

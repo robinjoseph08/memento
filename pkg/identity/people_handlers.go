@@ -139,10 +139,10 @@ func (h *Handlers) signOutEverywhere(c *echo.Context) error {
 	return emptyResult(c, nil)
 }
 
-func (h *Handlers) unlinkIdentity(c *echo.Context) error {
+func (h *Handlers) unlinkEmail(c *echo.Context) error {
 	var request struct{}
 	if err := c.Bind(&request); err != nil {
 		return err
 	}
-	return emptyResult(c, h.module.UnlinkIdentity(c.Request().Context(), h.browserToken(c), c.Param("id"), c.Param("identityID")))
+	return emptyResult(c, h.module.UnlinkEmail(c.Request().Context(), h.browserToken(c), c.Param("id"), c.Param("emailID")))
 }

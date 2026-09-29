@@ -17,7 +17,7 @@ import {
   usePreauthorize,
   useRevokePreauthorization,
   useSetPersonAvatar,
-  useUnlinkPersonIdentity,
+  useUnlinkPersonEmail,
   useUpdatePerson,
 } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
@@ -27,7 +27,8 @@ import type {
   PersonDetail,
   UpdatePersonRequest,
 } from "../../types/generated/identity";
-import { LinkedIdentities } from "../identity/linked-identities";
+import { ConfirmDialog } from "../forms/confirm-dialog";
+import { LinkedEmails } from "../identity/linked-emails";
 import { SessionTable } from "../identity/session-table";
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -57,7 +58,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
   const update = useUpdatePerson(person.id);
   const preauthorize = usePreauthorize(person.id);
   const revoke = useRevokePreauthorization(person.id);
-  const unlink = useUnlinkPersonIdentity(person.id);
+  const unlink = useUnlinkPersonEmail(person.id);
   const sendInvitation = useSendInvitation(person.id);
   const retryInvitation = useRetryInvitation(person.id);
   const inviteError = sendInvitation.error ?? retryInvitation.error;
@@ -67,6 +68,8 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
     dirty || !!email || update.isPending || preauthorize.isPending,
   );
   const errors = fieldErrors(update.error);
+  const [confirmingDeactivation, setConfirmingDeactivation] = useState(false);
+  const save = () => update.mutate(values, { onSuccess: () => setDraft(null) });
   return (
     <>
       <h1 className={headingClass}>{person.display_name}</h1>
@@ -84,8 +87,12 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
               error={update.error}
               onSubmit={(event) => {
                 event.preventDefault();
-                if (!update.isPending)
-                  update.mutate(values, { onSuccess: () => setDraft(null) });
+                if (update.isPending) return;
+                if (values.deactivated && !person.deactivated_at) {
+                  setConfirmingDeactivation(true);
+                  return;
+                }
+                save();
               }}
             >
               <fieldset disabled={update.isPending}>
@@ -148,6 +155,17 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
                 </p>
               )}
             </Form>
+            <ConfirmDialog
+              confirmLabel="Deactivate"
+              description={`${values.display_name.trim() || person.display_name} will be signed out everywhere and unable to sign in until you reactivate them.`}
+              onConfirm={() => {
+                setConfirmingDeactivation(false);
+                save();
+              }}
+              onOpenChange={setConfirmingDeactivation}
+              open={confirmingDeactivation}
+              title="Deactivate this person?"
+            />
           </section>
           <AvatarEditor detail={detail} />
           <section
@@ -198,18 +216,18 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
           </section>
         </div>
         <div className="min-w-0 min-[1201px]:[&>section:first-child]:border-0 min-[1201px]:[&>section:first-child]:pt-0">
-          <LinkedIdentities
+          <LinkedEmails
             canUnlinkLast={!!identity?.person && !isSelf}
+            emails={detail.emails}
             error={unlink.error}
-            identities={detail.identities}
             pending={unlink.isPending}
             unlink={unlink.mutateAsync}
           />
           <section className="border-t border-border py-8">
             <SectionHeading icon={MailCheck}>Preauthorizations</SectionHeading>
             <p className="mt-3 mb-6 max-w-150 text-sm text-muted">
-              Enter the exact Google email address, including uppercase and
-              lowercase letters. Signing in with that address links it to this
+              Enter the email address this person will sign in with; letter case
+              does not matter. Signing in with that address links it to this
               person. Approval does not expire and does not send an email; use
               Invite to send a sign-in email to an approved address.
             </p>

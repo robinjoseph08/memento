@@ -33,7 +33,7 @@ function serve(initial: Record<string, unknown> | null, authMode = "fake") {
         return Response.json(person);
       }
       if (path.endsWith("/identity/profile"))
-        return Response.json({ person, identities: [] });
+        return Response.json({ person, emails: [] });
       if (path.endsWith("/identity/onboarding")) {
         person = {
           ...member,

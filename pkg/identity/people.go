@@ -14,16 +14,16 @@ import (
 	"github.com/uptrace/bun"
 )
 
-var ErrFinalCurator = &errcodes.Error{HTTPCode: 409, Code: "final_curator", Message: "Keep at least one active Curator with a linked sign-in account before making this change."}
+var ErrFinalCurator = &errcodes.Error{HTTPCode: 409, Code: "final_curator", Message: "Keep at least one active Curator with a linked email before making this change."}
 
 // protectCuratorAccess prevents both role changes and unlinking from leaving
 // an installation that no Curator can sign in to administer.
 func protectCuratorAccess(ctx context.Context, tx bun.Tx, excluding models.UUID) error {
-	linkedIdentities := tx.NewSelect().TableExpr("identities AS i").Column("i.id").
+	linkedEmails := tx.NewSelect().TableExpr("linked_emails AS i").Column("i.id").
 		Where("i.person_id = person.id").Where("i.unlinked_at IS NULL")
 	remaining, err := tx.NewSelect().Model((*models.Person)(nil)).
 		Where("person.id <> ? AND person.is_curator = true AND person.deactivated_at IS NULL", excluding).
-		Where("EXISTS (?)", linkedIdentities).Exists(ctx)
+		Where("EXISTS (?)", linkedEmails).Exists(ctx)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
 	}
@@ -52,10 +52,10 @@ func (m *Module) change(ctx context.Context, fn func(context.Context, bun.Tx) er
 
 func selectPeople(tx bun.Tx, model any) *bun.SelectQuery {
 	return tx.NewSelect().Model(model).
-		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_identity_id", "person.email_updates", "person.avatar_face_id", "person.created_at").
+		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_email_id", "person.email_updates", "person.avatar_face_id", "person.created_at").
 		ColumnExpr("COALESCE(updates.email, '') AS update_email").
 		ColumnExpr("(SELECT coalesce(max(face.source_version), '') FROM media_face_associations AS face WHERE face.source_face_id = person.avatar_face_id) AS avatar_version").
-		Join("LEFT JOIN identities AS updates ON updates.id = person.update_identity_id")
+		Join("LEFT JOIN linked_emails AS updates ON updates.id = person.update_email_id")
 }
 
 func personByID(ctx context.Context, tx bun.Tx, id string) (models.Person, error) {
@@ -148,7 +148,7 @@ func signInStanding(ctx context.Context, tx bun.Tx, people []models.Person) (map
 	}
 	err := tx.NewSelect().TableExpr("sessions AS s").
 		ColumnExpr("i.person_id").ColumnExpr("max(s.renewed_at) AS renewed_at").
-		Join("JOIN identities AS i ON i.id = s.identity_id").
+		Join("JOIN linked_emails AS i ON i.id = s.linked_email_id").
 		Where("i.person_id IN (?)", bun.List(ids)).Where("i.unlinked_at IS NULL").
 		GroupExpr("i.person_id").Scan(ctx, &seen)
 	if err != nil {
@@ -173,8 +173,8 @@ func signInStanding(ctx context.Context, tx bun.Tx, people []models.Person) (map
 		summary.Access = "approved"
 		result[approval.PersonID] = summary
 	}
-	var identities []models.Identity
-	err = tx.NewSelect().Model(&identities).Where("person_id IN (?)", bun.List(ids)).
+	var emails []models.LinkedEmail
+	err = tx.NewSelect().Model(&emails).Where("person_id IN (?)", bun.List(ids)).
 		Where("unlinked_at IS NULL").Order("created_at", "id").Scan(ctx)
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
@@ -183,20 +183,20 @@ func signInStanding(ctx context.Context, tx bun.Tx, people []models.Person) (map
 	for _, person := range people {
 		onboarded[person.ID] = person.OnboardingCompletedAt != nil
 	}
-	for _, identity := range identities {
-		summary := result[identity.PersonID]
-		summary.Email = identity.Email
+	for _, linked := range emails {
+		summary := result[linked.PersonID]
+		summary.Email = linked.Email
 		summary.Access = "linked"
-		if onboarded[identity.PersonID] {
+		if onboarded[linked.PersonID] {
 			summary.Access = "onboarded"
 		}
-		result[identity.PersonID] = summary
+		result[linked.PersonID] = summary
 	}
 	return result, nil
 }
 
 func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail, error) {
-	result := PersonDetail{Faces: []LinkedFace{}, Identities: []LinkedIdentity{}, Preauthorizations: []Preauthorization{}, Invitations: []Invitation{}, Sessions: []BrowserSession{}}
+	result := PersonDetail{Faces: []LinkedFace{}, Emails: []LinkedEmail{}, Preauthorizations: []Preauthorization{}, Invitations: []Invitation{}, Sessions: []BrowserSession{}}
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := m.actor(ctx, tx, token, true); err != nil {
 			return err
@@ -210,7 +210,7 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 		if err != nil {
 			return err
 		}
-		result.Identities, err = linkedIdentities(ctx, tx, person.ID)
+		result.Emails, err = linkedEmails(ctx, tx, person.ID)
 		if err != nil {
 			return err
 		}

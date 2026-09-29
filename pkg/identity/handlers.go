@@ -30,8 +30,8 @@ type AuthenticationUseCases interface {
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
-	IssueMobileCode(context.Context, string) (string, error)
-	ExchangeMobileCode(context.Context, string, string) (Session, error)
+	IssueHandoffCode(context.Context, string) (string, error)
+	ExchangeHandoffCode(context.Context, string, string) (Session, error)
 }
 
 type FaceUseCases interface {
@@ -55,7 +55,7 @@ type ProfileUseCases interface {
 	UpdateProfile(context.Context, string, UpdateProfileRequest) (Profile, error)
 	Sessions(context.Context, string) ([]BrowserSession, error)
 	SignOutEverywhere(context.Context, string) error
-	UnlinkIdentity(context.Context, string, string, string) error
+	UnlinkEmail(context.Context, string, string, string) error
 }
 
 type Handlers struct {

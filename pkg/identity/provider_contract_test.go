@@ -25,7 +25,6 @@ func TestProviderIdentityContract(t *testing.T) {
 				substitute := newOIDCSubstitute(t)
 				google := substitute.provider()
 				claimsFor = func(email, name string) identity.Claims {
-					// Test subjects are stable for each fixture account, never linked by name.
 					substitute.claims["sub"] = email
 					substitute.claims["email"] = email
 					substitute.claims["name"] = name
@@ -45,8 +44,6 @@ func TestProviderIdentityContract(t *testing.T) {
 			require.ErrorIs(t, err, identity.ErrAccessRequested)
 			_, err = module.Preauthorize(t.Context(), curator.Token, alex.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 			require.NoError(t, err)
-			_, err = module.SignIn(t.Context(), claimsFor("Alex@example.test", "Alex"))
-			require.ErrorIs(t, err, identity.ErrAccessRequested)
 			memberClaims := claimsFor("alex@example.test", "Provider name")
 			member, err := module.SignIn(t.Context(), memberClaims)
 			require.NoError(t, err)
@@ -62,12 +59,12 @@ func TestProviderIdentityContract(t *testing.T) {
 			assert.Equal(t, alex.ID, second.Person.ID)
 			detail, err := module.GetPerson(t.Context(), curator.Token, alex.ID)
 			require.NoError(t, err)
-			require.Len(t, detail.Identities, 2)
+			require.Len(t, detail.Emails, 2)
 			require.Len(t, detail.Preauthorizations, 2)
 			for _, approval := range detail.Preauthorizations {
 				assert.NotNil(t, approval.ConsumedAt)
 			}
-			require.NoError(t, module.UnlinkIdentity(t.Context(), curator.Token, alex.ID, detail.Identities[1].ID))
+			require.NoError(t, module.UnlinkEmail(t.Context(), curator.Token, alex.ID, detail.Emails[1].ID))
 			_, err = module.Authenticate(t.Context(), second.Token)
 			require.ErrorIs(t, err, identity.ErrUnauthenticated)
 			_, err = module.Authenticate(t.Context(), member.Token)

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"errors"
 	"net/mail"
 	"strings"
 
@@ -84,21 +85,30 @@ func fieldError(field, message string) error {
 	return errcodes.ValidationFields("Check the highlighted fields.", map[string]string{field: message})
 }
 
-func validateClaims(claims Claims) error {
+// normalizeClaims admits only a verified, well-formed address and returns it
+// lowercased, which is how every Linked Email is stored and compared.
+func normalizeClaims(claims Claims) (Claims, error) {
 	if !claims.EmailVerified {
-		return ErrUnverifiedIdentity
+		return claims, ErrUnverifiedEmail
 	}
-	email, err := mail.ParseAddress(claims.Email)
-	if err != nil || email.Address != claims.Email || len(claims.Email) > 254 {
-		return ErrUnverifiedIdentity
+	email, err := normalizeEmail(claims.Email)
+	if err != nil {
+		return claims, ErrUnverifiedEmail
 	}
-	if claims.Provider == "" || strings.TrimSpace(claims.Subject) == "" || len([]rune(claims.Subject)) > 255 || strings.TrimSpace(claims.DisplayName) == "" || len([]rune(claims.DisplayName)) > 100 {
-		return ErrUnverifiedIdentity
+	claims.Email = email
+	claims.DisplayName = strings.TrimSpace(claims.DisplayName)
+	if claims.DisplayName == "" || len([]rune(claims.DisplayName)) > 100 || strings.ContainsRune(claims.DisplayName, 0) {
+		return claims, ErrUnverifiedEmail
 	}
-	for _, value := range []string{claims.Provider, claims.Subject, claims.Email, claims.DisplayName} {
-		if strings.ContainsRune(value, 0) {
-			return ErrUnverifiedIdentity
-		}
+	return claims, nil
+}
+
+// normalizeEmail accepts one bare address and lowercases it.
+func normalizeEmail(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	parsed, err := mail.ParseAddress(value)
+	if err != nil || parsed.Address != value || len(value) > 254 || strings.ContainsRune(value, 0) {
+		return "", errors.New("invalid email address")
 	}
-	return nil
+	return strings.ToLower(value), nil
 }

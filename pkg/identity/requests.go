@@ -47,7 +47,7 @@ func selectAccessRequests(db bun.IDB) *bun.SelectQuery {
 }
 
 func projectAccessRequest(row accessRequestRow) AccessRequest {
-	result := AccessRequest{ID: row.ID.String(), Kind: row.Kind, Provider: row.Provider, Email: row.Email, EmailVerified: row.EmailVerified, DisplayName: row.DisplayName,
+	result := AccessRequest{ID: row.ID.String(), Kind: row.Kind, Email: row.Email, EmailVerified: row.EmailVerified, DisplayName: row.DisplayName,
 		PersonName: row.PersonName, AlbumTitle: row.AlbumTitle, Status: row.Status, SignInCount: row.SignInCount,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ResolvedAt: row.ResolvedAt, ResolvedBy: row.ResolvedByName}
 	if row.PersonID != nil {
@@ -59,34 +59,34 @@ func projectAccessRequest(row accessRequestRow) AccessRequest {
 	return result
 }
 
-// recordAccessRequest keeps one open request per unknown identity. Repeated
+// recordAccessRequest keeps one open request per unknown address. Repeated
 // sign-ins refresh it, and a denied request absorbs them silently until a
 // Curator reconsiders. Only a brand-new request alerts Curators by email.
 func (m *Module) recordAccessRequest(ctx context.Context, tx bun.Tx, claims Claims) error {
 	open, err := tx.NewSelect().Model((*models.AccessRequest)(nil)).
-		Where("request.provider = ? AND request.subject = ? AND request.status <> 'approved' AND request.kind = 'join'", claims.Provider, claims.Subject).Exists(ctx)
+		Where("request.email = ? AND request.status <> 'approved' AND request.kind = 'join'", claims.Email).Exists(ctx)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
 	}
 	now := m.now().UTC()
-	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Provider: claims.Provider, Subject: claims.Subject, Email: claims.Email, EmailVerified: claims.EmailVerified,
-		DisplayName: strings.TrimSpace(claims.DisplayName), Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
+	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Email: claims.Email, EmailVerified: claims.EmailVerified,
+		DisplayName: claims.DisplayName, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 	_, err = tx.NewInsert().Model(&row).
-		On("CONFLICT (provider, subject) WHERE status <> 'approved' AND kind = 'join' DO UPDATE").
-		Set("email = EXCLUDED.email, display_name = EXCLUDED.display_name, sign_in_count = request.sign_in_count + 1, updated_at = EXCLUDED.updated_at").Exec(ctx)
+		On("CONFLICT (email) WHERE status <> 'approved' AND kind = 'join' DO UPDATE").
+		Set("display_name = EXCLUDED.display_name, sign_in_count = request.sign_in_count + 1, updated_at = EXCLUDED.updated_at").Exec(ctx)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
 	}
 	if open {
 		return nil
 	}
-	return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to join Memento", claims.Email), fmt.Sprintf(`%s (%s) signed in to Memento with a verified Google account that has no access yet.
+	return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to join Memento", claims.Email), fmt.Sprintf(`%s (%s) signed in to Memento with a verified email address that has no access yet.
 
 Review the request and decide whether to link or create a person:
 %s/curator/requests
 
 Nothing is shared until you approve it and grant album access.
-`, strings.TrimSpace(claims.DisplayName), claims.Email, strings.TrimRight(m.PublicURL, "/")))
+`, claims.DisplayName, claims.Email, strings.TrimRight(m.PublicURL, "/")))
 }
 
 // alertCurators emails every active Curator with a selected email once per
@@ -97,7 +97,7 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 	}
 	var recipients []string
 	err := tx.NewSelect().TableExpr("persons AS person").ColumnExpr("updates.email").
-		Join("JOIN identities AS updates ON updates.id = person.update_identity_id AND updates.unlinked_at IS NULL").
+		Join("JOIN linked_emails AS updates ON updates.id = person.update_email_id AND updates.unlinked_at IS NULL").
 		Where("person.is_curator AND person.deactivated_at IS NULL").OrderExpr("updates.email").Scan(ctx, &recipients)
 	if err != nil {
 		return errorstack.CaptureContext(ctx, err)
@@ -114,22 +114,22 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 	return nil
 }
 
-// sessionIdentity returns the linked identity behind a live session, under the
+// sessionEmail returns the Linked Email behind a live session, under the
 // same checks as sessionPerson.
-func (m *Module) sessionIdentity(ctx context.Context, tx bun.Tx, token string) (models.Identity, error) {
-	var identity models.Identity
+func (m *Module) sessionEmail(ctx context.Context, tx bun.Tx, token string) (models.LinkedEmail, error) {
+	var linked models.LinkedEmail
 	if len(token) != 43 {
-		return identity, ErrUnauthenticated
+		return linked, ErrUnauthenticated
 	}
 	hash := sha256.Sum256([]byte(token))
-	err := tx.NewSelect().Model(&identity).Join("JOIN sessions AS s ON s.identity_id = identity.id").
-		Join("JOIN persons AS person ON person.id = identity.person_id").
+	err := tx.NewSelect().Model(&linked).Join("JOIN sessions AS s ON s.linked_email_id = linked_email.id").
+		Join("JOIN persons AS person ON person.id = linked_email.person_id").
 		Where("s.token_hash = ?", hash[:]).Where("s.expires_at > ?", m.now().UTC()).
-		Where("identity.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
+		Where("linked_email.unlinked_at IS NULL").Where("person.deactivated_at IS NULL").Scan(ctx)
 	if errors.Is(err, sql.ErrNoRows) {
-		return identity, ErrUnauthenticated
+		return linked, ErrUnauthenticated
 	}
-	return identity, errorstack.CaptureContext(ctx, err)
+	return linked, errorstack.CaptureContext(ctx, err)
 }
 
 // RequestAlbumAccess is the explicit action for an existing Person who reached
@@ -142,7 +142,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		if err != nil {
 			return err
 		}
-		identity, err := m.sessionIdentity(ctx, tx, token)
+		linked, err := m.sessionEmail(ctx, tx, token)
 		if err != nil {
 			return err
 		}
@@ -164,7 +164,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 			return errorstack.CaptureContext(ctx, err)
 		}
 		now := m.now().UTC()
-		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Provider: identity.Provider, Subject: identity.Subject, Email: identity.Email, EmailVerified: true,
+		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Email: linked.Email, EmailVerified: true,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 		_, err = tx.NewInsert().Model(&row).
 			On("CONFLICT (person_id, album_id) WHERE status <> 'approved' AND kind = 'album' DO UPDATE").
@@ -221,8 +221,8 @@ func accessRequestByID(ctx context.Context, tx bun.Tx, id string) (accessRequest
 	return row, errorstack.CaptureContext(ctx, err)
 }
 
-// ApproveAccessRequest records the decision and, for an unknown identity,
-// links or creates the Person and adds the verified-email Preauthorization.
+// ApproveAccessRequest records the decision and, for an unknown address,
+// chooses or creates the Person and adds the Preauthorization that admits it.
 // It never writes an Access Decision: Album access stays a separate review.
 func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, request ApproveAccessRequestRequest) (AccessRequest, error) {
 	var result AccessRequest
@@ -241,7 +241,7 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 		}
 		now := m.now().UTC()
 		if row.Kind == RequestJoin {
-			person, err := m.admitRequestedIdentity(ctx, tx, row.AccessRequest, request, now)
+			person, err := m.admitRequestedAddress(ctx, tx, row.AccessRequest, request, now)
 			if err != nil {
 				return err
 			}
@@ -262,9 +262,9 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 	return result, err
 }
 
-// admitRequestedIdentity chooses or creates the Person and approves the exact
-// verified email so the next ordinary sign-in links the identity.
-func (m *Module) admitRequestedIdentity(ctx context.Context, tx bun.Tx, row models.AccessRequest, request ApproveAccessRequestRequest, now time.Time) (models.Person, error) {
+// admitRequestedAddress chooses or creates the Person and approves the exact
+// verified email so the next ordinary sign-in links it.
+func (m *Module) admitRequestedAddress(ctx context.Context, tx bun.Tx, row models.AccessRequest, request ApproveAccessRequestRequest, now time.Time) (models.Person, error) {
 	var person models.Person
 	switch {
 	case request.PersonID != "" && strings.TrimSpace(request.DisplayName) != "":
@@ -291,11 +291,15 @@ func (m *Module) admitRequestedIdentity(ctx context.Context, tx bun.Tx, row mode
 			return person, errorstack.CaptureContext(ctx, err)
 		}
 	}
-	linkedElsewhere, err := tx.NewSelect().Model((*models.Identity)(nil)).Where("email = ? AND person_id <> ? AND unlinked_at IS NULL", row.Email, person.ID).Exists(ctx)
+	holder, held, err := linkedHolder(ctx, tx, row.Email)
 	if err != nil {
-		return person, errorstack.CaptureContext(ctx, err)
+		return person, err
 	}
-	if linkedElsewhere {
+	switch {
+	case held && holder == person.ID:
+		// The address was preauthorized and linked while the request waited.
+		return person, nil
+	case held:
 		return person, ErrEmailInUse
 	}
 	var existing models.Preauthorization

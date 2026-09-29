@@ -40,11 +40,6 @@ import {
   SectionHeading,
 } from "./form-fields";
 
-const providerLabels: Record<string, string> = {
-  google: "Google",
-  fake: "Fake sign-in",
-};
-
 export function RequestsPage() {
   const requests = useAccessRequests();
   const pending = requests.data?.filter((r) => r.status === "pending") ?? [];
@@ -140,7 +135,6 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </span>{" "}
             <span className="text-muted">
               {request.email} ·{" "}
-              {providerLabels[request.provider] ?? request.provider} ·{" "}
               <span className="inline-flex items-center gap-1 align-baseline">
                 {request.email_verified ? (
                   <BadgeCheck
@@ -183,8 +177,8 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </p>
           ) : (
             <p className="mt-2 text-sm text-muted">
-              Signed in with an account Memento does not know. The name comes
-              from the sign-in provider and is not proof of who this is.
+              Signed in with an email Memento does not know. The name comes from
+              the sign-in and is not proof of who this is.
             </p>
           )}
           <p className="mt-2 text-xs text-muted">
@@ -334,7 +328,7 @@ function ApproveDialog({
         </DialogTitle>
         <DialogDescription className="mt-3 mb-5 text-sm text-muted">
           Choose who this is. Memento approves the exact email for that person
-          so their next sign-in links the account. Album access is a separate
+          so their next sign-in links the address. Album access is a separate
           step, and you can send an invitation from the person's page.
         </DialogDescription>
         <Form

@@ -45,7 +45,7 @@ func invitationMessage(publicURL, personName, curatorName, email string) notific
 Sign in with Google using %s to get started:
 %s/sign-in
 
-Access is tied to that exact Google account, so signing in with a different email will not work. If you were not expecting this, you can ignore this message.
+Access is tied to this email address, so signing in with a different one will not work. If you were not expecting this, you can ignore this message.
 `, personName, curatorName, email, strings.TrimRight(publicURL, "/"))
 	return notifications.Message{Kind: "invitation", To: email, Subject: fmt.Sprintf("%s invited you to Memento", curatorName), Body: body}
 }

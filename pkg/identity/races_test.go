@@ -40,7 +40,7 @@ func TestDeactivationRacesSignInAndRenewal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, first.Person.ID, identity.PreauthorizeRequest{Email: "other@example.test"})
 	require.NoError(t, err)
-	otherClaims := identity.Claims{Provider: "google", Subject: "other", Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"}
+	otherClaims := identity.Claims{Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"}
 	other, err := module.SignIn(t.Context(), otherClaims)
 	require.NoError(t, err)
 	now = now.Add(24 * time.Hour)
@@ -80,7 +80,7 @@ func TestDeactivationRacesSignInAndRenewal(t *testing.T) {
 	detail, err := module.GetPerson(t.Context(), curator.Token, first.Person.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, detail.Person.DeactivatedAt)
-	assert.Len(t, detail.Identities, 2)
+	assert.Len(t, detail.Emails, 2)
 
 	// Reactivation permits a fresh sign-in, not recovery of revoked browser sessions.
 	_, err = module.UpdatePerson(t.Context(), curator.Token, first.Person.ID, identity.UpdatePersonRequest{DisplayName: "Alex"})
@@ -105,20 +105,20 @@ func TestUnlinkRacesSignInAndRenewal(t *testing.T) {
 	retained := authorizePerson(t, module, curator, "Alex", "alex@example.test")
 	_, err := module.Preauthorize(t.Context(), curator.Token, retained.Person.ID, identity.PreauthorizeRequest{Email: "removed@example.test"})
 	require.NoError(t, err)
-	claims := identity.Claims{Provider: "google", Subject: "removed", Email: "removed@example.test", EmailVerified: true, DisplayName: "Alex"}
+	claims := identity.Claims{Email: "removed@example.test", EmailVerified: true, DisplayName: "Alex"}
 	first, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
 	second, err := module.SignIn(t.Context(), claims)
 	require.NoError(t, err)
 	profile, err := module.Profile(t.Context(), first.Token)
 	require.NoError(t, err)
-	var identityID string
-	for _, linked := range profile.Identities {
+	var emailID string
+	for _, linked := range profile.Emails {
 		if linked.Email == claims.Email {
-			identityID = linked.ID
+			emailID = linked.ID
 		}
 	}
-	require.NotEmpty(t, identityID)
+	require.NotEmpty(t, emailID)
 	now = now.Add(24 * time.Hour)
 
 	var issued, renewed identity.Session
@@ -126,7 +126,7 @@ func TestUnlinkRacesSignInAndRenewal(t *testing.T) {
 	raceIdentityOperations(
 		func() { issued, issueErr = module.SignIn(t.Context(), claims) },
 		func() { renewed, renewErr = module.Authenticate(t.Context(), first.Token) },
-		func() { unlinkErr = module.UnlinkIdentity(t.Context(), curator.Token, retained.Person.ID, identityID) },
+		func() { unlinkErr = module.UnlinkEmail(t.Context(), curator.Token, retained.Person.ID, emailID) },
 	)
 	require.NoError(t, unlinkErr)
 	if issueErr != nil {
@@ -154,8 +154,8 @@ func TestUnlinkRacesSignInAndRenewal(t *testing.T) {
 	assert.Len(t, sessions, 1)
 	profile, err = module.Profile(t.Context(), retained.Token)
 	require.NoError(t, err)
-	require.Len(t, profile.Identities, 1)
-	assert.Equal(t, "alex@example.test", profile.Identities[0].Email)
+	require.Len(t, profile.Emails, 1)
+	assert.Equal(t, "alex@example.test", profile.Emails[0].Email)
 
 	// Explicit relinking keeps ownership but cannot restore old sessions.
 	_, err = module.Preauthorize(t.Context(), curator.Token, retained.Person.ID, identity.PreauthorizeRequest{Email: claims.Email})
@@ -180,7 +180,7 @@ func TestSignOutEverywhereRacesRenewal(t *testing.T) {
 	require.NoError(t, err)
 	_, err = module.Preauthorize(t.Context(), curator.Token, first.Person.ID, identity.PreauthorizeRequest{Email: "other@example.test"})
 	require.NoError(t, err)
-	other, err := module.SignIn(t.Context(), identity.Claims{Provider: "google", Subject: "other", Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"})
+	other, err := module.SignIn(t.Context(), identity.Claims{Email: "other@example.test", EmailVerified: true, DisplayName: "Alex"})
 	require.NoError(t, err)
 	now = now.Add(24 * time.Hour)
 
@@ -295,33 +295,33 @@ func TestRacingOwnAccountUnlinksLeaveOneLinkedAccount(t *testing.T) {
 		require.NoError(t, err)
 		profile, err := module.Profile(t.Context(), first.Token)
 		require.NoError(t, err)
-		require.Len(t, profile.Identities, 2)
+		require.Len(t, profile.Emails, 2)
 		personID := ""
 		if scenario.curatorRoute {
 			personID = first.Person.ID
 		}
 		var firstErr, secondErr error
 		raceIdentityOperations(
-			func() { firstErr = module.UnlinkIdentity(t.Context(), first.Token, personID, profile.Identities[0].ID) },
+			func() { firstErr = module.UnlinkEmail(t.Context(), first.Token, personID, profile.Emails[0].ID) },
 			func() {
-				secondErr = module.UnlinkIdentity(t.Context(), second.Token, personID, profile.Identities[1].ID)
+				secondErr = module.UnlinkEmail(t.Context(), second.Token, personID, profile.Emails[1].ID)
 			},
 		)
 		survivingToken := second.Token
 		if firstErr == nil {
-			require.ErrorIs(t, secondErr, identity.ErrLastAccount, scenario.name)
+			require.ErrorIs(t, secondErr, identity.ErrLastEmail, scenario.name)
 		} else {
 			require.NoError(t, secondErr, scenario.name)
-			require.ErrorIs(t, firstErr, identity.ErrLastAccount, scenario.name)
+			require.ErrorIs(t, firstErr, identity.ErrLastEmail, scenario.name)
 			survivingToken = first.Token
 		}
 		remaining, err := module.Profile(t.Context(), survivingToken)
 		require.NoError(t, err)
-		require.Len(t, remaining.Identities, 1, scenario.name)
+		require.Len(t, remaining.Emails, 1, scenario.name)
 		sessions, err := module.Sessions(t.Context(), survivingToken)
 		require.NoError(t, err)
 		require.Len(t, sessions, 1)
-		assert.Equal(t, remaining.Identities[0].ID, sessions[0].IdentityID)
+		assert.Equal(t, remaining.Emails[0].ID, sessions[0].LinkedEmailID)
 	}
 }
 

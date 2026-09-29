@@ -38,7 +38,7 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
               ? "This Google account does not have access yet. Your Curator has been asked to review your request, so there is nothing more to do right now."
               : error === "provider_unavailable"
                 ? "Google sign-in is unavailable. Try again later."
-                : error === "unverified_identity"
+                : error === "unverified_email"
                   ? "Use a Google account with a verified email address."
                   : "Sign-in could not be completed. Start again with Google."}
         </p>

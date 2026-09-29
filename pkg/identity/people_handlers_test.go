@@ -30,7 +30,7 @@ func (m *managementIdentity) UpdatePerson(context.Context, string, string, ident
 	return identity.Person{}, m.changeErr
 }
 
-func (m *managementIdentity) UnlinkIdentity(context.Context, string, string, string) error {
+func (m *managementIdentity) UnlinkEmail(context.Context, string, string, string) error {
 	return m.changeErr
 }
 
@@ -47,7 +47,7 @@ func TestPersonDetailHTTPIncludesSessionsAndRequiresCurator(t *testing.T) {
 	module := &managementIdentity{
 		detail: identity.PersonDetail{
 			Person:   identity.Person{ID: "target", UpdateEmail: "alex@example.test", EmailUpdates: true},
-			Sessions: []identity.BrowserSession{{ID: "session", IdentityID: "account", Email: "alex@example.test", Device: "Firefox", ExpiresAt: expires}},
+			Sessions: []identity.BrowserSession{{ID: "session", LinkedEmailID: "account", Email: "alex@example.test", Device: "Firefox", ExpiresAt: expires}},
 		},
 	}
 	module.claimed = true
@@ -103,12 +103,12 @@ func TestUnlinkHTTPReturnsLastAccountConflictOnBothRoutes(t *testing.T) {
 		status  int
 		code    string
 	}{
-		{"/api/identity/identities/account/unlink", false, 409, "last_account"},
-		{"/api/identity/identities/account/unlink", true, 409, "last_account"},
-		{"/api/people/self/identities/account/unlink", true, 409, "last_account"},
-		{"/api/people/self/identities/account/unlink", false, 403, "access_denied"},
+		{"/api/identity/emails/account/unlink", false, 409, "last_email"},
+		{"/api/identity/emails/account/unlink", true, 409, "last_email"},
+		{"/api/people/self/emails/account/unlink", true, 409, "last_email"},
+		{"/api/people/self/emails/account/unlink", false, 403, "access_denied"},
 	} {
-		module := &managementIdentity{changeErr: identity.ErrLastAccount}
+		module := &managementIdentity{changeErr: identity.ErrLastEmail}
 		module.claimed = true
 		module.session.Person.IsCurator = scenario.curator
 		e := identityHTTP(t, config.NewForTest(), &module.fakeIdentity)

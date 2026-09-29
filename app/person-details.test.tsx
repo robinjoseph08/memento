@@ -31,7 +31,6 @@ const alex = {
 };
 const account = {
   id: "account",
-  provider: "fake",
   email: "alex@example.test",
   created_at: "2026-01-01T00:00:00Z",
 };
@@ -47,7 +46,7 @@ afterEach(() => {
 it("chooses an avatar from a Person's linked Immich faces", async () => {
   let detail = {
     person: { ...alex, avatar_url: "/api/media/people/alex/avatar?v=first" },
-    identities: [account],
+    emails: [account],
     sessions: [],
     preauthorizations: [],
     invitations: [],
@@ -111,7 +110,7 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
   expect(await screen.findByRole("status")).toHaveTextContent("Avatar saved.");
 });
 
-it("puts linked accounts first and keeps previous emails collapsed outside active approvals", async () => {
+it("puts linked emails first and keeps previous emails collapsed outside active approvals", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string) => {
@@ -123,7 +122,7 @@ it("puts linked accounts first and keeps previous emails collapsed outside activ
         });
       return Response.json({
         person: alex,
-        identities: [account],
+        emails: [account],
         sessions: [],
         preauthorizations: [
           {
@@ -169,7 +168,7 @@ it("puts linked accounts first and keeps previous emails collapsed outside activ
   const headings = screen
     .getAllByRole("heading", { level: 2 })
     .map((heading) => heading.textContent);
-  expect(headings.indexOf("Linked accounts")).toBeLessThan(
+  expect(headings.indexOf("Linked emails")).toBeLessThan(
     headings.indexOf("Preauthorizations"),
   );
   const summary = screen.getByText("Previous emails (2)");
@@ -198,14 +197,14 @@ it.each([false, true])(
           throw new Error(`Unexpected request: ${path}`);
         return Response.json({
           person: { ...alex, email_updates: subscribed },
-          identities: [account],
+          emails: [account],
           preauthorizations: [],
           invitations: [],
           announced: { albums: 0, entries: 0 },
           sessions: [
             {
               id: "browser",
-              identity_id: account.id,
+              linked_email_id: account.id,
               email: account.email,
               device: "Alex's phone",
               current: false,
@@ -252,8 +251,8 @@ it.each([false, true])(
   },
 );
 
-it("lets a Curator remove another person's final linked account without losing a name draft", async () => {
-  let identities = [account];
+it("lets a Curator remove another person's final linked email without losing a name draft", async () => {
+  let emails = [account];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
@@ -263,13 +262,16 @@ it("lets a Curator remove another person's final linked account without losing a
           person: robin,
           auth_mode: "fake",
         });
-      if (options?.method === "POST") {
-        identities = [];
+      if (
+        options?.method === "POST" &&
+        path.endsWith("/api/people/alex/emails/account/unlink")
+      ) {
+        emails = [];
         return new Response(null, { status: 204 });
       }
       return Response.json({
         person: alex,
-        identities,
+        emails,
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -295,7 +297,7 @@ it("lets a Curator remove another person's final linked account without losing a
   await user.click(
     within(dialog).getByRole("button", { name: "Unlink alex@example.test" }),
   );
-  expect(await screen.findByText("No accounts linked yet.")).toBeVisible();
+  expect(await screen.findByText("No emails linked yet.")).toBeVisible();
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
@@ -345,7 +347,7 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
       if (failRead) return Response.json({}, { status: 503 });
       return Response.json({
         person: alex,
-        identities: [],
+        emails: [],
         preauthorizations,
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -431,7 +433,7 @@ it("lets a Curator rename themselves without removing their own access", async (
       }
       return Response.json({
         person,
-        identities: [{ ...account, email: robin.update_email }],
+        emails: [{ ...account, email: robin.update_email }],
         preauthorizations: [],
         invitations: [],
         announced: { albums: 0, entries: 0 },
@@ -466,4 +468,62 @@ it("lets a Curator rename themselves without removing their own access", async (
   expect(name).toHaveValue("Robin edited");
   expect(role).toBeChecked();
   expect(deactivate).not.toBeChecked();
+});
+
+it("asks before deactivating a person and saves only after confirming", async () => {
+  const saves: unknown[] = [];
+  let person: typeof alex & { deactivated_at?: string } = alex;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: robin,
+          auth_mode: "fake",
+        });
+      if (options?.method === "POST" && path.endsWith("/api/people/alex")) {
+        saves.push(JSON.parse(String(options.body)));
+        person = { ...person, deactivated_at: "2026-03-01T00:00:00Z" };
+        return Response.json(person);
+      }
+      return Response.json({
+        person,
+        emails: [account],
+        preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
+        sessions: [],
+      });
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/people/alex");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(
+    await screen.findByRole("checkbox", { name: "Deactivate this person" }),
+  );
+  await user.click(screen.getByRole("button", { name: "Save person" }));
+  const dialog = screen.getByRole("dialog", {
+    name: "Deactivate this person?",
+  });
+  expect(dialog).toHaveTextContent(
+    "Alex will be signed out everywhere and unable to sign in until you reactivate them.",
+  );
+  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(saves).toHaveLength(0);
+  expect(
+    screen.getByRole("checkbox", { name: "Deactivate this person" }),
+  ).toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Save person" }));
+  await user.click(
+    within(
+      screen.getByRole("dialog", { name: "Deactivate this person?" }),
+    ).getByRole("button", { name: "Deactivate" }),
+  );
+  expect(await screen.findByRole("status")).toHaveTextContent("Person saved.");
+  expect(saves).toEqual([
+    { display_name: "Alex", is_curator: false, deactivated: true },
+  ]);
+  expect(screen.getByText("Deactivated")).toBeVisible();
 });
