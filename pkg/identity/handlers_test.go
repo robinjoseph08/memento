@@ -36,6 +36,7 @@ type fakeIdentity struct {
 }
 
 func (f *fakeIdentity) Claimed(context.Context) (bool, error) { return f.claimed, nil }
+func (*fakeIdentity) SignInCodesAvailable() bool              { return false }
 func (f *fakeIdentity) SignIn(context.Context, identity.Claims) (identity.Session, error) {
 	return f.session, f.err
 }

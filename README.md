@@ -67,8 +67,9 @@ You need:
   [separate container](#use-a-separate-postgresql-container) also works.
 - A public HTTPS address served by a reverse proxy, such as
   `https://photos.example.com`. Memento itself speaks only plain HTTP.
-- A Google OAuth client, because sign-in is Google only.
-- Optionally, an SMTP server for Invitations and update email.
+- A Google OAuth client, which Memento still requires.
+- Optionally, an SMTP server for Invitations, update email, and signing in with
+  an emailed code.
 
 The steps assume Immich runs from its standard Compose file, where the server
 service is `immich-server`, the database service is `database`, and the
@@ -156,7 +157,7 @@ services:
       IMMICH_API_KEY: ${IMMICH_API_KEY}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-      # Optional. See "Send Invitations and update email over SMTP" below.
+      # Optional. See "Send email over SMTP" below.
       # SMTP_URL: smtps://user:password@mail.example.com:465
       # SMTP_FROM: Memento <memento@example.com>
     ports:
@@ -291,12 +292,13 @@ volumes:
 Any PostgreSQL 14 or newer works. The password still goes inside
 `DATABASE_URL`, so the same URL-encoding advice applies.
 
-### Send Invitations and update email over SMTP
+### Send email over SMTP
 
-Email is optional. Without it Memento runs normally, Curators still create
-People and approve emails, Update Notifications stay in app, and the Invite
-button explains that email is not configured. To enable email, set both
-values on the `memento` service:
+Email sends Invitations, update email, and Sign-in Codes. It is optional.
+Without it Memento runs normally, Curators still create People and approve
+emails, Update Notifications stay in app, the Invite button explains that
+email is not configured, and the sign-in page offers only Google. To enable
+email, set both values on the `memento` service:
 
 ```yaml
 environment:
@@ -429,14 +431,14 @@ HttpOnly, and SameSite=Lax. Google discovery happens on the first sign-in, not
 at startup. A Google outage does not prevent database health checks or use of
 existing Memento sessions.
 
-Memento identifies a Person by their Linked Emails: the verified addresses
-they have signed in with, stored lowercased. Google sign-in is one way to
-verify an address, and every verified address goes through the same rules. A
-Person may have several Linked Emails, and a Curator can unlink one from the
-Person page, which ends its sessions and refuses it until a Curator
-preauthorizes it again. Because the address is the identity, an address handed
-to a new owner still signs in as its Person, so unlink it or deactivate the
-Person when someone leaves.
+Memento identifies a Person by their Linked Emails: the verified addresses they
+have signed in with, stored lowercased. Google sign-in and an emailed Sign-in
+Code are the two ways to verify an address, and every verified address goes
+through the same rules. A Person may have several Linked Emails, and a Curator
+can unlink one from the Person page, which ends its sessions and refuses it
+until a Curator preauthorizes it again. Because the address is the identity, an
+address handed to a new owner still signs in as its Person, so unlink it or
+deactivate the Person when someone leaves.
 
 The first successful sign-in claims an empty installation and creates its first
 Curator. Keep a new installation private until you have claimed it. For later
@@ -445,10 +447,21 @@ they will verify. Signing in with that address links it to the Person and uses u
 the Preauthorization. A verified email alone does not grant access, and Google
 sign-in availability does not bypass Memento's preauthorizations.
 
+When SMTP is configured, the sign-in page also takes any email address and
+sends it a six-digit Sign-in Code, which works on the web and in the Mobile
+App's browser sheet alike. A code expires after 10 minutes, works once, stops
+working after five wrong tries, and is replaced when a new one is requested.
+Memento sends at most one code per address per minute and at most ten an hour
+to addresses it does not know; addresses it knows are never held back. The
+page says a code was sent either way, so it never reveals who belongs.
+Curators cannot see or send a code. A person who gets no code can resend it,
+check their spam folder, or ask a Curator to send the Invitation again.
+
 A verified email that Memento does not know creates one pending Access Request
-instead of a Person. Repeated sign-ins refresh that request rather than
-creating more, and a denied request absorbs later attempts silently until a
-Curator reconsiders it. Curators review requests under Requests, where
+instead of a Person. Someone who verified an unknown address with a code is
+asked for their name first, and the request carries it. Repeated sign-ins
+refresh that request rather than creating more, and a denied request absorbs
+later attempts silently until a Curator reconsiders it. Curators review requests under Requests, where
 approval links the address to an existing Person or creates one and approves
 the exact email; Album access remains a separate decision in each Album. An
 existing Person who reaches an Album they cannot see gets an explicit Request
@@ -474,7 +487,7 @@ shows their unread count and lists only new updates, and an Updates page with
 every update they have received. Opening one marks it read and goes to the Album, or
 to the Album list when it covers several. Browsing never changes read state.
 People who asked for email get the same summary by email; see
-[Send Invitations and update email over SMTP](#send-invitations-and-update-email-over-smtp).
+[Send email over SMTP](#send-email-over-smtp).
 
 The Curator's home page is a short work list in two groups. Needs attention
 holds pending Access Requests, failed or interrupted imports, failed or

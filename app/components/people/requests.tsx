@@ -1,10 +1,4 @@
-import {
-  BadgeCheck,
-  CircleCheck,
-  CircleHelp,
-  Hourglass,
-  Inbox,
-} from "lucide-react";
+import { CircleCheck, Hourglass, Inbox } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -133,25 +127,7 @@ function RequestRow({ request }: { request: AccessRequest }) {
             <span className="font-medium">
               {albumRequest ? request.person_name : request.display_name}
             </span>{" "}
-            <span className="text-muted">
-              {request.email} ·{" "}
-              <span className="inline-flex items-center gap-1 align-baseline">
-                {request.email_verified ? (
-                  <BadgeCheck
-                    aria-hidden="true"
-                    className="size-3.5 text-accent-foreground"
-                    strokeWidth={1.5}
-                  />
-                ) : (
-                  <CircleHelp
-                    aria-hidden="true"
-                    className="size-3.5"
-                    strokeWidth={1.5}
-                  />
-                )}
-                {request.email_verified ? "verified email" : "unverified"}
-              </span>
-            </span>
+            <span className="text-muted">{request.email}</span>
           </p>
           {albumRequest ? (
             <p className="mt-2 text-sm text-muted">

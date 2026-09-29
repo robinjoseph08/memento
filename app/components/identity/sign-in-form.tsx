@@ -9,6 +9,7 @@ import { errorMessage, HTTPError } from "../../lib/http";
 import type { SignInRequest } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { CodeSignIn } from "./code-sign-in";
 
 const initialClaims: SignInRequest = {
   email: "curator@example.test",
@@ -28,31 +29,42 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
   const googleStart = returnTo
     ? `/api/identity/google/start?return_to=${encodeURIComponent(returnTo)}`
     : "/api/identity/google/start";
+  const alternative =
+    data?.auth_mode === "google" ? (
+      <Button asChild className={data.sign_in_codes ? "w-full" : undefined}>
+        <a href={googleStart}>
+          <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
+          Continue with Google
+        </a>
+      </Button>
+    ) : data?.auth_mode === "fake" ? (
+      <FakeSignInForm claiming={claiming} />
+    ) : null;
+  const notice = error && (
+    <p className="mb-6 max-w-110 text-sm text-destructive" role="alert">
+      {error === "no_access" || error === "access_denied"
+        ? "This email address does not have access. Ask your Curator to approve it."
+        : error === "access_requested"
+          ? "This email address does not have access yet. Your Curator has been asked to review your request, so there is nothing more to do right now."
+          : error === "provider_unavailable"
+            ? "Google sign-in is unavailable. Try again later."
+            : error === "unverified_email"
+              ? "This email address is not verified. Sign in with a verified email address."
+              : "Sign-in could not be completed. Try again."}
+    </p>
+  );
+  if (data?.sign_in_codes)
+    return (
+      <CodeSignIn
+        alternative={alternative}
+        claiming={claiming}
+        notice={notice}
+      />
+    );
   return (
     <div>
-      {error && (
-        <p className="mb-6 max-w-110 text-sm text-destructive" role="alert">
-          {error === "no_access" || error === "access_denied"
-            ? "This Google account does not have access. Ask your Curator to approve your exact Google email address."
-            : error === "access_requested"
-              ? "This Google account does not have access yet. Your Curator has been asked to review your request, so there is nothing more to do right now."
-              : error === "provider_unavailable"
-                ? "Google sign-in is unavailable. Try again later."
-                : error === "unverified_email"
-                  ? "Use a Google account with a verified email address."
-                  : "Sign-in could not be completed. Start again with Google."}
-        </p>
-      )}
-      {data?.auth_mode === "google" ? (
-        <Button asChild>
-          <a href={googleStart}>
-            <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
-            Continue with Google
-          </a>
-        </Button>
-      ) : data?.auth_mode === "fake" ? (
-        <FakeSignInForm claiming={claiming} />
-      ) : (
+      {notice}
+      {alternative ?? (
         <p role="alert">Sign-in is not configured. Contact your Curator.</p>
       )}
     </div>

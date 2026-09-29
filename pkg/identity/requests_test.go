@@ -58,7 +58,6 @@ func TestUnknownAddressCreatesOneRequestThatCuratorsResolveDeliberately(t *testi
 	assert.Equal(t, "pending", pending.Status)
 	assert.Equal(t, 4, pending.SignInCount)
 	assert.Equal(t, "stranger@example.test", pending.Email)
-	assert.True(t, pending.EmailVerified)
 	assert.Equal(t, "Stranger Renamed", pending.DisplayName)
 	assert.Empty(t, pending.PersonID)
 	assert.Empty(t, pending.AlbumID)

@@ -84,7 +84,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     page.getByRole("heading", { name: "Alex", exact: true }),
   ).toBeVisible();
   await page
-    .getByRole("textbox", { name: "Google email address" })
+    .getByRole("textbox", { name: "Email address" })
     .fill("alex@example.test");
   await page.getByRole("button", { name: "Preauthorize email" }).click();
   await expect(

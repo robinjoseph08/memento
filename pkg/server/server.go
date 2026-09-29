@@ -56,6 +56,9 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 	if features.Notifications != nil {
 		people.Mail = features.Notifications
 		people.Announcements = features.Notifications
+		if features.Notifications.Configured() {
+			people.Sender = features.Notifications
+		}
 	}
 	library := features.Media
 	if library == nil {

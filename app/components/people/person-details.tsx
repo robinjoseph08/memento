@@ -250,7 +250,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
                   autoCapitalize="none"
                   autoCorrect="off"
                   error={fieldErrors(preauthorize.error).email}
-                  label="Google email address"
+                  label="Email address"
                   maxLength={254}
                   name="email"
                   onChange={(event) => {

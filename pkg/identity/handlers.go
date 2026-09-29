@@ -30,6 +30,9 @@ type AuthenticationUseCases interface {
 	SignIn(context.Context, Claims) (Session, error)
 	Authenticate(context.Context, string) (Session, error)
 	SignOut(context.Context, string) error
+	SignInCodesAvailable() bool
+	RequestSignInCode(context.Context, RequestSignInCodeRequest) error
+	VerifySignInCode(context.Context, VerifySignInCodeRequest) (Session, error)
 	IssueHandoffCode(context.Context, string) (string, error)
 	ExchangeHandoffCode(context.Context, string, string) (Session, error)
 }
@@ -80,7 +83,7 @@ func (h *Handlers) status(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	result := Status{Claimed: claimed, AuthMode: h.authMode, Version: version.Version}
+	result := Status{Claimed: claimed, AuthMode: h.authMode, SignInCodes: h.module.SignInCodesAvailable(), Version: version.Version}
 	if claimed {
 		session, err := h.authenticate(c)
 		if err != nil && !errors.Is(err, ErrUnauthenticated) {
@@ -104,6 +107,40 @@ func (h *Handlers) fakeSignIn(c *echo.Context) error {
 	}
 	h.setCookie(c, session.Token, session.ExpiresAt)
 	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, session.Person))
+}
+
+func (h *Handlers) requestSignInCode(c *echo.Context) error {
+	var request RequestSignInCodeRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	if err := h.module.RequestSignInCode(c.Request().Context(), request); err != nil {
+		return err
+	}
+	return errorstack.CaptureContext(c.Request().Context(), c.NoContent(http.StatusNoContent))
+}
+
+// verifySignInCode reports the Access Request outcomes as results rather than
+// failures, because the page moves on to its next step for each of them.
+func (h *Handlers) verifySignInCode(c *echo.Context) error {
+	var request VerifySignInCodeRequest
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	session, err := h.module.VerifySignInCode(WithBrowser(c.Request().Context(), c.Request().UserAgent()), request)
+	result := SignInCodeResult{Outcome: "signed_in"}
+	switch {
+	case errors.Is(err, ErrNameRequired):
+		result.Outcome = "name_required"
+	case errors.Is(err, ErrAccessRequested):
+		result.Outcome = "requested"
+	case err != nil:
+		return err
+	default:
+		h.setCookie(c, session.Token, session.ExpiresAt)
+		result.Person = &session.Person
+	}
+	return errorstack.CaptureContext(c.Request().Context(), c.JSON(http.StatusOK, result))
 }
 
 func (h *Handlers) signOut(c *echo.Context) error {

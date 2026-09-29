@@ -47,7 +47,7 @@ func selectAccessRequests(db bun.IDB) *bun.SelectQuery {
 }
 
 func projectAccessRequest(row accessRequestRow) AccessRequest {
-	result := AccessRequest{ID: row.ID.String(), Kind: row.Kind, Email: row.Email, EmailVerified: row.EmailVerified, DisplayName: row.DisplayName,
+	result := AccessRequest{ID: row.ID.String(), Kind: row.Kind, Email: row.Email, DisplayName: row.DisplayName,
 		PersonName: row.PersonName, AlbumTitle: row.AlbumTitle, Status: row.Status, SignInCount: row.SignInCount,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, ResolvedAt: row.ResolvedAt, ResolvedBy: row.ResolvedByName}
 	if row.PersonID != nil {
@@ -69,7 +69,7 @@ func (m *Module) recordAccessRequest(ctx context.Context, tx bun.Tx, claims Clai
 		return errorstack.CaptureContext(ctx, err)
 	}
 	now := m.now().UTC()
-	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Email: claims.Email, EmailVerified: claims.EmailVerified,
+	row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestJoin, Email: claims.Email,
 		DisplayName: claims.DisplayName, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 	_, err = tx.NewInsert().Model(&row).
 		On("CONFLICT (email) WHERE status <> 'approved' AND kind = 'join' DO UPDATE").
@@ -164,7 +164,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 			return errorstack.CaptureContext(ctx, err)
 		}
 		now := m.now().UTC()
-		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Email: linked.Email, EmailVerified: true,
+		row := models.AccessRequest{ID: models.NewUUIDv7(), Kind: RequestAlbum, Email: linked.Email,
 			DisplayName: person.DisplayName, PersonID: &person.ID, AlbumID: &albumUUID, Status: RequestPending, SignInCount: 1, CreatedAt: now, UpdatedAt: now}
 		_, err = tx.NewInsert().Model(&row).
 			On("CONFLICT (person_id, album_id) WHERE status <> 'approved' AND kind = 'album' DO UPDATE").

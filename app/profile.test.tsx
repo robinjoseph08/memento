@@ -599,7 +599,7 @@ it("offers full-navigation Google sign-in and explains an account without access
     await screen.findByRole("link", { name: "Continue with Google" }),
   ).toHaveAttribute("href", "/api/identity/google/start");
   expect(screen.getByRole("alert")).toHaveTextContent(
-    "exact Google email address",
+    "Ask your Curator to approve it",
   );
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 });

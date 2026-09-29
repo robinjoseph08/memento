@@ -186,7 +186,7 @@ export function SignInPage() {
       <div className="mb-9 max-w-160 min-[761px]:mb-12">
         <h1 className={headingClassName}>Welcome back</h1>
         <p className="mt-5 max-w-[590px] text-muted">
-          Sign in with an account approved by your Curator.
+          Sign in with an email address your Curator approved.
         </p>
       </div>
       <SignInForm />

@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 it.each([true, false])(
-  "keeps Google's no-access explanation after a failed sign-in, claimed=%s",
+  "keeps the no-access explanation after a failed Google sign-in, claimed=%s",
   async (claimed) => {
     vi.stubGlobal(
       "fetch",
@@ -36,7 +36,7 @@ it.each([true, false])(
     window.history.replaceState(null, "", "/sign-in?error=access_denied");
     render(<App />);
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "This Google account does not have access",
+      "This email address does not have access",
     );
     expect(
       screen.getByRole("link", { name: "Continue with Google" }),

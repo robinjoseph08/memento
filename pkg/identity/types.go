@@ -9,6 +9,28 @@ type SignInRequest struct {
 	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
 }
 
+// RequestSignInCodeRequest asks for a Sign-in Code to be emailed to an address.
+type RequestSignInCodeRequest struct {
+	Email string `json:"email" validate:"required,email,max=254" mod:"trim"`
+}
+
+// VerifySignInCodeRequest proves control of an address with the code emailed
+// to it. The name is needed only when an unknown address requests access.
+type VerifySignInCodeRequest struct {
+	Email       string `json:"email" validate:"required,email,max=254" mod:"trim"`
+	Code        string `json:"code" validate:"required,max=20"`
+	DisplayName string `json:"display_name" validate:"max=100" mod:"trim"`
+}
+
+// SignInCodeResult is where a verified Sign-in Code leaves the browser.
+// Outcome is signed_in with Person set, name_required when an unknown address
+// must give a name and verify again, or requested once a Curator has been
+// asked to review it.
+type SignInCodeResult struct {
+	Outcome string  `json:"outcome"`
+	Person  *Person `json:"person"`
+}
+
 // ExchangeHandoffCodeRequest carries the Hand-off Code the web sign-in gave
 // the Mobile App, and the platform that names its session.
 type ExchangeHandoffCodeRequest struct {
@@ -54,7 +76,10 @@ type Status struct {
 	Claimed  bool    `json:"claimed"`
 	Person   *Person `json:"person"`
 	AuthMode string  `json:"auth_mode"`
-	Version  string  `json:"version"`
+	// SignInCodes is true when mail is configured, so the sign-in page offers
+	// an emailed Sign-in Code alongside the auth mode's own sign-in.
+	SignInCodes bool   `json:"sign_in_codes"`
+	Version     string `json:"version"`
 }
 
 type CreatePersonRequest struct {
@@ -175,20 +200,19 @@ type AnnouncedContent struct {
 type AccessRequest struct {
 	ID string `json:"id"`
 	// Kind is join for an unknown address and album for an existing Person's request.
-	Kind          string     `json:"kind"`
-	Email         string     `json:"email"`
-	EmailVerified bool       `json:"email_verified"`
-	DisplayName   string     `json:"display_name"`
-	PersonID      string     `json:"person_id"`
-	PersonName    string     `json:"person_name"`
-	AlbumID       string     `json:"album_id"`
-	AlbumTitle    string     `json:"album_title"`
-	Status        string     `json:"status"`
-	SignInCount   int        `json:"sign_in_count"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	ResolvedAt    *time.Time `json:"resolved_at"`
-	ResolvedBy    string     `json:"resolved_by"`
+	Kind        string     `json:"kind"`
+	Email       string     `json:"email"`
+	DisplayName string     `json:"display_name"`
+	PersonID    string     `json:"person_id"`
+	PersonName  string     `json:"person_name"`
+	AlbumID     string     `json:"album_id"`
+	AlbumTitle  string     `json:"album_title"`
+	Status      string     `json:"status"`
+	SignInCount int        `json:"sign_in_count"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	ResolvedAt  *time.Time `json:"resolved_at"`
+	ResolvedBy  string     `json:"resolved_by"`
 }
 
 // ApproveAccessRequestRequest links an unknown address to an existing Person

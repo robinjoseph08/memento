@@ -13,7 +13,7 @@ import type { ViewerEntry } from "../app/types/generated/publishing";
 type Installation = { apiURL: string; fixtureURL: string };
 type CheckpointName = "asset-metadata" | "import-release" | "chapter-probe";
 type CheckpointState = { mode: string; hits: number; waiting: number };
-type MailState = {
+export type MailState = {
   mode: string;
   held: number;
   messages: { from: string; to: string; data: string }[];
