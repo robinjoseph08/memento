@@ -153,8 +153,8 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </p>
           ) : (
             <p className="mt-2 text-sm text-muted">
-              Signed in with an email Memento does not know. The name comes from
-              the sign-in and is not proof of who this is.
+              Signed in with an email Memento does not know. The name is what
+              they gave when signing in and is not proof of who this is.
             </p>
           )}
           <p className="mt-2 text-xs text-muted">

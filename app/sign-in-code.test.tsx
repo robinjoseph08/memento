@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -160,7 +160,10 @@ it("asks an unknown address for a name and sends the request to the Curator", as
   expect(
     await screen.findByRole("heading", { name: "Request access" }),
   ).toBeVisible();
-  await user.type(screen.getByRole("textbox", { name: "Your name" }), "Jordan");
+  await waitFor(() =>
+    expect(screen.getByRole("textbox", { name: "Your name" })).toHaveFocus(),
+  );
+  await user.keyboard("Jordan");
   await user.click(screen.getByRole("button", { name: "Request" }));
 
   expect(await screen.findByRole("status")).toHaveTextContent(
@@ -186,7 +189,7 @@ it("shows a wrong code beside the field and lets the Person start over", async (
             message: "Check the highlighted fields.",
             status_code: 422,
             fields: {
-              code: "That code didn't work. Check the email and try again, or send a new code.",
+              code: "This code no longer works. Send a new code.",
             },
           },
         },
@@ -205,7 +208,9 @@ it("shows a wrong code beside the field and lets the Person start over", async (
     await screen.findByRole("textbox", { name: "Sign-in code" }),
     "111111",
   );
-  expect(await screen.findByText(/That code didn't work/)).toBeInTheDocument();
+  expect(
+    await screen.findByText(/This code no longer works/),
+  ).toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Sign-in code" })).toHaveAttribute(
     "aria-invalid",
     "true",
@@ -214,14 +219,18 @@ it("shows a wrong code beside the field and lets the Person start over", async (
   await user.click(
     screen.getByRole("button", { name: "Use a different email" }),
   );
-  expect(
-    await screen.findByRole("textbox", { name: "Email address" }),
-  ).toHaveValue("alex@example.test");
+  const email = await screen.findByRole("textbox", { name: "Email address" });
+  expect(email).toHaveValue("alex@example.test");
+  await waitFor(() => expect(email).toHaveFocus());
 });
 
 it("keeps an earlier sign-in failure with the first step only", async () => {
   serve();
-  window.history.replaceState(null, "", "/sign-in?error=access_denied");
+  window.history.replaceState(
+    null,
+    "",
+    `/sign-in?error=access_denied&return_to=${returnTo}`,
+  );
   const user = userEvent.setup();
   render(<App />);
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -233,6 +242,16 @@ it("keeps an earlier sign-in failure with the first step only", async () => {
   );
   await user.click(screen.getByRole("button", { name: "Continue" }));
   await screen.findByRole("textbox", { name: "Sign-in code" });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  const search = new URLSearchParams(window.location.search);
+  expect(search.get("error")).toBeNull();
+  expect(search.get("return_to")).toBe(returnTo);
+
+  // Starting over does not bring the old failure back.
+  await user.click(
+    screen.getByRole("button", { name: "Use a different email" }),
+  );
+  await screen.findByRole("textbox", { name: "Email address" });
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
@@ -247,7 +266,7 @@ it("returns to the code step when the code dies while the name is typed", async 
                 message: "Check the highlighted fields.",
                 status_code: 422,
                 fields: {
-                  code: "That code didn't work. Check the email and try again, or send a new code.",
+                  code: "This code no longer works. Send a new code.",
                 },
               },
             },
@@ -275,7 +294,7 @@ it("returns to the code step when the code dies while the name is typed", async 
   expect(
     await screen.findByRole("textbox", { name: "Sign-in code" }),
   ).toHaveAttribute("aria-invalid", "true");
-  expect(screen.getByText(/That code didn't work/)).toBeInTheDocument();
+  expect(screen.getByText(/This code no longer works/)).toBeInTheDocument();
 });
 
 it("says so when the code could not be sent", async () => {
@@ -331,6 +350,7 @@ it("enables Resend after a minute", async () => {
   expect(await screen.findByRole("status")).toHaveTextContent(
     "We sent a new code.",
   );
+  expect(screen.getByRole("textbox", { name: "Sign-in code" })).toHaveFocus();
   expect(
     calls.filter((call) => call.path === "/api/identity/sign-in-code"),
   ).toHaveLength(2);

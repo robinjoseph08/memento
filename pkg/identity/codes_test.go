@@ -75,6 +75,18 @@ func requireInvalidCode(t *testing.T, err error) {
 	assert.Contains(t, field.Fields, "code")
 }
 
+// requireCodeMessage checks whether the Person is told to retype or to send a new code.
+func requireCodeMessage(t *testing.T, err error, dead bool) {
+	t.Helper()
+	requireInvalidCode(t, err)
+	field, _ := errors.AsType[*errcodes.FieldError](err)
+	if dead {
+		assert.Contains(t, field.Fields["code"], "no longer works")
+	} else {
+		assert.Contains(t, field.Fields["code"], "isn't right")
+	}
+}
+
 func TestSignInCodeEmail(t *testing.T) {
 	t.Parallel()
 	h := newCodeHarness(t)
@@ -113,7 +125,7 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	assert.Equal(t, "Alex", session.Person.DisplayName)
 	assert.Len(t, session.Token, 43)
 	_, err = h.verify(t, "alex@example.test", code, "")
-	requireInvalidCode(t, err)
+	requireCodeMessage(t, err, true)
 
 	// A code works for ten minutes after it was sent, and not after.
 	h.clock.advance(time.Minute)
@@ -132,12 +144,12 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	digits, err := strconv.Atoi(code)
 	require.NoError(t, err)
 	wrong := fmt.Sprintf("%06d", (digits+1)%1000000)
-	for range 5 {
+	for i := range 5 {
 		_, err = h.verify(t, "alex@example.test", wrong, "")
-		requireInvalidCode(t, err)
+		requireCodeMessage(t, err, i == 4)
 	}
 	_, err = h.verify(t, "alex@example.test", code, "")
-	requireInvalidCode(t, err)
+	requireCodeMessage(t, err, true)
 
 	// Four wrong attempts do not.
 	h.clock.advance(time.Minute)
@@ -167,7 +179,7 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	_, err = h.verify(t, "curator@example.test", code, "")
 	requireInvalidCode(t, err)
 	_, err = h.verify(t, "nobody@example.test", "123456", "")
-	requireInvalidCode(t, err)
+	requireCodeMessage(t, err, false)
 }
 
 func TestSignInCodeSendLimits(t *testing.T) {

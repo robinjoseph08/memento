@@ -44,8 +44,9 @@ var (
 	// ErrNameRequired means the code is right but the address is unknown: the
 	// Person gives a name and verifies again to request access. The code is
 	// not spent.
-	ErrNameRequired      = errors.New("a name is needed to request access")
-	errSignInCodeInvalid = fieldError("code", "That code didn't work. Check the email and try again, or send a new code.")
+	ErrNameRequired    = errors.New("a name is needed to request access")
+	errSignInCodeWrong = fieldError("code", "That code isn't right. Check the email and try again.")
+	errSignInCodeDead  = fieldError("code", "This code no longer works. Send a new code.")
 )
 
 // Sender delivers one email now. Sign-in Codes skip the durable queue because
@@ -170,7 +171,7 @@ It expires in 10 minutes. If you didn't try to sign in to Memento, you can ignor
 func (m *Module) VerifySignInCode(ctx context.Context, request VerifySignInCodeRequest) (Session, error) {
 	email, err := normalizeEmail(request.Email)
 	if err != nil {
-		return Session{}, errSignInCodeInvalid
+		return Session{}, errSignInCodeWrong
 	}
 	name := strings.TrimSpace(request.DisplayName)
 	if name != "" {
@@ -191,21 +192,27 @@ func (m *Module) VerifySignInCode(ctx context.Context, request VerifySignInCodeR
 		var row models.SignInCode
 		err := tx.NewSelect().Model(&row).Where("email = ?", email).
 			Order("created_at DESC", "id DESC").Limit(1).Scan(ctx)
+		// No code at all reads as a wrong guess, so a quietly unsent code
+		// looks no different from one in someone's inbox.
 		if errors.Is(err, sql.ErrNoRows) {
-			outcome = errSignInCodeInvalid
+			outcome = errSignInCodeWrong
 			return nil
 		}
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		if row.UsedAt != nil || !row.ExpiresAt.After(now) || row.Attempts >= signInCodeAttempts {
-			outcome = errSignInCodeInvalid
+			outcome = errSignInCodeDead
 			return nil
 		}
 		given := sha256.Sum256([]byte(code))
 		if subtle.ConstantTimeCompare(given[:], row.CodeHash) != 1 {
-			// Commit the wrong guess while refusing it.
-			outcome = errSignInCodeInvalid
+			// Commit the wrong guess while refusing it. The last allowed guess
+			// says the code is spent rather than inviting another try.
+			outcome = errSignInCodeWrong
+			if row.Attempts+1 >= signInCodeAttempts {
+				outcome = errSignInCodeDead
+			}
 			_, err := tx.NewUpdate().Model(&row).Set("attempts = attempts + 1").WherePK().Exec(ctx)
 			return errorstack.CaptureContext(ctx, err)
 		}

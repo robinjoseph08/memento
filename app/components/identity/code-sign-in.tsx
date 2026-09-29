@@ -1,5 +1,6 @@
 import { KeyRound, LogIn, Mail, Send } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import {
   useRequestSignInCode,
@@ -45,6 +46,27 @@ function useResendDelay() {
   return [ready, restart] as const;
 }
 
+// useStepFocus moves focus to the first field of the step shown next, once
+// that field is enabled. Fields are disabled while a request is pending, so
+// the move waits for the render that enables them. Callers change the step
+// or other state alongside, which brings that render.
+function useStepFocus() {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const pendingRef = useRef(false);
+  useEffect(() => {
+    if (!pendingRef.current) return;
+    const field =
+      panelRef.current?.querySelector<HTMLInputElement>("input:enabled");
+    if (!field) return;
+    field.focus();
+    pendingRef.current = false;
+  });
+  const focusNext = () => {
+    pendingRef.current = true;
+  };
+  return [panelRef, focusNext] as const;
+}
+
 // CodeSignIn signs a Person in with a Sign-in Code emailed to them. The
 // notice from an earlier attempt and the alternative (Google, or the
 // development form) show only with the first step. An unknown address is
@@ -64,6 +86,8 @@ export function CodeSignIn({
   const [name, setName] = useState("");
   const [resent, setResent] = useState(false);
   const [canResend, restartResend] = useResendDelay();
+  const [panelRef, focusNext] = useStepFocus();
+  const [, setSearch] = useSearchParams();
   const requestCode = useRequestSignInCode();
   const verify = useVerifySignInCode();
   useUnsavedChanges(step === "name" && name.trim() !== "");
@@ -75,10 +99,20 @@ export function CodeSignIn({
       { email },
       {
         onSuccess: () => {
+          // An earlier failure no longer describes this attempt; the rest
+          // of the query, such as the Mobile App's return link, stays.
+          setSearch(
+            (search) => {
+              search.delete("error");
+              return search;
+            },
+            { replace: true },
+          );
           restartResend();
           setResent(resend);
           setCode("");
           setStep("code");
+          focusNext();
         },
       },
     );
@@ -91,13 +125,19 @@ export function CodeSignIn({
       { email, code: value, display_name: displayName },
       {
         onSuccess: (result) => {
-          if (result.outcome === "name_required") setStep("name");
+          if (result.outcome === "name_required") {
+            setStep("name");
+            focusNext();
+          }
           if (result.outcome === "requested") setStep("requested");
         },
         // A code that died while the Person typed their name is explained
         // on the code step, where a new one can be sent.
         onError: (error) => {
-          if (fieldErrors(error).code) setStep("code");
+          if (fieldErrors(error).code) {
+            setStep("code");
+            focusNext();
+          }
         },
       },
     );
@@ -108,11 +148,12 @@ export function CodeSignIn({
     setCode("");
     setName("");
     setStep("email");
+    focusNext();
   };
 
   if (step === "email")
     return (
-      <div className="min-[761px]:max-w-95">
+      <div className="min-[761px]:max-w-95" ref={panelRef}>
         {notice}
         <Form
           aria-busy={requestCode.isPending}
@@ -159,7 +200,7 @@ export function CodeSignIn({
 
   if (step === "code")
     return (
-      <div className="min-[761px]:max-w-95">
+      <div className="min-[761px]:max-w-95" ref={panelRef}>
         <h2 className={sectionHeadingClass}>Check your email</h2>
         <p className="mt-3.5 mb-6.5 text-sm wrap-anywhere text-muted">
           We sent a code to{" "}
@@ -177,7 +218,6 @@ export function CodeSignIn({
           <fieldset disabled={verify.isPending}>
             <Field
               autoComplete="one-time-code"
-              autoFocus
               error={fieldErrors(verify.error).code}
               inputMode="numeric"
               label="Sign-in code"
@@ -243,7 +283,7 @@ export function CodeSignIn({
 
   if (step === "name")
     return (
-      <div className="min-[761px]:max-w-95">
+      <div className="min-[761px]:max-w-95" ref={panelRef}>
         <h2 className={sectionHeadingClass}>Request access</h2>
         <p className="mt-3.5 mb-6.5 text-sm wrap-anywhere text-muted">
           <span className="font-medium text-foreground">{email.trim()}</span> is
@@ -262,7 +302,6 @@ export function CodeSignIn({
           <fieldset disabled={verify.isPending}>
             <Field
               autoComplete="name"
-              autoFocus
               error={fieldErrors(verify.error).display_name}
               label="Your name"
               maxLength={100}
