@@ -225,12 +225,12 @@ authority, will not cast.
 docker compose up -d
 ```
 
-Open your public address and sign in with Google. The first successful
-sign-in claims an empty installation and creates its first Curator, so do this
-yourself before sharing the address with anyone. Everyone else needs a Person
-with a preauthorized email, created by a Curator, or arrives as an Access
-Request for a Curator to approve. [Google sign-in](#google-sign-in) describes
-how access works from there.
+Open your public address and sign in, with Google or with a code emailed to you
+when SMTP is set up. The first successful sign-in claims an empty installation
+and creates its first Curator, so do this yourself before sharing the address
+with anyone. Everyone else needs a Person with a preauthorized email, created by
+a Curator, or arrives as an Access Request for a Curator to approve.
+[Google sign-in](#google-sign-in) describes how access works from there.
 
 To upgrade, pull the new image and recreate the container. Migrations run at
 startup:
@@ -400,8 +400,8 @@ rather than different bytes under an old content-versioned URL.
 
 ## Google sign-in
 
-Production sign-in uses Google OpenID Connect to verify identity. Memento requests
-only `openid profile email`, not access to Google Photos, Drive, or Gmail. It does
+Google sign-in uses OpenID Connect to verify an address. Memento requests only
+`openid profile email`, not access to Google Photos, Drive, or Gmail. It does
 not retain Google's access or refresh tokens. Browser sessions belong to Memento
 and live in PostgreSQL.
 
