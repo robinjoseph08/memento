@@ -45,8 +45,12 @@ type DeliveryError struct {
 	Cause   error
 }
 
+// Error is for logs, so it names the cause. Curators only ever see Summary.
 func (e *DeliveryError) Error() string {
-	return fmt.Sprintf("%s delivery failure: %s", e.Outcome, e.Summary)
+	if e.Cause == nil {
+		return fmt.Sprintf("%s delivery failure: %s", e.Outcome, e.Summary)
+	}
+	return fmt.Sprintf("%s delivery failure: %s: %v", e.Outcome, e.Summary, e.Cause)
 }
 func (e *DeliveryError) Unwrap() error { return e.Cause }
 
