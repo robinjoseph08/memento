@@ -159,6 +159,7 @@ export function CodeSignIn({
           aria-busy={requestCode.isPending}
           aria-label="Sign in with email"
           error={requestCode.error}
+          failureClassName="mt-0 mb-5"
           onSubmit={(event) => {
             event.preventDefault();
             if (!requestCode.isPending) send(false);
@@ -210,6 +211,7 @@ export function CodeSignIn({
           aria-busy={verify.isPending}
           aria-label="Enter your sign-in code"
           error={verify.error ?? requestCode.error}
+          failureClassName="mt-0 mb-5"
           onSubmit={(event) => {
             event.preventDefault();
             check(code);
@@ -294,6 +296,7 @@ export function CodeSignIn({
           aria-busy={verify.isPending}
           aria-label="Request access"
           error={verify.error}
+          failureClassName="mt-0 mb-5"
           onSubmit={(event) => {
             event.preventDefault();
             check(code, name);
