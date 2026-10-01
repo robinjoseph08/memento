@@ -25,7 +25,7 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         id: release
         env:
           SIMULATED_RELEASE: ${{ inputs.simulated_release }}
@@ -86,7 +86,7 @@ jobs:
     steps:
       # No checkout, downloaded artifacts, shell interpolation, or execution of
       # tested code in this write-token job. Only validated tags and run links.
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         env:
           IMMICH_SMOKE_VERSION: ${{ needs.discover.outputs.version }}
           PROBE_OUTCOME: ${{ needs.probe.outputs.outcome }}
