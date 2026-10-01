@@ -71,7 +71,7 @@ function mockAPI(
     vi.fn((path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
         return Promise.resolve(
-          Response.json({ claimed: true, person, auth_mode: "fake" }),
+          Response.json({ claimed: true, person, sign_in_methods: ["fake"] }),
         );
       if (path.endsWith("/connection"))
         return Promise.resolve(
@@ -1699,7 +1699,11 @@ it("disables unsupported imports without hiding the library or blocking imported
     "fetch",
     vi.fn(async (path: string) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/connection"))
         return Response.json({
           usable: true,

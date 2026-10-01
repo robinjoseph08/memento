@@ -68,7 +68,7 @@ func TestMobileAppContract(t *testing.T) {
 	// Status is read before anyone signs in.
 	response := call(http.MethodGet, "/api/identity/status", "", "")
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	requireContract(t, response.Body.Bytes(), "claimed", "person", "auth_mode", "version")
+	requireContract(t, response.Body.Bytes(), "claimed", "person", "auth_mode", "sign_in_codes", "sign_in_methods", "version")
 
 	// The web sign-in happens in the browser sheet, then hands the app a code.
 	response = call(http.MethodPost, "/api/identity/fake-sign-in", `{"email":"curator@example.test","display_name":"Curator"}`, "")
@@ -113,7 +113,7 @@ func TestMobileAppContract(t *testing.T) {
 	requireContract(t, response.Body.Bytes(), personFields...)
 	response = call(http.MethodGet, "/api/identity/status", "", bearer)
 	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
-	status := requireContract(t, response.Body.Bytes(), "claimed", "person", "auth_mode", "version")
+	status := requireContract(t, response.Body.Bytes(), "claimed", "person", "auth_mode", "sign_in_codes", "sign_in_methods", "version")
 	require.NotNil(t, status["person"], "status reports the bearer session's Person")
 
 	// The phone shows up in the Person's sessions with a label they recognize.

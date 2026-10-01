@@ -74,8 +74,8 @@ func run(log logger.Logger) error {
 	source := immich.New(cfg.ImmichURL, cfg.ImmichAPIKey)
 	source.Probe = ffprobe.Command{Path: cfg.FFprobePath}
 	library := media.New(db, source)
-	// SMTP is optional. Without it the mail worker still resolves stale queued
-	// deliveries as failed instead of leaving them queued forever.
+	// Development and test can run without SMTP. The mail worker still
+	// resolves stale queued deliveries as failed.
 	var mailer notifications.Mailer
 	if cfg.MailConfigured() {
 		smtpMailer, err := notifications.NewSMTPMailer(cfg.SMTPURL, cfg.SMTPFrom)

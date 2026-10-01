@@ -23,7 +23,7 @@ function mockSources() {
             is_curator: true,
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path.endsWith("/connection"))
         return Response.json({ usable: true, import_supported: true });

@@ -40,7 +40,7 @@ func RegisterRoutes(e *echo.Echo, cfg *config.Config, module UseCases) *Handlers
 	e.POST("/api/identity/sign-out", h.signOut)
 	e.GET("/api/identity/mobile/return", h.mobileReturn, h.RequirePerson)
 	e.POST(MobileExchangePath, h.mobileExchange)
-	if cfg.AuthMode == "fake" && (cfg.AppEnv == "development" || cfg.AppEnv == "test") {
+	if cfg.FakeSignInAvailable() {
 		e.POST("/api/identity/fake-sign-in", h.fakeSignIn)
 	}
 	return h

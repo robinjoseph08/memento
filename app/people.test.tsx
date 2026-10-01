@@ -29,7 +29,10 @@ it.each([true, false])(
       "fetch",
       vi.fn(async (path: string) => {
         if (path.endsWith("/status"))
-          return Response.json({ claimed, auth_mode: "google" });
+          return Response.json({
+            claimed,
+            sign_in_methods: ["code", "google"],
+          });
         return Response.json({ healthy: false });
       }),
     );
@@ -50,7 +53,7 @@ it("keeps the same people search input focused when submitting and clearing a se
     vi.fn(async (path: string) =>
       Response.json(
         path.endsWith("/status")
-          ? { claimed: true, person: curator, auth_mode: "fake" }
+          ? { claimed: true, person: curator, sign_in_methods: ["fake"] }
           : [],
       ),
     ),
@@ -90,7 +93,7 @@ it("preserves edits when the server rejects a Person change", async () => {
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (options?.method === "POST")
         return Response.json(
@@ -139,7 +142,7 @@ it("keeps successfully saved Person values when the following refresh fails", as
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (options?.method === "POST") {
         saved = true;
@@ -187,7 +190,7 @@ it("creates a person without losing a rejected display name and opens their acce
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/people" && options?.method === "POST") {
         if (rejected)
@@ -251,7 +254,7 @@ it("asks before discarding a new person and keeps the name when the Curator chan
     vi.fn(async (path: string) =>
       Response.json(
         path.endsWith("/status")
-          ? { claimed: true, person: curator, auth_mode: "fake" }
+          ? { claimed: true, person: curator, sign_in_methods: ["fake"] }
           : [],
       ),
     ),
@@ -298,7 +301,7 @@ it("shows where each person stands on signing in", async () => {
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path.startsWith("/api/people?"))
         return Response.json([

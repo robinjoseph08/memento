@@ -214,7 +214,7 @@ it("offers Cast only with a receiver nearby, follows the lightbox on the TV, and
             is_curator: false,
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (init?.method === "HEAD")
         return new Response(null, {

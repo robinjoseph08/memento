@@ -36,7 +36,7 @@ chmod 644 "$work/app.yaml"
 container=$(docker run --detach --network host \
   --mount "type=bind,source=$work/app.yaml,target=/config/app.yaml,readonly" \
   --env DATABASE_URL --env SERVER_PORT=18080 \
-  --env APP_ENV=test --env AUTH_MODE=fake \
+  --env APP_ENV=test \
   --env IMMICH_API_KEY=smoke-fixture-only-key "$image")
 base=http://127.0.0.1:18080
 for attempt in $(seq 1 30); do
@@ -53,7 +53,7 @@ test "$api_status" = 404
 grep -q 'not_found' "$work/api-missing"
 curl --fail --silent "$base/api/identity/status" | python3 -c 'import json,sys; assert json.load(sys.stdin)["claimed"] is False'
 curl --fail --silent "$base/api/setup/connection" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usable"] is False and r["message"]'
-# Fake authentication is an explicit test-only setting, not a production default.
+# The test environment permits fake sign-in.
 curl --fail --silent --cookie-jar "$work/cookies" --header 'Content-Type: application/json' \
   --header "Origin: $base" --data '{"email":"smoke@example.test","display_name":"Smoke curator"}' \
   "$base/api/identity/fake-sign-in" | python3 -c 'import json,sys; assert json.load(sys.stdin)["is_curator"] is True'

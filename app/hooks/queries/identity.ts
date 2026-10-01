@@ -56,7 +56,8 @@ export function useSignOut(everywhere = false) {
       clearPrivateQueries(client);
       client.setQueryData<Status>(statusKey, {
         claimed: true,
-        auth_mode: data?.auth_mode ?? "google",
+        auth_mode: data?.auth_mode ?? "",
+        sign_in_methods: data?.sign_in_methods ?? [],
         sign_in_codes: data?.sign_in_codes ?? false,
         version: data?.version ?? "",
       });
@@ -74,6 +75,7 @@ async function signedIn(client: QueryClient, person: Person) {
     claimed: true,
     person,
     auth_mode: previous?.auth_mode ?? "",
+    sign_in_methods: previous?.sign_in_methods ?? [],
     sign_in_codes: previous?.sign_in_codes ?? false,
     version: previous?.version ?? "",
   });

@@ -63,7 +63,11 @@ function serveIdentity(
           ? signOutResponse()
           : new Response(null, { status: 204 });
       if (path.endsWith("/status"))
-        return Response.json({ claimed, person: null, auth_mode: "fake" });
+        return Response.json({
+          claimed,
+          person: null,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/fake-sign-in")) {
         if (signInResponse) return signInResponse();
         const claims = JSON.parse(String(options?.body)) as {
@@ -268,7 +272,11 @@ it("offers a retry after a server error without showing server details", async (
             { error: { message: "secret database details" } },
             { status: 500 },
           )
-        : Response.json({ claimed: false, person: null, auth_mode: "fake" }),
+        : Response.json({
+            claimed: false,
+            person: null,
+            sign_in_methods: ["fake"],
+          }),
     ),
   );
   const user = userEvent.setup();
@@ -408,7 +416,7 @@ it("cancels an in-flight diagnostic when leaving Settings before signing out", a
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path.endsWith("/connection")) {
         signal = options?.signal;
@@ -463,7 +471,11 @@ it("preserves edited sign-in fields through a failed background status refresh a
               { error: { message: "Unavailable" } },
               { status: 503 },
             )
-          : Response.json({ claimed: true, person: null, auth_mode: "fake" });
+          : Response.json({
+              claimed: true,
+              person: null,
+              sign_in_methods: ["fake"],
+            });
       return Response.json({
         usable: true,
         version: "2.7.0",

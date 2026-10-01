@@ -69,17 +69,26 @@ type PersonSummary struct {
 	LastSeenAt *time.Time `json:"last_seen_at"`
 }
 
+type SignInMethod string
+
+const (
+	SignInMethodCode   SignInMethod = "code"
+	SignInMethodGoogle SignInMethod = "google"
+	SignInMethodFake   SignInMethod = "fake"
+)
+
 // Status describes installation claiming and the current browser's identity.
 // It is public, and the Mobile App checks Version against the oldest server it
 // supports before sign-in starts.
 type Status struct {
-	Claimed  bool    `json:"claimed"`
-	Person   *Person `json:"person"`
-	AuthMode string  `json:"auth_mode"`
-	// SignInCodes is true when mail is configured, so the sign-in page offers
-	// an emailed Sign-in Code alongside the auth mode's own sign-in.
-	SignInCodes bool   `json:"sign_in_codes"`
-	Version     string `json:"version"`
+	Claimed bool    `json:"claimed"`
+	Person  *Person `json:"person"`
+	// AuthMode and SignInCodes remain for older Mobile App clients. The web
+	// uses SignInMethods because several methods can be available together.
+	AuthMode      string         `json:"auth_mode"`
+	SignInMethods []SignInMethod `json:"sign_in_methods"`
+	SignInCodes   bool           `json:"sign_in_codes"`
+	Version       string         `json:"version"`
 }
 
 type CreatePersonRequest struct {

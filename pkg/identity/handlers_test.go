@@ -22,21 +22,22 @@ import (
 
 type fakeIdentity struct {
 	identity.UseCases
-	claimed       bool
-	session       identity.Session
-	expectedToken string
-	err           error
-	faceAction    string
-	personID      string
-	sourceFaceID  string
-	signedOut     string
-	issuedFor     string
-	listedFor     string
-	exchanged     [2]string
+	claimed        bool
+	codesAvailable bool
+	session        identity.Session
+	expectedToken  string
+	err            error
+	faceAction     string
+	personID       string
+	sourceFaceID   string
+	signedOut      string
+	issuedFor      string
+	listedFor      string
+	exchanged      [2]string
 }
 
 func (f *fakeIdentity) Claimed(context.Context) (bool, error) { return f.claimed, nil }
-func (*fakeIdentity) SignInCodesAvailable() bool              { return false }
+func (f *fakeIdentity) SignInCodesAvailable() bool            { return f.codesAvailable }
 func (f *fakeIdentity) SignIn(context.Context, identity.Claims) (identity.Session, error) {
 	return f.session, f.err
 }
@@ -351,4 +352,60 @@ func TestSignInFieldErrorsAndSignOut(t *testing.T) {
 	require.Equal(t, 204, recorder.Code)
 	require.Len(t, recorder.Result().Cookies(), 1)
 	assert.Equal(t, -1, recorder.Result().Cookies()[0].MaxAge)
+}
+
+func TestStatusListsAvailableSignInMethods(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, environment string
+		codes, google     bool
+		want              []identity.SignInMethod
+	}{
+		{"production email", "production", true, false, []identity.SignInMethod{identity.SignInMethodCode}},
+		{"production email and Google", "production", true, true, []identity.SignInMethod{identity.SignInMethodCode, identity.SignInMethodGoogle}},
+		{"development without mail", "development", false, false, []identity.SignInMethod{identity.SignInMethodFake}},
+		{"test without mail", "test", false, false, []identity.SignInMethod{identity.SignInMethodFake}},
+		{"development Google without mail", "development", false, true, []identity.SignInMethod{identity.SignInMethodGoogle, identity.SignInMethodFake}},
+		{"test all methods", "test", true, true, []identity.SignInMethod{identity.SignInMethodCode, identity.SignInMethodGoogle, identity.SignInMethodFake}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.NewForTest()
+			cfg.AppEnv = tc.environment
+			if tc.google {
+				cfg.GoogleClientID, cfg.GoogleClientSecret = "client", "secret"
+			}
+			e := identityHTTP(t, cfg, &fakeIdentity{codesAvailable: tc.codes})
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/identity/status", nil))
+			require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			var status identity.Status
+			require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &status))
+			assert.Equal(t, tc.want, status.SignInMethods)
+		})
+	}
+}
+
+func TestFakeSignInIsOnlyAvailableInDevelopmentAndTest(t *testing.T) {
+	t.Parallel()
+	for _, environment := range []string{"production", "development", "test", ""} {
+		t.Run(environment, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.NewForTest()
+			cfg.AppEnv = environment
+			// Google does not replace the development form.
+			cfg.GoogleClientID, cfg.GoogleClientSecret = "client", "secret"
+			e := identityHTTP(t, cfg, &fakeIdentity{})
+			req := httptest.NewRequest(http.MethodPost, "/api/identity/fake-sign-in", strings.NewReader(`{"email":"curator@example.test","display_name":"Curator"}`))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, req)
+			if environment == "development" || environment == "test" {
+				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
+			} else {
+				require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
+				require.Empty(t, recorder.Result().Cookies())
+			}
+		})
+	}
 }

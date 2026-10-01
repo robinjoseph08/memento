@@ -7,10 +7,10 @@ import (
 
 const googleCallbackPath = "/api/identity/google/callback"
 
-// RegisterGoogleRoutes adds browser sign-in only in Google mode, without network I/O.
+// RegisterGoogleRoutes adds browser sign-in when both Google credentials are configured, without network I/O.
 // Options substitute the provider for local protocol and HTTP tests.
 func RegisterGoogleRoutes(e *echo.Echo, cfg *config.Config, module UseCases, options ...GoogleOption) {
-	if cfg.AuthMode != "google" {
+	if !cfg.GoogleConfigured() {
 		return
 	}
 	h := &googleHandlers{

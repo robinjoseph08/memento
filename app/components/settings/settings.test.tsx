@@ -38,7 +38,7 @@ function serveSettings(email: () => unknown, ffprobe: () => unknown) {
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/curator/connection") {
         checks.connection += 1;

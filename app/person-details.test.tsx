@@ -76,7 +76,7 @@ it("chooses an avatar from a Person's linked Immich faces", async () => {
         return Response.json({
           claimed: true,
           person: robin,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/people/alex/avatar") {
         avatarBody = JSON.parse(String(options?.body));
@@ -118,7 +118,7 @@ it("puts linked emails first and keeps previous emails collapsed outside active 
         return Response.json({
           claimed: true,
           person: robin,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       return Response.json({
         person: alex,
@@ -191,7 +191,7 @@ it.each([false, true])(
           return Response.json({
             claimed: true,
             person: robin,
-            auth_mode: "fake",
+            sign_in_methods: ["fake"],
           });
         if (path !== "/api/people/alex")
           throw new Error(`Unexpected request: ${path}`);
@@ -260,7 +260,7 @@ it("lets a Curator remove another person's final linked email without losing a n
         return Response.json({
           claimed: true,
           person: robin,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (
         options?.method === "POST" &&
@@ -315,7 +315,7 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
         return Response.json({
           claimed: true,
           person: robin,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (options?.method === "POST") {
         if (path.endsWith("/revoke")) {
@@ -426,7 +426,11 @@ it("lets a Curator rename themselves without removing their own access", async (
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (options?.method === "POST") {
         person = { ...person, ...JSON.parse(String(options.body)) };
         return Response.json(person);
@@ -480,7 +484,7 @@ it("asks before deactivating a person and saves only after confirming", async ()
         return Response.json({
           claimed: true,
           person: robin,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (options?.method === "POST" && path.endsWith("/api/people/alex")) {
         saves.push(JSON.parse(String(options.body)));
