@@ -71,13 +71,16 @@ type HandoffCode struct {
 
 // SignInCode is one emailed Sign-in Code. Only the newest code for an address
 // can be verified; older rows stay for an hour so the send limits can count
-// them. Known records whether the address would sign in when the code was sent.
+// them. Known records whether the address would sign in when the code was
+// sent. A decoy stands in for a code the unknown-address cap kept from being
+// sent, so it was never emailed and nothing can match it.
 type SignInCode struct {
 	bun.BaseModel `bun:"table:sign_in_codes,alias:code"`
 	ID            UUID `bun:"id,pk,type:uuid"`
 	Email         string
 	CodeHash      []byte
 	Known         bool
+	Decoy         bool
 	Attempts      int
 	CreatedAt     time.Time
 	ExpiresAt     time.Time

@@ -90,21 +90,27 @@ func (m *Module) RequestSignInCode(ctx context.Context, request RequestSignInCod
 		if err != nil {
 			return err
 		}
+		hash := sha256.Sum256([]byte(code))
+		row = models.SignInCode{ID: models.NewUUIDv7(), Email: email, CodeHash: hash[:], Known: known, CreatedAt: now, ExpiresAt: now.Add(SignInCodeLifetime)}
 		if !known {
-			sent, err := tx.NewSelect().Model((*models.SignInCode)(nil)).Where("NOT known").Count(ctx)
+			sent, err := tx.NewSelect().Model((*models.SignInCode)(nil)).Where("NOT known AND NOT decoy").Count(ctx)
 			if err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
+			// Over the cap nothing is sent, but a decoy takes the code's
+			// place so wrong guesses are answered as for any other address.
+			// Its hash is random bytes, which no code can match.
 			if sent >= unknownCodesPerHour {
-				return nil
+				row.Decoy = true
+				if _, err := rand.Read(row.CodeHash); err != nil {
+					return errorstack.Capture(err)
+				}
 			}
 		}
-		hash := sha256.Sum256([]byte(code))
-		row = models.SignInCode{ID: models.NewUUIDv7(), Email: email, CodeHash: hash[:], Known: known, CreatedAt: now, ExpiresAt: now.Add(SignInCodeLifetime)}
 		_, err = tx.NewInsert().Model(&row).Exec(ctx)
 		return errorstack.CaptureContext(ctx, err)
 	})
-	if err != nil || row.ID == (models.UUID{}) {
+	if err != nil || row.ID == (models.UUID{}) || row.Decoy {
 		return err
 	}
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signInCodeSendTimeout)

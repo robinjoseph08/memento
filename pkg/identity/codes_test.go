@@ -75,16 +75,24 @@ func requireInvalidCode(t *testing.T, err error) {
 	assert.Contains(t, field.Fields, "code")
 }
 
-// requireCodeMessage checks whether the Person is told to retype or to send a new code.
-func requireCodeMessage(t *testing.T, err error, dead bool) {
+// codeMessage is what the code field says after a failed verification.
+func codeMessage(t *testing.T, err error) string {
 	t.Helper()
 	requireInvalidCode(t, err)
 	field, _ := errors.AsType[*errcodes.FieldError](err)
-	if dead {
-		assert.Contains(t, field.Fields["code"], "no longer works")
-	} else {
-		assert.Contains(t, field.Fields["code"], "isn't right")
-	}
+	return field.Fields["code"]
+}
+
+// requireWrongCode means the Person is told to check the code and retype it.
+func requireWrongCode(t *testing.T, err error) {
+	t.Helper()
+	assert.Contains(t, codeMessage(t, err), "isn't right")
+}
+
+// requireDeadCode means the Person is told to send a new code.
+func requireDeadCode(t *testing.T, err error) {
+	t.Helper()
+	assert.Contains(t, codeMessage(t, err), "no longer works")
 }
 
 func TestSignInCodeEmail(t *testing.T) {
@@ -123,7 +131,7 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	assert.Equal(t, "Alex", session.Person.DisplayName)
 	assert.Len(t, session.Token, 43)
 	_, err = h.verify(t, "alex@example.test", code, "")
-	requireCodeMessage(t, err, true)
+	requireDeadCode(t, err)
 
 	// A code works for ten minutes after it was sent, and not after.
 	h.clock.advance(time.Minute)
@@ -135,26 +143,28 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	code = h.request(t, "alex@example.test")
 	h.clock.advance(identity.SignInCodeLifetime)
 	_, err = h.verify(t, "alex@example.test", code, "")
-	requireInvalidCode(t, err)
+	requireDeadCode(t, err)
 
 	// Five wrong attempts kill it, even for the right code afterwards.
 	code = h.request(t, "alex@example.test")
 	digits, err := strconv.Atoi(code)
 	require.NoError(t, err)
 	wrong := fmt.Sprintf("%06d", (digits+1)%1000000)
-	for i := range 5 {
+	for range 4 {
 		_, err = h.verify(t, "alex@example.test", wrong, "")
-		requireCodeMessage(t, err, i == 4)
+		requireWrongCode(t, err)
 	}
+	_, err = h.verify(t, "alex@example.test", wrong, "")
+	requireDeadCode(t, err)
 	_, err = h.verify(t, "alex@example.test", code, "")
-	requireCodeMessage(t, err, true)
+	requireDeadCode(t, err)
 
 	// Four wrong attempts do not.
 	h.clock.advance(time.Minute)
 	code = h.request(t, "alex@example.test")
 	for range 4 {
 		_, err = h.verify(t, "alex@example.test", wrong, "")
-		requireInvalidCode(t, err)
+		requireWrongCode(t, err)
 	}
 	_, err = h.verify(t, "alex@example.test", code, "")
 	require.NoError(t, err)
@@ -166,7 +176,7 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	replacement := h.request(t, "alex@example.test")
 	if old != replacement {
 		_, err = h.verify(t, "alex@example.test", old, "")
-		requireInvalidCode(t, err)
+		requireWrongCode(t, err)
 	}
 	_, err = h.verify(t, "alex@example.test", replacement, "")
 	require.NoError(t, err)
@@ -177,7 +187,50 @@ func TestSignInCodeLifecycle(t *testing.T) {
 	_, err = h.verify(t, "curator@example.test", code, "")
 	requireInvalidCode(t, err)
 	_, err = h.verify(t, "nobody@example.test", "123456", "")
-	requireCodeMessage(t, err, false)
+	requireWrongCode(t, err)
+}
+
+// Once the unknown-address cap is spent, a known and an unknown address must
+// still answer wrong guesses alike, or the answers would show who belongs.
+func TestSignInCodeAnswersAlikeOverTheCap(t *testing.T) {
+	t.Parallel()
+	h := newCodeHarness(t)
+	curator := claimCurator(t, h.module)
+	authorizePerson(t, h.module, curator, "Alex", "alex@example.test")
+	h.clock.advance(time.Minute)
+
+	// Each address has a dead code left over from an earlier attempt.
+	require.NotEmpty(t, h.request(t, "alex@example.test"))
+	require.NotEmpty(t, h.request(t, "stranger@example.test"))
+	h.clock.advance(identity.SignInCodeLifetime)
+	for i := range 9 {
+		require.NotEmpty(t, h.request(t, fmt.Sprintf("filler-%d@example.test", i)))
+	}
+
+	// Now only the known address is actually emailed.
+	alex := h.request(t, "alex@example.test")
+	require.NotEmpty(t, alex)
+	require.Empty(t, h.request(t, "stranger@example.test"))
+	digits, err := strconv.Atoi(alex)
+	require.NoError(t, err)
+	wrong := fmt.Sprintf("%06d", (digits+1)%1000000)
+	answers := func(email string) []string {
+		var messages []string
+		for range 6 {
+			_, err := h.verify(t, email, wrong, "")
+			messages = append(messages, codeMessage(t, err))
+		}
+		return messages
+	}
+	known := answers("alex@example.test")
+	assert.Equal(t, known, answers("stranger@example.test"))
+	assert.Contains(t, known[0], "isn't right")
+	assert.Contains(t, known[5], "no longer works")
+
+	// The stand-in for the unsent code never counts toward the cap: once the
+	// first stranger code ages out, nine sent codes remain and one more fits.
+	h.clock.advance(time.Hour - identity.SignInCodeLifetime)
+	assert.NotEmpty(t, h.request(t, "late@example.test"))
 }
 
 func TestSignInCodeSendLimits(t *testing.T) {
