@@ -45,7 +45,8 @@ type DeliveryError struct {
 	Cause   error
 }
 
-// Error is for logs, so it names the cause. Curators only ever see Summary.
+// Error is for logs, so it names the cause, which may repeat the mail
+// server's reply and the recipient it names. Curators only ever see Summary.
 func (e *DeliveryError) Error() string {
 	if e.Cause == nil {
 		return fmt.Sprintf("%s delivery failure: %s", e.Outcome, e.Summary)

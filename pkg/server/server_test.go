@@ -113,7 +113,7 @@ func TestProductionMutationOriginRequiresPublicURL(t *testing.T) {
 	req.Header.Set("Origin", "http://192.168.2.166:5173")
 	recorder = httptest.NewRecorder()
 	srv.Handler.ServeHTTP(recorder, req)
-	assert.Equal(t, http.StatusForbidden, recorder.Code, "a private address is a development allowance only")
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "a private address is allowed only in development and test")
 	// The Mobile App has no Origin to offer in production either.
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("t", 43))
 	recorder = httptest.NewRecorder()
@@ -137,6 +137,7 @@ func TestTestEnvironmentAcceptsNetworkOrigins(t *testing.T) {
 		origin, host string
 		status       int
 	}{
+		{"http://robin-m3:53000", "robin-m3:53000", 204},
 		{"http://robin-m3.local:53000", "robin-m3.local:53000", 204},
 		{"http://192.168.2.166:53000", "192.168.2.166:53000", 204},
 		{"http://evil.test:53000", "evil.test:53000", 403},

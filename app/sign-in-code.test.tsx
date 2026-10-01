@@ -189,7 +189,7 @@ it("shows a wrong code beside the field and lets the Person start over", async (
             message: "Check the highlighted fields.",
             status_code: 422,
             fields: {
-              code: "This code no longer works. Send a new code.",
+              code: "That code isn't right. Check the email and try again.",
             },
           },
         },
@@ -208,9 +208,7 @@ it("shows a wrong code beside the field and lets the Person start over", async (
     await screen.findByRole("textbox", { name: "Sign-in code" }),
     "111111",
   );
-  expect(
-    await screen.findByText(/This code no longer works/),
-  ).toBeInTheDocument();
+  expect(await screen.findByText(/That code isn't right/)).toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Sign-in code" })).toHaveAttribute(
     "aria-invalid",
     "true",

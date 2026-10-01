@@ -14,6 +14,9 @@ import { Button } from "../ui/button";
 type Step = "email" | "code" | "name" | "requested";
 
 const rememberedEmailKey = "memento-sign-in-email";
+// Each step's form starts its column, so its error sits at the top with the
+// fields' spacing below rather than the shared top margin.
+const failureClassName = "mt-0 mb-5";
 const resendDelay = 60_000;
 
 function rememberedEmail() {
@@ -95,19 +98,19 @@ export function CodeSignIn({
   const send = (resend: boolean) => {
     rememberEmail(email.trim());
     verify.reset();
+    // An earlier failure no longer describes this attempt; the rest of the
+    // query, such as the Mobile App's return link, stays.
+    setSearch(
+      (search) => {
+        search.delete("error");
+        return search;
+      },
+      { replace: true },
+    );
     requestCode.mutate(
       { email },
       {
         onSuccess: () => {
-          // An earlier failure no longer describes this attempt; the rest
-          // of the query, such as the Mobile App's return link, stays.
-          setSearch(
-            (search) => {
-              search.delete("error");
-              return search;
-            },
-            { replace: true },
-          );
           restartResend();
           setResent(resend);
           setCode("");
@@ -132,12 +135,10 @@ export function CodeSignIn({
           if (result.outcome === "requested") setStep("requested");
         },
         // A code that died while the Person typed their name is explained
-        // on the code step, where a new one can be sent.
+        // on the code step, where a new one can be sent. The form focuses
+        // its invalid field itself.
         onError: (error) => {
-          if (fieldErrors(error).code) {
-            setStep("code");
-            focusNext();
-          }
+          if (fieldErrors(error).code) setStep("code");
         },
       },
     );
@@ -159,7 +160,7 @@ export function CodeSignIn({
           aria-busy={requestCode.isPending}
           aria-label="Sign in with email"
           error={requestCode.error}
-          failureClassName="mt-0 mb-5"
+          failureClassName={failureClassName}
           onSubmit={(event) => {
             event.preventDefault();
             if (!requestCode.isPending) send(false);
@@ -211,7 +212,7 @@ export function CodeSignIn({
           aria-busy={verify.isPending}
           aria-label="Enter your sign-in code"
           error={verify.error ?? requestCode.error}
-          failureClassName="mt-0 mb-5"
+          failureClassName={failureClassName}
           onSubmit={(event) => {
             event.preventDefault();
             check(code);
@@ -296,7 +297,7 @@ export function CodeSignIn({
           aria-busy={verify.isPending}
           aria-label="Request access"
           error={verify.error}
-          failureClassName="mt-0 mb-5"
+          failureClassName={failureClassName}
           onSubmit={(event) => {
             event.preventDefault();
             check(code, name);
