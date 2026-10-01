@@ -101,8 +101,6 @@ func TestSignInCodeEmail(t *testing.T) {
 	assert.Contains(t, message.Body, code)
 	assert.Contains(t, message.Body, "10 minutes")
 	assert.Contains(t, message.Body, "ignore")
-	lines := strings.Split(strings.TrimRight(message.Body, "\n"), "\n")
-	assert.Equal(t, "@memento.example.test #"+code, lines[len(lines)-1], "the origin-bound line comes last for Safari's autofill")
 
 	var rows []models.SignInCode
 	require.NoError(t, h.db.NewSelect().Model(&rows).Scan(t.Context()))

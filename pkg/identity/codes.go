@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"net/url"
 	"strings"
 	"time"
 
@@ -110,7 +109,7 @@ func (m *Module) RequestSignInCode(ctx context.Context, request RequestSignInCod
 	}
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signInCodeSendTimeout)
 	defer cancel()
-	if err := m.Sender.Send(sendCtx, m.signInCodeMessage(email, code)); err != nil {
+	if err := m.Sender.Send(sendCtx, signInCodeMessage(email, code)); err != nil {
 		// A code that never went out neither replaces the previous one nor
 		// holds back an immediate retry.
 		if deleteErr := m.change(context.WithoutCancel(ctx), func(ctx context.Context, tx bun.Tx) error {
@@ -146,21 +145,14 @@ func newSignInCode() (string, error) {
 }
 
 // signInCodeMessage puts the code in the subject, so it shows in a
-// notification, and ends with the origin-bound line Apple Mail and Safari
-// read to offer the code for autofill on this Installation only.
-func (m *Module) signInCodeMessage(email, code string) notifications.Message {
-	host := "localhost"
-	if u, err := url.Parse(m.PublicURL); err == nil && u.Hostname() != "" {
-		host = u.Hostname()
-	}
+// notification without opening the email.
+func signInCodeMessage(email, code string) notifications.Message {
 	return notifications.Message{Kind: "sign_in_code", To: email, Subject: code + " is your Memento sign-in code", Body: fmt.Sprintf(`Your Memento sign-in code is:
 
 %s
 
 It expires in 10 minutes. If you didn't try to sign in to Memento, you can ignore this email.
-
-@%s #%s
-`, code, host, code)}
+`, code)}
 }
 
 // VerifySignInCode checks the newest code sent to the address and resolves it

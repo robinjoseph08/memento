@@ -14,8 +14,8 @@ async function codeFor(mail: () => Promise<MailState>, email: string) {
     })
     .toMatch(/Subject: \d{6} is your Memento sign-in code/);
   const code = /Subject: (\d{6})/.exec(message)?.[1] ?? "";
-  // The origin-bound line comes last so Safari can offer the code.
-  expect(message.trimEnd()).toMatch(new RegExp(`\\n@[^\\s]+ #${code}$`));
+  // The code is in the body too, for anyone who opens the email.
+  expect(message).toContain(`\r\n${code}\r\n`);
   return code;
 }
 
