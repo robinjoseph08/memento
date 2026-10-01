@@ -132,7 +132,7 @@ INSERT INTO access_requests (id, kind, provider, subject, email, email_verified,
 	require.Error(t, err, "a second Person cannot link an address someone holds")
 	_, err = db.ExecContext(ctx, `INSERT INTO linked_emails (id, person_id, email, created_at) VALUES (?, ?, 'Mixed@example.test', ?)`, models.NewUUIDv7(), alex, now)
 	require.Error(t, err, "addresses are stored lowercased")
-	_, err = db.ExecContext(ctx, `INSERT INTO access_requests (id, kind, email, email_verified, display_name, status, created_at, updated_at) VALUES (?, 'join', 'stranger@example.test', true, 'Again', 'pending', ?, ?)`, models.NewUUIDv7(), now, now)
+	_, err = db.ExecContext(ctx, `INSERT INTO access_requests (id, kind, email, display_name, status, created_at, updated_at) VALUES (?, 'join', 'stranger@example.test', 'Again', 'pending', ?, ?)`, models.NewUUIDv7(), now, now)
 	require.Error(t, err, "one open join request per address")
 }
 

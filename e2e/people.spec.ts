@@ -31,7 +31,7 @@ test("a Curator approves access, a member manages their profile and sessions, an
     page.getByRole("heading", { name: "Alex Family" }),
   ).toBeVisible();
   await page
-    .getByRole("textbox", { name: "Google email address" })
+    .getByRole("textbox", { name: "Email address" })
     .fill("alex@example.test");
   await page.getByRole("button", { name: "Preauthorize email" }).click();
   await expect(
@@ -89,7 +89,7 @@ test("a Curator approves access, a member manages their profile and sessions, an
     await expect(member.getByRole("tooltip")).toBeHidden();
 
     await page
-      .getByRole("textbox", { name: "Google email address" })
+      .getByRole("textbox", { name: "Email address" })
       .fill("alex.other@example.test");
     await page.getByRole("button", { name: "Preauthorize email" }).click();
     const other = await otherContext.newPage();

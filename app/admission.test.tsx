@@ -106,7 +106,6 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
     id: "request-1",
     kind: "join",
     email: "stranger@example.test",
-    email_verified: true,
     display_name: "Stranger",
     person_id: "",
     person_name: "",

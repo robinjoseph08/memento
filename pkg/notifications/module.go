@@ -54,6 +54,15 @@ func New(db *bun.DB, mailer Mailer, enqueue EnqueueDelivery, content VisibleCont
 // Configured reports whether email can be sent from this installation.
 func (m *Module) Configured() bool { return m.mailer != nil }
 
+// Send delivers one message now, outside the durable queue and without a
+// delivery record, for mail that is worthless by the time a retry would run.
+func (m *Module) Send(ctx context.Context, message Message) error {
+	if m.mailer == nil {
+		return ErrMailUnconfigured
+	}
+	return m.mailer.Send(ctx, message)
+}
+
 // CheckMail is the Settings diagnostic: it connects to the configured mail
 // server without sending anything. Without SMTP it reports the quiet
 // unconfigured state instead of a failure.

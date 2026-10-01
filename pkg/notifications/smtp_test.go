@@ -165,3 +165,20 @@ func TestSMTPMailerRefusesCredentialsOverPlaintextPermanently(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret")
 	assert.Empty(t, server.Messages())
 }
+
+// A failed send must say why in the log, without the URL's credentials.
+func TestSMTPMailerFailureNamesItsCause(t *testing.T) {
+	t.Parallel()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	address := listener.Addr().String()
+	require.NoError(t, listener.Close())
+	mailer, err := notifications.NewSMTPMailer("smtps://user:supersecret@"+address, "memento@example.test")
+	require.NoError(t, err)
+	err = mailer.Send(t.Context(), notifications.Message{To: "alex@example.test", Subject: "Hi", Body: "Hi"})
+	failure, ok := errors.AsType[*notifications.DeliveryError](err)
+	require.True(t, ok, "%v", err)
+	assert.Equal(t, "The mail server could not be reached.", failure.Summary)
+	assert.Contains(t, err.Error(), "connection refused")
+	assert.NotContains(t, err.Error(), "supersecret")
+}

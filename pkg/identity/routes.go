@@ -10,6 +10,8 @@ func RegisterRoutes(e *echo.Echo, cfg *config.Config, module UseCases) *Handlers
 	h := newHandlers(cfg, module)
 	RegisterGoogleRoutes(e, cfg, module)
 	e.GET("/api/identity/status", h.status)
+	e.POST("/api/identity/sign-in-code", h.requestSignInCode)
+	e.POST("/api/identity/sign-in-code/verify", h.verifySignInCode)
 	e.GET("/api/identity/me", h.me, h.RequirePerson)
 	e.GET("/api/identity/profile", h.profile, h.RequirePerson)
 	e.POST("/api/identity/profile", h.updateProfile, h.RequirePerson)

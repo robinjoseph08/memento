@@ -69,6 +69,24 @@ type HandoffCode struct {
 	ExpiresAt     time.Time
 }
 
+// SignInCode is one emailed Sign-in Code. Only the newest code for an address
+// can be verified; older rows stay for an hour so the send limits can count
+// them. Known records whether the address would sign in when the code was
+// sent. A decoy stands in for a code the unknown-address cap kept from being
+// sent, so it was never emailed and nothing can match it.
+type SignInCode struct {
+	bun.BaseModel `bun:"table:sign_in_codes,alias:code"`
+	ID            UUID `bun:"id,pk,type:uuid"`
+	Email         string
+	CodeHash      []byte
+	Known         bool
+	Decoy         bool
+	Attempts      int
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
+	UsedAt        *time.Time
+}
+
 type Invitation struct {
 	bun.BaseModel      `bun:"table:invitations,alias:invitation"`
 	ID                 UUID `bun:"id,pk,type:uuid"`
@@ -85,7 +103,6 @@ type AccessRequest struct {
 	ID            UUID `bun:"id,pk,type:uuid"`
 	Kind          string
 	Email         string
-	EmailVerified bool
 	DisplayName   string
 	PersonID      *UUID `bun:"person_id,type:uuid"`
 	AlbumID       *UUID `bun:"album_id,type:uuid"`

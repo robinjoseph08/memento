@@ -9,7 +9,7 @@ async function createPerson(page: Page, name: string, email: string) {
   await page.getByRole("textbox", { name: "Display name" }).fill(name);
   await page.getByRole("button", { name: "Create person" }).click();
   await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
-  await page.getByRole("textbox", { name: "Google email address" }).fill(email);
+  await page.getByRole("textbox", { name: "Email address" }).fill(email);
   await page.getByRole("button", { name: "Preauthorize email" }).click();
   await expect(
     page

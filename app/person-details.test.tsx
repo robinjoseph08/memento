@@ -359,7 +359,7 @@ it("keeps an exact-email draft through refresh and field errors, then moves a re
   const user = userEvent.setup();
   render(<App />);
   const email = await screen.findByRole("textbox", {
-    name: "Google email address",
+    name: "Email address",
   });
   await user.type(email, "Exact.Email@example.test");
   await user.click(screen.getByRole("link", { name: "People" }));

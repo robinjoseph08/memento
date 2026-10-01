@@ -33,6 +33,15 @@ func (UpdateProfileRequest) ValidationMessage(field, rule string) string {
 func (PreauthorizeRequest) ValidationMessage(field, rule string) string {
 	return SignInRequest{}.ValidationMessage(field, rule)
 }
+func (RequestSignInCodeRequest) ValidationMessage(field, rule string) string {
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
+func (VerifySignInCodeRequest) ValidationMessage(field, rule string) string {
+	if field == "code" {
+		return "Enter the 6-digit code from the email."
+	}
+	return SignInRequest{}.ValidationMessage(field, rule)
+}
 func (SendInvitationRequest) ValidationMessage(field, _ string) string {
 	if field == "preauthorization_id" {
 		return "Choose an unused email approval to invite."

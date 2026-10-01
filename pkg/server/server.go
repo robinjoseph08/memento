@@ -56,6 +56,9 @@ func New(cfg *config.Config, db *bun.DB, features Features) (*http.Server, error
 	if features.Notifications != nil {
 		people.Mail = features.Notifications
 		people.Announcements = features.Notifications
+		if features.Notifications.Configured() {
+			people.Sender = features.Notifications
+		}
 	}
 	library := features.Media
 	if library == nil {
@@ -109,7 +112,7 @@ func newServer(cfg *config.Config, frontend http.Handler, options ...dependencie
 			return path == "/api/media" || strings.HasPrefix(path, "/api/media/")
 		},
 	}))
-	e.Use(browserAPI(cfg.PublicURL, cfg.AppEnv == "development", cfg.Hostname))
+	e.Use(browserAPI(cfg.PublicURL, cfg.AppEnv == "development" || cfg.AppEnv == "test", cfg.Hostname))
 
 	health := func(c *echo.Context) error {
 		healthy := true
@@ -192,14 +195,15 @@ func capturePanicErrorStack() echo.MiddlewareFunc {
 	}
 }
 
-// browserAPI enforces same-origin JSON mutations. Development also accepts
-// loopback, a private network address, and this machine's hostname, so Vite
-// can be reached from a phone or another machine on the LAN.
+// browserAPI enforces same-origin JSON mutations. Development and test (the QA
+// fixture) also accept loopback, a private network address, and this
+// machine's hostname, so either can be reached from a phone or another
+// machine on the LAN.
 // The Origin check exists for cookies, which browsers attach on their own.
 // The Mobile App authenticates with a bearer header that only its own code
 // can set, so a bearer request skips the check, as does the one request that
 // exchanges its Hand-off Code before it has a token at all.
-func browserAPI(publicURL string, development bool, hostname string) echo.MiddlewareFunc {
+func browserAPI(publicURL string, local bool, hostname string) echo.MiddlewareFunc {
 	origin := strings.TrimRight(publicURL, "/")
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c *echo.Context) error {
@@ -213,7 +217,7 @@ func browserAPI(publicURL string, development bool, hostname string) echo.Middle
 			case http.MethodGet, http.MethodHead, http.MethodOptions:
 				return next(c)
 			}
-			if !bearerRequest(req) && req.URL.Path != identity.MobileExchangePath && !sameOrigin(req, origin, development, hostname) {
+			if !bearerRequest(req) && req.URL.Path != identity.MobileExchangePath && !sameOrigin(req, origin, local, hostname) {
 				return &errcodes.Error{HTTPCode: 403, Code: "invalid_origin", Message: "This request must come from the configured Memento address."}
 			}
 			contentType, _, err := mime.ParseMediaType(req.Header.Get("Content-Type"))
@@ -230,12 +234,12 @@ func bearerRequest(req *http.Request) bool {
 	return strings.HasPrefix(req.Header.Get("Authorization"), "Bearer ")
 }
 
-func sameOrigin(req *http.Request, publicOrigin string, development bool, hostname string) bool {
+func sameOrigin(req *http.Request, publicOrigin string, local bool, hostname string) bool {
 	origin := req.Header.Get("Origin")
 	if origin == publicOrigin {
 		return true
 	}
-	if !development {
+	if !local {
 		return false
 	}
 	parsed, err := url.Parse(origin)

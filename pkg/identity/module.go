@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -69,6 +70,8 @@ type Module struct {
 	Mail Mail
 	// Announcements records the Onboarding baseline. Completion fails without it.
 	Announcements Announcements
+	// Sender is nil until mail is configured, which turns Sign-in Codes off.
+	Sender Sender
 }
 
 func New(db *bun.DB, now func() time.Time) *Module {
@@ -93,19 +96,13 @@ func (m *Module) Claimed(ctx context.Context) (bool, error) {
 	return claimed, nil
 }
 
-// SignIn resolves a verified address in order: an unclaimed Installation
-// makes it the first Curator; a Linked Email signs its Person in; an unused
-// Preauthorization links it; anything else becomes an Access Request. An
-// unlinked address is refused until a Curator preauthorizes it again, and a
-// deactivated Person is refused outright. Display names never grant access.
-// The Linked Email lookup runs first because an unclaimed Installation has no
-// Person who could hold one.
+// SignIn resolves a verified address with resolveAddress and issues a
+// session, or records an Access Request when no step admits the address.
 func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	claims, err := normalizeClaims(claims)
 	if err != nil {
 		return Session{}, err
 	}
-	now := m.now().UTC()
 	token, hash, err := newSecret()
 	if err != nil {
 		return Session{}, err
@@ -113,67 +110,96 @@ func (m *Module) SignIn(ctx context.Context, claims Claims) (Session, error) {
 	var result Session
 	requested := false
 	err = m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
-		var claimedBy sql.NullString
-		if err := tx.NewSelect().Table("installation").
-			Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
-			return errorstack.CaptureContext(ctx, err)
+		person, linked, err := m.resolveAddress(ctx, tx, claims)
+		if errors.Is(err, errUnknownAddress) {
+			// Commit the request while refusing the session.
+			requested = true
+			return m.recordAccessRequest(ctx, tx, claims)
 		}
-		var person models.Person
-		var linked models.LinkedEmail
-		switch err := tx.NewSelect().Model(&linked).Where("email = ? AND unlinked_at IS NULL", claims.Email).Scan(ctx); {
-		case err == nil:
-			person, err = personByID(ctx, tx, linked.PersonID.String())
-			if err != nil {
-				return err
-			}
-			if person.DeactivatedAt != nil {
-				return ErrAccessDenied
-			}
-		case !errors.Is(err, sql.ErrNoRows):
-			return errorstack.CaptureContext(ctx, err)
-		case !claimedBy.Valid:
-			person = models.Person{ID: models.NewUUIDv7(), DisplayName: claims.DisplayName, IsCurator: true, CreatedAt: now}
-			if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
-				return errorstack.CaptureContext(ctx, err)
-			}
-			if err := claimInstallation(ctx, tx, person.ID, now); err != nil {
-				return err
-			}
-			if linked, err = link(ctx, tx, &person, claims.Email, now); err != nil {
-				return err
-			}
-		default:
-			person, err = m.resolvePreauthorization(ctx, tx, claims.Email)
-			if errors.Is(err, errNoPreauthorization) {
-				unlinked, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("email = ?", claims.Email).Exists(ctx)
-				if err != nil {
-					return errorstack.CaptureContext(ctx, err)
-				}
-				if unlinked {
-					return ErrAccessDenied
-				}
-				// Commit the request while refusing the session.
-				requested = true
-				return m.recordAccessRequest(ctx, tx, claims)
-			}
-			if err != nil {
-				return err
-			}
-			if linked, err = link(ctx, tx, &person, claims.Email, now); err != nil {
-				return err
-			}
-		}
-		session, err := insertSession(ctx, tx, linked.ID, browserDevice(ctx), hash, now)
 		if err != nil {
 			return err
 		}
-		result = Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}
-		return nil
+		result, err = m.startSession(ctx, tx, person, linked, token, hash)
+		return err
 	})
 	if err == nil && requested {
 		return Session{}, ErrAccessRequested
 	}
 	return result, err
+}
+
+// errUnknownAddress means no step admitted a verified address, so the caller
+// records an Access Request for it.
+var errUnknownAddress = errors.New("unknown address")
+
+// resolveAddress finds who a verified address signs in as, in order: an
+// unclaimed Installation makes it the first Curator; a Linked Email signs its
+// Person in; an unused Preauthorization links it; anything else is
+// errUnknownAddress. An unlinked address is refused until a Curator
+// preauthorizes it again, and a deactivated Person is refused outright.
+// Display names never grant access. The Linked Email lookup runs first
+// because an unclaimed Installation has no Person who could hold one.
+func (m *Module) resolveAddress(ctx context.Context, tx bun.Tx, claims Claims) (models.Person, models.LinkedEmail, error) {
+	now := m.now().UTC()
+	var claimedBy sql.NullString
+	if err := tx.NewSelect().Table("installation").
+		Column("claimed_by").Where("singleton = true").Scan(ctx, &claimedBy); err != nil {
+		return models.Person{}, models.LinkedEmail{}, errorstack.CaptureContext(ctx, err)
+	}
+	var person models.Person
+	var linked models.LinkedEmail
+	switch err := tx.NewSelect().Model(&linked).Where("email = ? AND unlinked_at IS NULL", claims.Email).Scan(ctx); {
+	case err == nil:
+		person, err = personByID(ctx, tx, linked.PersonID.String())
+		if err != nil {
+			return person, linked, err
+		}
+		if person.DeactivatedAt != nil {
+			return person, linked, ErrAccessDenied
+		}
+		return person, linked, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return person, linked, errorstack.CaptureContext(ctx, err)
+	case !claimedBy.Valid:
+		name := claims.DisplayName
+		if name == "" {
+			// A Sign-in Code carries no name; Onboarding asks for one.
+			name = claims.Email[:strings.LastIndex(claims.Email, "@")]
+		}
+		person = models.Person{ID: models.NewUUIDv7(), DisplayName: name, IsCurator: true, CreatedAt: now}
+		if _, err := tx.NewInsert().Model(&person).Exec(ctx); err != nil {
+			return person, linked, errorstack.CaptureContext(ctx, err)
+		}
+		if err := claimInstallation(ctx, tx, person.ID, now); err != nil {
+			return person, linked, err
+		}
+		linked, err = link(ctx, tx, &person, claims.Email, now)
+		return person, linked, err
+	}
+	person, err := m.resolvePreauthorization(ctx, tx, claims.Email)
+	if errors.Is(err, errNoPreauthorization) {
+		unlinked, err := tx.NewSelect().Model((*models.LinkedEmail)(nil)).Where("email = ?", claims.Email).Exists(ctx)
+		if err != nil {
+			return person, linked, errorstack.CaptureContext(ctx, err)
+		}
+		if unlinked {
+			return person, linked, ErrAccessDenied
+		}
+		return person, linked, errUnknownAddress
+	}
+	if err != nil {
+		return person, linked, err
+	}
+	linked, err = link(ctx, tx, &person, claims.Email, now)
+	return person, linked, err
+}
+
+func (m *Module) startSession(ctx context.Context, tx bun.Tx, person models.Person, linked models.LinkedEmail, token string, hash []byte) (Session, error) {
+	session, err := insertSession(ctx, tx, linked.ID, browserDevice(ctx), hash, m.now().UTC())
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{Person: projectPerson(person), Token: token, ExpiresAt: session.ExpiresAt}, nil
 }
 
 // link adds a Linked Email to the Person. The first one a Person ever links

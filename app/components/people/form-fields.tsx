@@ -50,27 +50,36 @@ export function SectionHeading({
   );
 }
 
+// failureClassName adjusts the form-level message's spacing where the form
+// starts a column and its usual top margin would push it out of line.
 export function Form({
   error,
+  failureClassName,
   children,
   ...props
-}: ComponentProps<"form"> & { error: unknown }) {
+}: ComponentProps<"form"> & { error: unknown; failureClassName?: string }) {
   const ref = useRef<HTMLFormElement>(null);
   useEffect(() => {
     if (error) focusFirstInvalid(ref.current);
   }, [error]);
   return (
     <form {...props} ref={ref}>
-      <Failure error={error} />
+      <Failure className={failureClassName} error={error} />
       {children}
     </form>
   );
 }
 
-export function Failure({ error }: { error: unknown }) {
+export function Failure({
+  error,
+  className,
+}: {
+  error: unknown;
+  className?: string;
+}) {
   if (!error) return null;
   return (
-    <p className="my-4 text-sm text-destructive" role="alert">
+    <p className={cn("my-4 text-sm text-destructive", className)} role="alert">
       {error instanceof HTTPError && Object.keys(error.fields).length
         ? "Check the highlighted fields."
         : errorMessage(error)}
