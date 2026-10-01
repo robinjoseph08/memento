@@ -121,6 +121,36 @@ func TestProductionMutationOriginRequiresPublicURL(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, recorder.Code)
 }
 
+// The QA fixture runs in the test environment and is opened from other
+// machines on the network by this machine's name or address.
+func TestTestEnvironmentAcceptsNetworkOrigins(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewForTest()
+	cfg.PublicURL = "http://127.0.0.1:53000"
+	cfg.AppEnv = "test"
+	cfg.Hostname = "robin-m3"
+	srv, err := newServer(cfg, nil)
+	require.NoError(t, err)
+	e := srv.Handler.(*echo.Echo)
+	e.POST("/api/mutate", func(c *echo.Context) error { return c.NoContent(204) })
+	for _, tc := range []struct {
+		origin, host string
+		status       int
+	}{
+		{"http://robin-m3.local:53000", "robin-m3.local:53000", 204},
+		{"http://192.168.2.166:53000", "192.168.2.166:53000", 204},
+		{"http://evil.test:53000", "evil.test:53000", 403},
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/api/mutate", strings.NewReader(`{}`))
+		req.Host = tc.host
+		req.Header.Set("Origin", tc.origin)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(recorder, req)
+		assert.Equal(t, tc.status, recorder.Code, "%+v", tc)
+	}
+}
+
 func TestDatabaseControlsHealth(t *testing.T) {
 	t.Parallel()
 	srv, err := newServer(config.NewForTest(), nil, dependencies{health: func(context.Context) error { return errors.New("private database error") }})
