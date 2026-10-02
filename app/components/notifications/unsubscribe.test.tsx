@@ -20,7 +20,7 @@ it("shows the unsubscribe confirmation without signing in and changes nothing un
         return Response.json({
           claimed: true,
           person: null,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/unsubscribe?token=private-token") {
         if (options?.method === "POST") {

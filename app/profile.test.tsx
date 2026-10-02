@@ -54,7 +54,7 @@ it("keeps profile edits through failed refresh, focuses a rejected email, and sa
         return Response.json({
           claimed: true,
           person: alex,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
@@ -128,7 +128,11 @@ it("chooses a linked update email and clears it through the profile menu", async
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });
@@ -184,7 +188,11 @@ it("replaces a private profile on identity refresh and ignores the old in-flight
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/profile"))
         return Response.json({
           person,
@@ -250,7 +258,7 @@ it("removes a revoked session's private screen on a 401 and refreshes sign-in st
         return Response.json({
           claimed: true,
           person: signedIn ? alex : null,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
@@ -285,8 +293,8 @@ function serveProfile() {
       if (path.endsWith("/status"))
         return Response.json(
           signedOut
-            ? { claimed: true, auth_mode: "fake" }
-            : { claimed: true, person: alex, auth_mode: "fake" },
+            ? { claimed: true, sign_in_methods: ["fake"] }
+            : { claimed: true, person: alex, sign_in_methods: ["fake"] },
         );
       if (path.endsWith("/sign-out")) {
         signedOut = true;
@@ -380,7 +388,11 @@ it.each([false, true])(
       "fetch",
       vi.fn(async (path: string) => {
         if (path.endsWith("/status"))
-          return Response.json({ claimed: true, person, auth_mode: "google" });
+          return Response.json({
+            claimed: true,
+            person,
+            sign_in_methods: ["code", "google"],
+          });
         if (path.endsWith("/sessions")) return Response.json([]);
         if (path === "/api/notifications")
           return Response.json({ notifications: [], unread: 0 });
@@ -417,7 +429,7 @@ it.each([false, true])(
           return Response.json({
             claimed: true,
             person: { ...alex, is_curator: isCurator },
-            auth_mode: "fake",
+            sign_in_methods: ["fake"],
           });
         if (path.endsWith("/sessions"))
           return Response.json([
@@ -484,7 +496,11 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "google" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["code", "google"],
+        });
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });
@@ -534,7 +550,7 @@ it("keeps another linked email available after unlinking one from your profile",
         return Response.json({
           claimed: true,
           person: alex,
-          auth_mode: "google",
+          sign_in_methods: ["code", "google"],
         });
       if (path.endsWith("/sessions")) return Response.json([]);
       if (path === "/api/notifications")
@@ -590,7 +606,11 @@ it("offers full-navigation Google sign-in and explains an account without access
   vi.stubGlobal(
     "fetch",
     vi.fn(async () =>
-      Response.json({ claimed: true, person: null, auth_mode: "google" }),
+      Response.json({
+        claimed: true,
+        person: null,
+        sign_in_methods: ["code", "google"],
+      }),
     ),
   );
   window.history.replaceState(null, "", "/sign-in?error=no_access");
@@ -601,5 +621,5 @@ it("offers full-navigation Google sign-in and explains an account without access
   expect(screen.getByRole("alert")).toHaveTextContent(
     "Ask your Curator to approve it",
   );
-  expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "Email address" })).toBeVisible();
 });

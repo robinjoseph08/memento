@@ -12,11 +12,12 @@
 # Env: PUBLIC_URL
 public_url: https://memento.example.com
 
-# Required for Google sign-in. See README.md#3-create-the-google-client for console setup.
+# Optional Google sign-in. Set both Google keys to enable it.
+# See README.md#optional-google-sign-in for console setup.
 # Env: GOOGLE_CLIENT_ID
 google_client_id: ""
 
-# Keep this secret in an environment variable rather than a checked-in file.
+# Optional with google_client_id. Keep the secret in an environment variable.
 # Env: GOOGLE_CLIENT_SECRET
 google_client_secret: ""
 
@@ -37,17 +38,15 @@ immich_public_url: ""
 # Env: IMMICH_API_KEY
 immich_api_key: ""
 
-# Optional outbound email for Invitations, update email, and emailed sign-in
-# codes. Leave unset to run without email; Curators then see that Invitations
-# cannot be sent, and the sign-in page offers only Google. smtp:// connects in
-# plain text and upgrades with STARTTLS when the server offers it; smtps:// uses
-# TLS from the start. Credentials go in the URL, so prefer the environment
-# variable.
+# Required SMTP for emailed Sign-in Codes, Invitations, and update email.
+# smtp:// connects in plain text and upgrades with STARTTLS when the server
+# offers it; smtps:// uses TLS from the start. Credentials go in the URL, so
+# prefer the environment variable.
 # Env: SMTP_URL
 smtp_url: ""
 
 # Sender address for Memento email, such as "Memento <memento@example.com>".
-# Required when smtp_url is set.
+# Required sender address.
 # Env: SMTP_FROM
 smtp_from: ""
 

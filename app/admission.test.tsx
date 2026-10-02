@@ -43,7 +43,11 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/identity/profile"))
         return Response.json({ person, emails: [account] });
       if (path.endsWith("/identity/onboarding")) {
@@ -127,7 +131,7 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/access-requests") return Response.json(requests);
       if (path.endsWith("/approve")) {
@@ -226,7 +230,11 @@ it("offers an explicit Request access action on an inaccessible Album", async ()
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: "fake" });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: ["fake"],
+        });
       if (path.endsWith("/request-access") && options?.method === "POST") {
         requested++;
         return Response.json({ id: "request", status: "pending" });

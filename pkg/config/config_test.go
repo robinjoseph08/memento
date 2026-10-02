@@ -42,7 +42,6 @@ func requiredConfig() mapProvider {
 		"public_url":     "http://localhost:3579",
 		"immich_url":     "http://localhost:2283",
 		"immich_api_key": "test-api-key",
-		"auth_mode":      "fake",
 		"app_env":        "test",
 	}
 }
@@ -51,15 +50,15 @@ func TestLoadUsesProductionDefaults(t *testing.T) {
 	t.Parallel()
 	values := requiredConfig()
 	delete(values, "app_env")
-	delete(values, "auth_mode")
 	values["public_url"] = "https://photos.example.com"
 	values["google_client_id"] = "google-client"
 	values["google_client_secret"] = "google-secret"
+	values["smtp_url"] = "smtp://mail.example.test"
+	values["smtp_from"] = "memento@example.test"
 
 	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
 	require.NoError(t, err)
 	assert.Equal(t, "production", cfg.AppEnv)
-	assert.Equal(t, "google", cfg.AuthMode)
 	assert.Equal(t, "memento", cfg.CookieNamespace)
 }
 
@@ -100,35 +99,12 @@ func TestLoadRequiresInstallationSettings(t *testing.T) {
 	}
 }
 
-func TestLoadRestrictsAuthentication(t *testing.T) {
+func TestLoadRejectsUnknownEnvironment(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ mode, environment, want string }{
-		{"fake", "development", ""},
-		{"fake", "test", ""},
-		{"fake", "production", "auth_mode: fake requires app_env development or test"},
-		{"fake", "", "auth_mode: fake requires app_env development or test"},
-		{"google", "production", "google_client_id: required"},
-		{"google", "development", "google_client_id: required"},
-		{"other", "test", "auth_mode: must be google or fake"},
-		{"fake", "staging", "app_env: must be production, development, or test"},
-	} {
-		t.Run(tc.mode+"/"+tc.environment, func(t *testing.T) {
-			t.Parallel()
-			values := requiredConfig()
-			values["auth_mode"] = tc.mode
-			if tc.environment == "" {
-				delete(values, "app_env")
-			} else {
-				values["app_env"] = tc.environment
-			}
-			_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
-			if tc.want == "" {
-				require.NoError(t, err)
-			} else {
-				require.ErrorContains(t, err, tc.want)
-			}
-		})
-	}
+	values := requiredConfig()
+	values["app_env"] = "staging"
+	_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.ErrorContains(t, err, "app_env: must be production, development, or test")
 }
 
 func TestLoadValidatesHTTPURLs(t *testing.T) {
@@ -186,7 +162,35 @@ func TestImmichPublicURLIsOptionalButValidated(t *testing.T) {
 	}
 }
 
-func TestSMTPIsOptionalButValidatedTogether(t *testing.T) {
+func TestSMTPRequiredOutsideDevelopmentAndTest(t *testing.T) {
+	t.Parallel()
+	for _, environment := range []string{"production", "", "development", "test"} {
+		t.Run(environment, func(t *testing.T) {
+			t.Parallel()
+			for _, value := range []any{nil, "", "  "} {
+				values := requiredConfig()
+				values["app_env"] = environment
+				if environment == "" {
+					delete(values, "app_env")
+				}
+				values["public_url"] = "https://photos.example.com"
+				values["google_client_id"] = "client"
+				values["google_client_secret"] = "secret"
+				if value != nil {
+					values["smtp_url"] = value
+				}
+				_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+				if environment == "development" || environment == "test" {
+					require.NoError(t, err)
+				} else {
+					require.ErrorContains(t, err, "smtp_url: required in production")
+				}
+			}
+		})
+	}
+}
+
+func TestSMTPValidatedTogether(t *testing.T) {
 	t.Parallel()
 	values := requiredConfig()
 	cfg, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
@@ -347,7 +351,6 @@ database_url: postgres://yaml:secret@db:5432/yaml_db?sslmode=disable
 public_url: http://localhost:3579
 immich_url: http://localhost:2283
 immich_api_key: yaml-test-key
-auth_mode: fake
 app_env: development
 database_debug: true
 database_connect_retry_count: 2
@@ -362,7 +365,6 @@ server_port: 4000
 	assert.Equal(t, "http://localhost:3579", cfg.PublicURL)
 	assert.Equal(t, "http://localhost:2283", cfg.ImmichURL)
 	assert.Equal(t, "yaml-test-key", cfg.ImmichAPIKey)
-	assert.Equal(t, "fake", cfg.AuthMode)
 	assert.Equal(t, "development", cfg.AppEnv)
 	assert.True(t, cfg.DatabaseDebug)
 	assert.Equal(t, 2, cfg.DatabaseConnectRetryCount)
@@ -422,7 +424,6 @@ func TestNewForTest(t *testing.T) {
 	t.Parallel()
 	cfg := NewForTest()
 	assert.Equal(t, "test", cfg.AppEnv)
-	assert.Equal(t, "fake", cfg.AuthMode)
 	assert.Equal(t, "http://localhost:3579", cfg.PublicURL)
 	assert.Equal(t, "http://localhost:2283", cfg.ImmichURL)
 	assert.Equal(t, "test-api-key", cfg.ImmichAPIKey)
@@ -444,4 +445,26 @@ func TestLoadReturnsHostnameError(t *testing.T) {
 	stack := fmt.Sprintf("%+v", tracer.StackTrace())
 	assert.Contains(t, stack, "config.load")
 	assert.Contains(t, stack, "config.go")
+}
+
+func TestLoadRejectsUnknownYAMLSettings(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{"auth_mode", "typo_setting", "google.client_id", "hostname"} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "app.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(key+": secret\n"), 0o600))
+			_, err := load(path, true, requiredConfig(), func() (string, error) { return "host", nil })
+			require.ErrorContains(t, err, key+": unknown setting")
+			assert.NotContains(t, err.Error(), "secret")
+		})
+	}
+}
+
+func TestLoadRejectsRemovedAuthModeEnvironmentVariable(t *testing.T) {
+	t.Parallel()
+	values := requiredConfig()
+	values["auth_mode"] = "fake"
+	_, err := load(filepath.Join(t.TempDir(), "missing.yaml"), false, values, func() (string, error) { return "host", nil })
+	require.ErrorContains(t, err, "auth_mode: unknown setting")
 }

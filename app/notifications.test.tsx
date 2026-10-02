@@ -83,7 +83,7 @@ it("shows new updates in the bell, keeps the history on the Updates page, and ke
         return Response.json({
           claimed: true,
           person: member,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/notifications")
         return Response.json({
@@ -193,7 +193,7 @@ it("marks every update read at once", async () => {
         return Response.json({
           claimed: true,
           person: member,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/notifications")
         return Response.json({ notifications, unread: 1 });
@@ -260,7 +260,7 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/access-requests") return Response.json([]);
       if (path.startsWith("/api/curator/notifications/deliveries?"))
@@ -411,7 +411,7 @@ it("keeps an update unread and stays put when marking it read fails", async () =
         return Response.json({
           claimed: true,
           person: member,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/notifications")
         return Response.json({ notifications, unread: 1 });

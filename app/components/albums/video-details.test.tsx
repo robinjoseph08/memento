@@ -80,7 +80,7 @@ function mockAPI(state: { album: AlbumDetail; posts: [string, unknown][] }) {
     vi.fn((path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
         return Promise.resolve(
-          Response.json({ claimed: true, person, auth_mode: "fake" }),
+          Response.json({ claimed: true, person, sign_in_methods: ["fake"] }),
         );
       if (path.endsWith("/connection"))
         return Promise.resolve(

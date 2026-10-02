@@ -41,7 +41,6 @@ func (*googleHTTPModule) SignOut(context.Context, string) error { return nil }
 func googleHTTP(s *oidcSubstitute, publicURL string, module *googleHTTPModule) *echo.Echo {
 	e := echo.New()
 	cfg := config.NewForTest()
-	cfg.AuthMode = "google"
 	cfg.PublicURL = publicURL
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
@@ -78,7 +77,6 @@ func TestGoogleLoginUsesCookieNamespace(t *testing.T) {
 	t.Parallel()
 	s := newOIDCSubstitute(t)
 	cfg := config.NewForTest()
-	cfg.AuthMode = "google"
 	cfg.CookieNamespace = "memento_feature_worktree"
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
@@ -93,7 +91,6 @@ func TestGoogleOutageLeavesDatabaseHealthHealthy(t *testing.T) {
 	t.Parallel()
 	db := testdb.New(t)
 	cfg := config.NewForTest()
-	cfg.AuthMode = "google"
 	cfg.GoogleClientID = "client-id"
 	cfg.GoogleClientSecret = "client-secret"
 	app, err := server.New(cfg, db, server.Features{})
@@ -188,7 +185,7 @@ func TestGoogleRoutesAreLazyAndRecover(t *testing.T) {
 	require.NotEmpty(t, query.Get("state"))
 }
 
-func TestGoogleRoutesDisabledForFakeAuthentication(t *testing.T) {
+func TestGoogleRoutesDisabledWithoutCredentials(t *testing.T) {
 	t.Parallel()
 	e := echo.New()
 	identity.RegisterGoogleRoutes(e, config.NewForTest(), &googleHTTPModule{})

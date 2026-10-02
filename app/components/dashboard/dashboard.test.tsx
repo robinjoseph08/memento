@@ -109,7 +109,7 @@ it("groups work into Needs attention and Ready when you are, and retries email d
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/access-requests") return Response.json([]);
       if (path === "/api/curator/dashboard") return Response.json(busy);
@@ -241,7 +241,7 @@ it("says plainly when nothing needs attention and nothing is waiting", async () 
         return Response.json({
           claimed: true,
           person: curator,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/access-requests") return Response.json([]);
       if (path === "/api/curator/dashboard")

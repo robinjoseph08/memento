@@ -29,17 +29,21 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
   const googleStart = returnTo
     ? `/api/identity/google/start?return_to=${encodeURIComponent(returnTo)}`
     : "/api/identity/google/start";
-  const alternative =
-    data?.auth_mode === "google" ? (
-      <Button asChild className={data.sign_in_codes ? "w-full" : undefined}>
-        <a href={googleStart}>
-          <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
-          Continue with Google
-        </a>
-      </Button>
-    ) : data?.auth_mode === "fake" ? (
-      <FakeSignInForm claiming={claiming} />
-    ) : null;
+  const methods = data?.sign_in_methods ?? [];
+  const alternative = (methods.includes("google") ||
+    methods.includes("fake")) && (
+    <div className="space-y-6">
+      {methods.includes("google") && (
+        <Button asChild className="w-full">
+          <a href={googleStart}>
+            <LogIn aria-hidden="true" className="size-4" strokeWidth={1.5} />
+            Continue with Google
+          </a>
+        </Button>
+      )}
+      {methods.includes("fake") && <FakeSignInForm claiming={claiming} />}
+    </div>
+  );
   const notice = error && (
     <p className="mb-6 max-w-110 text-sm text-destructive" role="alert">
       {error === "no_access" || error === "access_denied"
@@ -53,7 +57,7 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
               : "Sign-in could not be completed. Try again."}
     </p>
   );
-  if (data?.sign_in_codes)
+  if (methods.includes("code"))
     return (
       <CodeSignIn
         alternative={alternative}
@@ -64,7 +68,7 @@ export function SignInForm({ claiming = false }: { claiming?: boolean }) {
   return (
     <div>
       {notice}
-      {alternative ?? (
+      {alternative || (
         <p role="alert">Sign-in is not configured. Contact your Curator.</p>
       )}
     </div>

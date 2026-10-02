@@ -27,13 +27,11 @@ type Call = { path: string; body: Record<string, string> };
 
 // serve answers the sign-in routes; verify decides what a code does.
 function serve({
-  codes = true,
-  authMode = "google",
+  methods = ["code", "google"],
   send = () => new Response(null, { status: 204 }),
   verify = () => Response.json({ outcome: "signed_in", person: alex }),
 }: {
-  codes?: boolean;
-  authMode?: string;
+  methods?: string[];
   send?: () => Response;
   verify?: (body: Record<string, string>) => Response;
 } = {}) {
@@ -50,8 +48,7 @@ function serve({
         return Response.json({
           claimed: true,
           person,
-          auth_mode: authMode,
-          sign_in_codes: codes,
+          sign_in_methods: methods,
           version: "test",
         });
       if (path === "/api/identity/sign-in-code") return send();
@@ -356,7 +353,7 @@ it("enables Resend after a minute", async () => {
 });
 
 it("shows only the development form when mail is not configured", async () => {
-  serve({ codes: false, authMode: "fake" });
+  serve({ methods: ["fake"] });
   window.history.replaceState(null, "", "/sign-in");
   render(<App />);
   expect(
@@ -365,4 +362,58 @@ it("shows only the development form when mail is not configured", async () => {
   expect(
     screen.queryByRole("textbox", { name: "Email address" }),
   ).not.toBeInTheDocument();
+});
+
+it.each(
+  [
+    ["code"],
+    ["code", "google"],
+    ["fake"],
+    ["code", "fake"],
+    ["code", "google", "fake"],
+  ].map((methods) => [methods] as const),
+)(
+  "shows exactly the sign-in methods advertised by the Installation: %j",
+  async (methods) => {
+    serve({ methods });
+    window.history.replaceState(null, "", "/sign-in");
+    render(<App />);
+    await screen.findByRole("form", {
+      name: methods.includes("code")
+        ? "Sign in with email"
+        : "Fake development sign-in",
+    });
+    expect(!!screen.queryByRole("form", { name: "Sign in with email" })).toBe(
+      methods.includes("code"),
+    );
+    expect(!!screen.queryByRole("link", { name: "Continue with Google" })).toBe(
+      methods.includes("google"),
+    );
+    expect(
+      !!screen.queryByRole("form", { name: "Fake development sign-in" }),
+    ).toBe(methods.includes("fake"));
+  },
+);
+
+it("signs in with an emailed code without a Google client", async () => {
+  serve({ methods: ["code"] });
+  window.history.replaceState(null, "", "/sign-in");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.type(
+    await screen.findByRole("textbox", { name: "Email address" }),
+    "alex@example.test",
+  );
+  expect(
+    screen.queryByRole("link", { name: "Continue with Google" }),
+  ).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Continue" }));
+  await user.type(
+    await screen.findByRole("textbox", { name: "Sign-in code" }),
+    "123456",
+  );
+  expect(
+    await screen.findByRole("heading", { name: "No albums yet" }),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums");
 });

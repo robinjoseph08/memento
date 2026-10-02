@@ -21,13 +21,17 @@ const member = {
   avatar_url: "",
 };
 
-function serve(initial: Record<string, unknown> | null, authMode = "fake") {
+function serve(initial: Record<string, unknown> | null, methods = ["fake"]) {
   let person = initial;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/status"))
-        return Response.json({ claimed: true, person, auth_mode: authMode });
+        return Response.json({
+          claimed: true,
+          person,
+          sign_in_methods: methods,
+        });
       if (path.endsWith("/fake-sign-in")) {
         person = { ...member, onboarding_completed_at: "2026-02-01T00:00:00Z" };
         return Response.json(person);
@@ -91,7 +95,7 @@ it("finishes Onboarding in the browser before returning to the app", async () =>
 });
 
 it("sends the return link along to Google sign-in", async () => {
-  serve(null, "google");
+  serve(null, ["code", "google"]);
   window.history.replaceState(null, "", `/sign-in?return_to=${returnTo}`);
   render(<App />);
 

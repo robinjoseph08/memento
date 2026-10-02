@@ -62,19 +62,21 @@ type ProfileUseCases interface {
 }
 
 type Handlers struct {
-	module              UseCases
-	publicURL, authMode string
-	cookieName          string
-	development         bool
+	module                            UseCases
+	publicURL                         string
+	googleSignIn, fakeSignInAvailable bool
+	cookieName                        string
+	development                       bool
 }
 
 func newHandlers(cfg *config.Config, module UseCases) *Handlers {
 	return &Handlers{
-		module:      module,
-		publicURL:   cfg.PublicURL,
-		authMode:    cfg.AuthMode,
-		cookieName:  cfg.CookieNamespace + "_session",
-		development: cfg.AppEnv == "development",
+		module:              module,
+		publicURL:           cfg.PublicURL,
+		googleSignIn:        cfg.GoogleConfigured(),
+		fakeSignInAvailable: cfg.FakeSignInAvailable(),
+		cookieName:          cfg.CookieNamespace + "_session",
+		development:         cfg.AppEnv == "development",
 	}
 }
 
@@ -83,7 +85,20 @@ func (h *Handlers) status(c *echo.Context) error {
 	if err != nil {
 		return err
 	}
-	result := Status{Claimed: claimed, AuthMode: h.authMode, SignInCodes: h.module.SignInCodesAvailable(), Version: version.Version}
+	result := Status{Claimed: claimed, SignInCodes: h.module.SignInCodesAvailable(), SignInMethods: []SignInMethod{}, Version: version.Version}
+	if result.SignInCodes {
+		result.SignInMethods = append(result.SignInMethods, SignInMethodCode)
+	}
+	if h.googleSignIn {
+		result.SignInMethods = append(result.SignInMethods, SignInMethodGoogle)
+		result.AuthMode = "google"
+	}
+	if h.fakeSignInAvailable {
+		result.SignInMethods = append(result.SignInMethods, SignInMethodFake)
+		if result.AuthMode == "" {
+			result.AuthMode = "fake"
+		}
+	}
 	if claimed {
 		session, err := h.authenticate(c)
 		if err != nil && !errors.Is(err, ErrUnauthenticated) {

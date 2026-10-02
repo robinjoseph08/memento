@@ -106,3 +106,24 @@ test("an unknown address verified by a code asks the Curator for access", async 
   await expect(pending.getByText("jordan@example.test")).toBeVisible();
   await expect(pending.getByText(/1 sign-in/)).toBeVisible();
 });
+
+test("the first Curator claims the Installation with an emailed code without Google", async ({
+  page,
+  immich,
+}) => {
+  await page.goto("/setup");
+  await expect(
+    page.getByRole("link", { name: "Continue with Google" }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("textbox", { name: "Email address" })
+    .fill("owner@example.test");
+  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  const code = await codeFor(() => immich.mail(), "owner@example.test");
+  await page.getByRole("textbox", { name: "Sign-in code" }).fill(code);
+  await expect(
+    page.getByRole("heading", { name: "Welcome to Memento" }),
+  ).toBeVisible();
+  await finishOnboarding(page);
+  await expect(page).toHaveURL(/\/curator$/);
+});

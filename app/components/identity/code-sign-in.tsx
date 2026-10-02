@@ -71,8 +71,7 @@ function useStepFocus() {
 }
 
 // CodeSignIn signs a Person in with a Sign-in Code emailed to them. The
-// notice from an earlier attempt and the alternative (Google, or the
-// development form) show only with the first step. An unknown address is
+// notice from an earlier attempt and alternative sign-in methods show only with the first step. An unknown address is
 // asked for a name and becomes an Access Request.
 export function CodeSignIn({
   alternative,

@@ -82,7 +82,7 @@ function mockLibrary(handler: (path: string) => Response) {
             is_curator: false,
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
         });
       if (path === "/api/notifications")
         return Response.json({ notifications: [], unread: 0 });

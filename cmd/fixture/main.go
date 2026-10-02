@@ -84,7 +84,7 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 	}
 	environment := append(os.Environ(),
 		"DATABASE_URL="+schema.URL,
-		"APP_ENV=test", "AUTH_MODE=fake",
+		"APP_ENV=test",
 		"PUBLIC_URL="+apiURL,
 		"IMMICH_URL="+fixtureURL, "IMMICH_API_KEY="+fixtureAPIKey,
 		"SERVER_HOST=0.0.0.0", "SERVER_PORT="+strconv.Itoa(apiPort),

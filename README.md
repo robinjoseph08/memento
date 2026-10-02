@@ -67,9 +67,8 @@ You need:
   [separate container](#use-a-separate-postgresql-container) also works.
 - A public HTTPS address served by a reverse proxy, such as
   `https://photos.example.com`. Memento itself speaks only plain HTTP.
-- A Google OAuth client, which Memento still requires.
-- Optionally, an SMTP server for Invitations, update email, and signing in with
-  an emailed code.
+- An SMTP server for emailed Sign-in Codes, Invitations, and update email.
+  Google sign-in is an [optional extra](#optional-google-sign-in).
 
 The steps assume Immich runs from its standard Compose file, where the server
 service is `immich-server`, the database service is `database`, and the
@@ -104,30 +103,51 @@ permissions: `album.read`, `asset.download`, `asset.read`, `asset.view`,
 edits albums or assets. [Immich imports](#immich-imports) explains what each
 permission is used for.
 
-### 3. Create the Google client
+### 3. Send email over SMTP
 
-1. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview)
-   and select or create a project.
-2. Complete Branding with an app name, support email, and developer contact.
-   Choose an External audience for friends and family outside your Workspace.
-   Review Audience and Branding before publishing for your intended users.
-3. Under Data Access, select `openid`, `https://www.googleapis.com/auth/userinfo.email`,
-   and `https://www.googleapis.com/auth/userinfo.profile`. These are the console
-   equivalents of Memento's `openid email profile` request. No Google Photos API,
-   sensitive scopes, or offline access are needed.
-4. Under Clients, create a **Web application** client. Add the exact authorized
-   redirect URI, which is your public address followed by
-   `/api/identity/google/callback`, such as
-   `https://photos.example.com/api/identity/google/callback`. This server flow
-   does not need an authorized JavaScript origin.
-5. Keep the client ID and secret for the next step.
+Every production Installation requires SMTP for emailed Sign-in Codes,
+Invitations, and update email. Set both values on the `memento` service:
 
-Google requires an exact redirect URI match, including scheme, port, path, and
-trailing slash. Memento derives the callback by appending
-`/api/identity/google/callback` to `PUBLIC_URL`; there is no separate callback
-setting. You do not need to add people to Google's test-user list or complete
-verification for these three scopes; see [Google sign-in](#google-sign-in) for
-Google's audience and verification rules.
+```yaml
+environment:
+  SMTP_URL: smtps://user:password@mail.example.com:465
+  SMTP_FROM: Memento <memento@example.com>
+```
+
+`smtp://` connects in plain text and upgrades with STARTTLS whenever the server
+offers it; `smtps://` uses TLS from the first byte, typically on port 465.
+Credentials stay in the URL, so keep it in `.env` or the environment rather
+than a checked-in file. A username and password are only sent over TLS, so
+pair them with `smtps://` or a server that offers STARTTLS; a plain relay
+without authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
+simultaneous deliveries and defaults to five. Settings, in the account menu,
+shows whether the mail server accepts a connection and sign-in; that check
+sends nothing.
+
+Deliveries run through the same in-process River runtime as imports, on a
+separate `mail` queue. Each email has a stable delivery record: a rejected
+connection or a 4xx reply retries automatically up to five times, a 5xx reply
+fails permanently, and a connection lost after the message body was sent is
+marked uncertain because the server may have accepted it. Uncertain and failed
+Invitations show their state on the Person page with a Retry action; the
+uncertain case warns that sending again could deliver a duplicate. Memento never
+resends an ambiguous attempt on its own, including after a restart.
+
+Invitations are outreach only. They name the approved email and link to the
+ordinary sign-in page without any token, so admission still depends on the
+Preauthorization. Invitation email ignores a Person's update-email preference
+because it is transactional.
+
+Approved Update Notifications are also emailed, but only to an active Person
+who selected a destination and switched update email on. The email is queued
+with the approval and checked again right before it is sent: a Person who was
+deactivated, promoted to Curator, unlinked their destination, or unsubscribed
+in the meantime is skipped, and content revoked since approval is left out
+of the counts. The Update Notification is never changed by any of this.
+Every update email carries a private unsubscribe link that opens a
+confirmation page without signing in; loading the link changes nothing, and
+confirming switches off update email only. Invitations, Access Request
+alerts, and Update Notifications continue.
 
 ### 4. Write the Compose file
 
@@ -155,11 +175,11 @@ services:
       # The Immich address a Curator's browser opens from "Open in Immich" links.
       IMMICH_PUBLIC_URL: https://immich.example.com
       IMMICH_API_KEY: ${IMMICH_API_KEY}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-      # Optional. See "Send email over SMTP" below.
-      # SMTP_URL: smtps://user:password@mail.example.com:465
-      # SMTP_FROM: Memento <memento@example.com>
+      SMTP_URL: ${SMTP_URL}
+      SMTP_FROM: Memento <memento@example.com>
+      # Optional Google sign-in. Set both credentials to enable it.
+      # GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      # GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
     ports:
       - "3579:3579"
     networks:
@@ -179,8 +199,10 @@ source control:
 ```sh
 MEMENTO_DB_PASSWORD=choose-a-strong-password
 IMMICH_API_KEY=your-read-only-immich-key
-GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=your-client-secret
+SMTP_URL=smtps://user:password@mail.example.com:465
+# Optional, when enabling Google sign-in:
+# GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+# GOOGLE_CLIENT_SECRET=your-client-secret
 ```
 
 ### 5. Put a reverse proxy in front
@@ -225,12 +247,17 @@ authority, will not cast.
 docker compose up -d
 ```
 
-Open your public address and sign in, with Google or with a code emailed to you
-when SMTP is set up. The first successful sign-in claims an empty installation
+Open your public address and sign in with a code emailed to you. The first
+successful sign-in claims an empty installation
 and creates its first Curator, so do this yourself before sharing the address
 with anyone. Everyone else needs a Person with a preauthorized email, created by
 a Curator, or arrives as an Access Request for a Curator to approve.
-[Google sign-in](#google-sign-in) describes how access works from there.
+[Sign-in and access](#sign-in-and-access) describes how access works from there.
+
+Before upgrading an existing Installation, remove `auth_mode` or `AUTH_MODE`
+and configure `SMTP_URL` and `SMTP_FROM`. The old authentication switch is no
+longer accepted, and SMTP is required in production. Google sign-in turns on
+when both Google credentials are set.
 
 To upgrade, pull the new image and recreate the container. Migrations run at
 startup:
@@ -292,55 +319,6 @@ volumes:
 Any PostgreSQL 14 or newer works. The password still goes inside
 `DATABASE_URL`, so the same URL-encoding advice applies.
 
-### Send email over SMTP
-
-Email sends Invitations, update email, and Sign-in Codes. It is optional.
-Without it Memento runs normally, Curators still create People and approve
-emails, Update Notifications stay in app, the Invite button explains that
-email is not configured, and the sign-in page offers only Google. To enable
-email, set both values on the `memento` service:
-
-```yaml
-environment:
-  SMTP_URL: smtps://user:password@mail.example.com:465
-  SMTP_FROM: Memento <memento@example.com>
-```
-
-`smtp://` connects in plain text and upgrades with STARTTLS whenever the server
-offers it; `smtps://` uses TLS from the first byte, typically on port 465.
-Credentials stay in the URL, so keep it in `.env` or the environment rather
-than a checked-in file. A username and password are only sent over TLS, so
-pair them with `smtps://` or a server that offers STARTTLS; a plain relay
-without authentication needs no credentials at all. `SMTP_CONCURRENCY` bounds
-simultaneous deliveries and defaults to five. Settings, in the account menu,
-shows whether the mail server accepts a connection and sign-in; that check
-sends nothing.
-
-Deliveries run through the same in-process River runtime as imports, on a
-separate `mail` queue. Each email has a stable delivery record: a rejected
-connection or a 4xx reply retries automatically up to five times, a 5xx reply
-fails permanently, and a connection lost after the message body was sent is
-marked uncertain because the server may have accepted it. Uncertain and failed
-Invitations show their state on the Person page with a Retry action; the
-uncertain case warns that sending again could deliver a duplicate. Memento never
-resends an ambiguous attempt on its own, including after a restart.
-
-Invitations are outreach only. They name the approved email and link to the
-ordinary sign-in page without any token, so admission still depends on the
-Preauthorization. Invitation email ignores a Person's update-email preference
-because it is transactional.
-
-Approved Update Notifications are also emailed, but only to an active Person
-who selected a destination and switched update email on. The email is queued
-with the approval and checked again right before it is sent: a Person who was
-deactivated, promoted to Curator, unlinked their destination, or unsubscribed
-in the meantime is skipped, and content revoked since approval is left out
-of the counts. The Update Notification is never changed by any of this.
-Every update email carries a private unsubscribe link that opens a
-confirmation page without signing in; loading the link changes nothing, and
-confirming switches off update email only. Invitations, Access Request
-alerts, and Update Notifications continue.
-
 ## Immich imports
 
 The import and synchronization gate supports stable Immich **3.0.x, 3.1.x,
@@ -398,7 +376,37 @@ media bytes are stored persistently. Thumbnails use private browser caching;
 source media that changes before synchronization may show an unavailable image
 rather than different bytes under an old content-versioned URL.
 
-## Google sign-in
+## Optional Google sign-in
+
+Google adds one-tap sign-in for Gmail users alongside the Installation's own
+email sign-in. Memento runs without a Google client. Set both Google credentials
+to enable the button, or leave both unset.
+
+### Create the Google client
+
+1. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview)
+   and select or create a project.
+2. Complete Branding with an app name, support email, and developer contact.
+   Choose an External audience for friends and family outside your Workspace.
+   Review Audience and Branding before publishing for your intended users.
+3. Under Data Access, select `openid`, `https://www.googleapis.com/auth/userinfo.email`,
+   and `https://www.googleapis.com/auth/userinfo.profile`. These are the console
+   equivalents of Memento's `openid email profile` request. No Google Photos API,
+   sensitive scopes, or offline access are needed.
+4. Under Clients, create a **Web application** client. Add the exact authorized
+   redirect URI, which is your public address followed by
+   `/api/identity/google/callback`, such as
+   `https://photos.example.com/api/identity/google/callback`. This server flow
+   does not need an authorized JavaScript origin.
+5. Set both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the Memento
+   service. Supplying only one fails startup.
+
+Google requires an exact redirect URI match, including scheme, port, path, and
+trailing slash. Memento derives the callback by appending
+`/api/identity/google/callback` to `PUBLIC_URL`; there is no separate callback
+setting. You do not need to add people to Google's test-user list or complete
+verification for these three scopes. The audience and verification rules are
+explained below.
 
 Google sign-in uses OpenID Connect to verify an address. Memento requests only
 `openid profile email`, not access to Google Photos, Drive, or Gmail. It does
@@ -423,13 +431,34 @@ require separate Cloud projects for development and production, not merely
 separate clients. Separate projects also keep credentials and consent settings
 independent.
 
-### Sign-in and access
-
 Memento derives the Google callback from `PUBLIC_URL` and never from request
 or forwarded host headers. Session and login-state cookies are Secure,
 HttpOnly, and SameSite=Lax. Google discovery happens on the first sign-in, not
 at startup. A Google outage does not prevent database health checks or use of
 existing Memento sessions.
+
+### Troubleshooting
+
+- `redirect_uri_mismatch`: compare the callback with the Google client's
+  authorized redirect URI. Check the port and remove any extra slash.
+- Expired or invalid sign-in: start again from Memento. Login transactions expire
+  after ten minutes and can be used only once. Restarting Memento or starting a
+  newer login in the same browser cancels the previous pending login.
+- Google unavailable: retry later. Discovery and token requests have a timeout;
+  later attempts retry failed discovery.
+- Access denied: sign in with a Linked Email or ask a Curator to preauthorize
+  the exact address. Do not switch production to fake authentication.
+- Access requested: the address is unknown and a Curator now has a pending
+  request for it. Nothing more is needed from the person signing in.
+
+Pending Google logins stay in one server process. The normal single-process
+Memento deployment needs no shared login-state store. Multiple processes require
+sticky routing during sign-in.
+
+For protocol details, see [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
+and [Google's web-server OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+## Sign-in and access
 
 Memento identifies a Person by their Linked Emails: the verified addresses they
 have signed in with, stored lowercased. Google sign-in and an emailed Sign-in
@@ -447,8 +476,7 @@ they will verify. Signing in with that address links it to the Person and uses u
 the Preauthorization. A verified email alone does not grant access, and Google
 sign-in availability does not bypass Memento's preauthorizations.
 
-When SMTP is configured, the sign-in page also takes any email address and
-sends it a six-digit Sign-in Code, which works on the web and in the Mobile
+The sign-in page takes any email address and sends it a six-digit Sign-in Code, which works on the web and in the Mobile
 App's browser sheet alike. A code expires after 10 minutes, works once, stops
 working after five wrong tries, and is replaced when a new one is requested.
 Memento sends at most one code per address per minute and at most ten an hour
@@ -487,7 +515,7 @@ shows their unread count and lists only new updates, and an Updates page with
 every update they have received. Opening one marks it read and goes to the Album, or
 to the Album list when it covers several. Browsing never changes read state.
 People who asked for email get the same summary by email; see
-[Send email over SMTP](#send-email-over-smtp).
+[Send email over SMTP](#3-send-email-over-smtp).
 
 The Curator's home page is a short work list in two groups. Needs attention
 holds pending Access Requests, failed or interrupted imports, failed or
@@ -497,27 +525,6 @@ not heard about, in neutral words, because waiting is a choice rather than a
 failure. The page polls only while an import or email is still running.
 Settings, in the account menu, checks the Immich connection, the mail server,
 and the bundled ffprobe on request.
-
-### Troubleshooting
-
-- `redirect_uri_mismatch`: compare the callback with the Google client's
-  authorized redirect URI. Check the port and remove any extra slash.
-- Expired or invalid sign-in: start again from Memento. Login transactions expire
-  after ten minutes and can be used only once. Restarting Memento or starting a
-  newer login in the same browser cancels the previous pending login.
-- Google unavailable: retry later. Discovery and token requests have a timeout;
-  later attempts retry failed discovery.
-- Access denied: sign in with a Linked Email or ask a Curator to preauthorize
-  the exact address. Do not switch production to fake authentication.
-- Access requested: the address is unknown and a Curator now has a pending
-  request for it. Nothing more is needed from the person signing in.
-
-Pending Google logins stay in one server process. The normal single-process
-Memento deployment needs no shared login-state store. Multiple processes require
-sticky routing during sign-in.
-
-For protocol details, see [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
-and [Google's web-server OAuth flow](https://developers.google.com/identity/protocols/oauth2/web-server).
 
 ## Development prerequisites
 
@@ -659,6 +666,15 @@ mise test:mobile
 Both are part of `mise check`. CI runs them only when `mobile`, a Go
 `types.go` file, or `mise.toml` changes. `mise tygo` writes the app's payload
 types to `mobile/src/types/generated` from `mobile/tygo.yaml`.
+
+### Store-submission notes
+
+The Mobile App offers the Installation's own email-code sign-in in its browser
+sheet, and Google is optional. Describe that flow in App Review notes for
+[Apple's guideline 4.8](https://developer.apple.com/app-store/review/guidelines/#login-services).
+The own-account exception applies to apps that exclusively use their own
+sign-in system; offering Google alongside email does not by itself establish
+that exception.
 
 ### Develop against your own Immich server
 
@@ -954,7 +970,8 @@ and `FFPROBE_CONCURRENCY` (default `1`) bounds how many probes run at once.
 Automated tests use a local OIDC server, not real Google credentials. To develop
 against Google, use a separate database and run the built application on a fixed
 port. Unlike `mise start`, the binary does not select another port or replace
-your database URL. Create the database and role first by running the SQL from
+your database URL. Set both Google credentials to add Google sign-in alongside
+the development form. SMTP remains optional in development. Create the database and role first by running the SQL from
 [Create the database and role](#1-create-the-database-and-role) against the
 development PostgreSQL, naming the database `memento_google`; startup applies
 migrations. Register `http://localhost:3579/api/identity/google/callback` as a
@@ -964,7 +981,6 @@ second redirect URI on the Google client.
 mise build
 export CONFIG_FILE="$PWD/app.example.yaml"
 export APP_ENV=development
-export AUTH_MODE=google
 export SERVER_HOST=127.0.0.1
 export SERVER_PORT=3579
 export PUBLIC_URL=http://localhost:3579

@@ -42,7 +42,6 @@ type Config struct {
 	ImmichURL                 string        `koanf:"immich_url" json:"immich_url" validate:"required"`
 	ImmichPublicURL           string        `koanf:"immich_public_url" json:"immich_public_url"`
 	ImmichAPIKey              string        `koanf:"immich_api_key" json:"-" validate:"required"`
-	AuthMode                  string        `koanf:"auth_mode" json:"auth_mode"`
 	GoogleClientID            string        `koanf:"google_client_id" json:"google_client_id"`
 	GoogleClientSecret        string        `koanf:"google_client_secret" json:"-"`
 	AppEnv                    string        `koanf:"app_env" json:"app_env"`
@@ -66,7 +65,6 @@ type Config struct {
 func defaults() *Config {
 	return &Config{
 		AppEnv:                    "production",
-		AuthMode:                  "google",
 		DatabaseMaxOpenConns:      10,
 		DatabaseMaxIdleConns:      3,
 		DatabaseDebug:             false,
@@ -81,10 +79,20 @@ func defaults() *Config {
 	}
 }
 
-// MailConfigured reports whether outbound email has SMTP settings. Email stays
-// optional so an installation runs before a mail server exists.
+// MailConfigured reports whether outbound email has SMTP settings.
+// Only development and test installations can run without them.
 func (c *Config) MailConfigured() bool {
 	return strings.TrimSpace(c.SMTPURL) != ""
+}
+
+// GoogleConfigured reports whether the optional Google client has both credentials.
+func (c *Config) GoogleConfigured() bool {
+	return strings.TrimSpace(c.GoogleClientID) != "" && strings.TrimSpace(c.GoogleClientSecret) != ""
+}
+
+// FakeSignInAvailable permits fake sign-in only in development and test.
+func (c *Config) FakeSignInAvailable() bool {
+	return c.AppEnv == "development" || c.AppEnv == "test"
 }
 
 // ImmichBrowserURL is the Immich origin a Curator's browser can open. It falls
@@ -124,10 +132,28 @@ func load(configPath string, requireConfigFile bool, environment koanf.Provider,
 		}
 	}
 
+	knownSettings := make(map[string]bool)
+	for field := range reflect.TypeOf(*cfg).Fields() {
+		if name := field.Tag.Get("koanf"); name != "-" {
+			knownSettings[name] = true
+		}
+	}
+	for _, key := range k.Keys() {
+		if !knownSettings[key] {
+			return nil, fmt.Errorf("%s: unknown setting", key)
+		}
+	}
+
 	if environment != nil {
 		if err := k.Load(environment, nil); err != nil {
 			return nil, errorstack.Capture(&environmentLoadError{cause: err})
 		}
+	}
+
+	// Environment variables include unrelated process settings, but the
+	// removed authentication switch must fail just like its YAML equivalent.
+	if k.Exists("auth_mode") {
+		return nil, fmt.Errorf("auth_mode: unknown setting; remove it and configure sign-in with SMTP and optional Google credentials")
 	}
 
 	// Decode one setting at a time so errors identify the field without
@@ -169,7 +195,6 @@ func NewForTest() *Config {
 	cfg.PublicURL = "http://localhost:3579"
 	cfg.ImmichURL = "http://localhost:2283"
 	cfg.ImmichAPIKey = "test-api-key"
-	cfg.AuthMode = "fake"
 	cfg.AppEnv = "test"
 	cfg.DatabaseMaxOpenConns = 3
 	cfg.DatabaseMaxIdleConns = 1
@@ -260,26 +285,14 @@ func validateConfig(cfg *Config) error {
 	if !validCookieNamespace(cfg.CookieNamespace) {
 		return fmt.Errorf("cookie_namespace: must be 64 characters or fewer and use lowercase letters, numbers, and underscores")
 	}
-	switch cfg.AuthMode {
-	case "google":
-		for _, setting := range []struct{ field, value string }{
-			{"google_client_id", cfg.GoogleClientID},
-			{"google_client_secret", cfg.GoogleClientSecret},
-		} {
-			if strings.TrimSpace(setting.value) == "" {
-				return fmt.Errorf("%s: required", setting.field)
-			}
-		}
+	if (strings.TrimSpace(cfg.GoogleClientID) == "") != (strings.TrimSpace(cfg.GoogleClientSecret) == "") {
+		return fmt.Errorf("google_client_id and google_client_secret: must be set together")
+	}
+	if cfg.GoogleConfigured() {
 		public, _ := url.Parse(cfg.PublicURL)
 		if public.Scheme != "https" && (public.Hostname() != "localhost" || cfg.AppEnv == "production") {
 			return fmt.Errorf("public_url: Google sign-in requires HTTPS, except HTTP localhost in development or test")
 		}
-	case "fake":
-		if cfg.AppEnv != "development" && cfg.AppEnv != "test" {
-			return fmt.Errorf("auth_mode: fake requires app_env development or test")
-		}
-	default:
-		return fmt.Errorf("auth_mode: must be google or fake")
 	}
 	validate := validator.New()
 	validate.RegisterTagNameFunc(func(field reflect.StructField) string { return field.Tag.Get("koanf") })
@@ -294,10 +307,13 @@ func validateConfig(cfg *Config) error {
 	return nil
 }
 
-// validateSMTP checks the optional mail settings without connecting. Errors
+// validateSMTP checks mail settings without connecting. Errors
 // name the setting, never the URL, because it may carry credentials.
 func validateSMTP(cfg *Config) error {
 	if !cfg.MailConfigured() {
+		if cfg.AppEnv == "production" {
+			return fmt.Errorf("smtp_url: required in production")
+		}
 		if strings.TrimSpace(cfg.SMTPFrom) != "" {
 			return fmt.Errorf("smtp_from: requires smtp_url")
 		}

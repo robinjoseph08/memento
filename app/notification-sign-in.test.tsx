@@ -33,7 +33,7 @@ it("keeps one working notification bell across sign-out and sign-in without a re
       if (path === "/api/identity/status")
         return Response.json({
           claimed: true,
-          auth_mode: "fake",
+          sign_in_methods: ["fake"],
           person: signedIn ? person : null,
         });
       if (path === "/api/identity/fake-sign-in") {
