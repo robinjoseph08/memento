@@ -45,13 +45,24 @@ for attempt in $(seq 1 30); do
   sleep 1
 done
 curl --fail --silent "$base/" >/dev/null
-curl --fail --silent "$base/setup" | grep '<div id="root"></div>' >/dev/null
+curl --fail --silent "$base/setup" > "$work/index.html"
+grep '<div id="root"></div>' "$work/index.html" >/dev/null
+python3 - "$work/index.html" "$base" <<'PY'
+import pathlib, re, sys, urllib.request
+html = pathlib.Path(sys.argv[1]).read_text()
+assets = re.findall(r'(?:src|href)="(/assets/[^" ]+\.(?:js|css))"', html)
+assert assets, "No bundled frontend assets found"
+for asset in assets:
+    with urllib.request.urlopen(sys.argv[2] + asset, timeout=10) as response:
+        assert response.status == 200 and response.read(), asset
+print("PASS embedded JS/CSS requests")
+PY
 asset_status=$(curl --silent --output /dev/null --write-out '%{http_code}' "$base/assets/missing.js")
 api_status=$(curl --silent --output "$work/api-missing" --write-out '%{http_code}' "$base/api/missing")
 test "$asset_status" = 404
 test "$api_status" = 404
 grep -q 'not_found' "$work/api-missing"
-curl --fail --silent "$base/api/identity/status" | python3 -c 'import json,sys; assert json.load(sys.stdin)["claimed"] is False'
+curl --fail --silent "$base/api/identity/status" | python3 -c 'import json,os,sys; r=json.load(sys.stdin); assert r["claimed"] is False; expected=os.getenv("EXPECTED_VERSION"); assert not expected or r["version"] == expected'
 curl --fail --silent "$base/api/setup/connection" | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["usable"] is False and r["message"]'
 # The test environment permits fake sign-in.
 curl --fail --silent --cookie-jar "$work/cookies" --header 'Content-Type: application/json' \

@@ -1,0 +1,133 @@
+name: Docker build experiment
+
+on:
+  push:
+    branches: [experiment/docker-crosscompile]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: baseline
+            runner: ubuntu-latest
+            platforms: linux/amd64,linux/arm64
+            dockerfile: Dockerfile.baseline
+          - variant: crosscompile
+            runner: ubuntu-latest
+            platforms: linux/amd64,linux/arm64
+            dockerfile: Dockerfile
+          - variant: native-amd64
+            runner: ubuntu-24.04
+            platforms: linux/amd64
+            dockerfile: Dockerfile.baseline
+          - variant: native-arm64
+            runner: ubuntu-24.04-arm
+            platforms: linux/arm64
+            dockerfile: Dockerfile.baseline
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
+        if: matrix.variant == 'baseline' || matrix.variant == 'crosscompile'
+      - uses: docker/setup-buildx-action@v4
+      - name: Uncached build and OCI export
+        env:
+          VARIANT: ${{ matrix.variant }}
+          PLATFORMS: ${{ matrix.platforms }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
+        run: |
+          mkdir -p tmp/benchmark
+          { uname -m; lscpu; } | tee tmp/benchmark/runner.txt
+          /usr/bin/time -f 'elapsed_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S' \
+            -o tmp/benchmark/timing.txt \
+            docker buildx build --no-cache --progress=plain \
+              --platform "$PLATFORMS" --file "$DOCKERFILE" \
+              --build-arg VERSION=v0.4.0-benchmark \
+              --tag memento:benchmark \
+              --output type=oci,dest=tmp/benchmark/image.tar . \
+              2>&1 | tee tmp/benchmark/build.log
+          printf '## %s\n\n' "$VARIANT" >> "$GITHUB_STEP_SUMMARY"
+          cat tmp/benchmark/timing.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: docker-benchmark-${{ matrix.variant }}
+          path: tmp/benchmark/
+          compression-level: 0
+          retention-days: 2
+          if-no-files-found: error
+
+  smoke:
+    name: Native smoke ${{ matrix.arch }}
+    needs: build
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            elf_machine: Advanced Micro Devices X86-64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            elf_machine: AArch64
+    services:
+      postgres:
+        image: postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+        env:
+          POSTGRES_DB: memento
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d memento"
+          --health-interval 1s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: docker-benchmark-crosscompile
+          path: tmp/benchmark
+      - name: Load target architecture from OCI archive
+        env:
+          ARCH: ${{ matrix.arch }}
+          ELF_MACHINE: ${{ matrix.elf_machine }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends skopeo binutils
+          skopeo copy --override-os linux --override-arch "$ARCH" \
+            oci-archive:tmp/benchmark/image.tar \
+            docker-archive:tmp/benchmark/image-docker.tar:memento:benchmark
+          docker load --input tmp/benchmark/image-docker.tar
+          test "$(docker image inspect memento:benchmark --format '{{.Architecture}}')" = "$ARCH"
+          container=$(docker create memento:benchmark)
+          docker cp "$container:/usr/local/bin/app" tmp/benchmark/app
+          docker rm "$container"
+          readelf -h tmp/benchmark/app | tee tmp/benchmark/elf.txt
+          grep -F "$ELF_MACHINE" tmp/benchmark/elf.txt
+      - name: Production smoke test on native runner
+        env:
+          EXPECTED_VERSION: v0.4.0-benchmark
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/memento?sslmode=disable
+        run: bash scripts/production-smoke.sh memento:benchmark
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: docker-smoke-${{ matrix.arch }}
+          path: |
+            tmp/production-smoke.*/artifacts/
+            tmp/benchmark/elf.txt
+          retention-days: 2
+          if-no-files-found: warn
