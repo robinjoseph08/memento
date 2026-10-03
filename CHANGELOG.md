@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
+- [Deps] Bump the javascript-dependencies group across 1 directory with 16 updates (#96)
+- [Backend] BREAKING: Require SMTP and remove auth_mode (#99)
+- [Deps] Bump the go-dependencies group across 1 directory with 4 updates (#98)
+- [Deps] Bump alpine from 3.24.1 to 3.24.2 (#83)
+- [Feature] Sign in with an emailed Sign-in Code (#97)
+- [Deps] Bump actions/github-script from 8 to 9 in the github-actions group across 1 directory (#85)
+- [Backend] Identify People by verified email (#94)
+- [Fix] Store dev PostgreSQL data in a Docker volume (#93)
+
 ## [0.3.0] - 2026-09-26
 
 - [Mobile] Sign in from the Mobile App and see Albums (#88)
