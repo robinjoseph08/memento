@@ -230,7 +230,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
         <fieldset
           aria-describedby={saveError ? errorId : undefined}
           aria-invalid={!!saveError}
-          className="space-y-6"
+          className="min-w-0 space-y-6"
           disabled={save.isPending}
         >
           {active.length > 0 && (
