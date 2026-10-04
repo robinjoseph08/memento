@@ -1,0 +1,9 @@
+# Offer Moments to Circles with live membership
+
+Access Decisions only grant access to the People a Curator names, so People who missed an event cannot discover its Album and cannot ask for what they do not know exists. Memento will let a Curator Offer an Album or its Moments to Circles, stored as Circle decisions beside the Person decisions from ADR 0004: an Album may be offered, and a Moment may be offered or withheld, with new Moments inheriting the Album's Offer and split and merge treating Offers like Moment decisions. Offers only fill the gap that Person decisions leave: Memento resolves a Person's own decisions first, and only when none applies does it check whether any of that Person's Circles is offered the Moment, so a Person-level deny always beats an Offer and a withhold for one Circle never blocks another Circle's Offer. Membership is read live, so adding a Person to a Circle is the Curator's approval of everything already offered to it, and removing them takes it away; Offers, like Access Decisions, only apply while an Album is published. A Join records that a Person wants an Album's offered media among their own, and it outlives the Offers it covers so a withdrawn and restored Offer returns to the People who joined.
+
+## Considered Options
+
+- **Snapshot membership**, expanding a Circle into Person decisions when offered. Rejected because People added later would never see earlier Albums, which is the problem Circles exist to solve.
+- **Offers that override Person decisions**. Rejected because an Offer would then silently undo a deny the Curator set on purpose.
+- **Interest signals instead of Offers**, where viewers name People they care about and Memento recommends grants. Deferred rather than rejected: it adds approvals without fixing discovery, and it can later feed Joins and Access Recommendations on top of Offers.

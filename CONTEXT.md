@@ -63,18 +63,30 @@ A verified request either to join Memento or to view an inaccessible Album. It r
 A suggestion to share a Moment with a Person detected in its current media. Recommendations follow Moment membership and never change access without a Curator's approval.
 
 **Access Decision**:
-A Curator's explicit access choice for a Person. Albums may allow access, Moments and Album Entries may allow or deny it, and missing decisions inherit from broader scopes before defaulting to denied.
+A Curator's explicit access choice for a Person. Albums may allow access, Moments and Album Entries may allow or deny it, and missing decisions inherit from broader scopes. When no decision applies, Offers to that Person's Circles decide before access defaults to denied.
+
+**Circle**:
+A Curator-named set of People, such as extended family or college friends, that Albums can be made available to. A Person may belong to several Circles. Circle names are only ever shown to Curators.
+_Avoid_: Group, Audience, Viewing Group
+
+**Offer**:
+A Curator's choice to make an Album or one of its Moments available to a Circle, so its members can browse it apart from their own Albums and Join it without asking. An Album Offer covers its future Moments unless a Moment is withheld, and Offers apply only while the Album is published. Membership is live: a Person added to a Circle can see everything already offered to it, and loses it when removed. Any Access Decision for a specific Person outranks an Offer.
+_Avoid_: Share, Publish, Grant
+
+**Join**:
+A viewer's choice to include everything offered to them in one Album alongside whatever they were granted directly, placing the Album among their own. Leave reverses it. A Join outlasts the Offers it covers, so an Album offered again returns to the People who joined it. Offered media a Person has not joined stays out of their own Albums and Library but remains browsable apart from them.
+_Avoid_: Follow, Subscribe, Add
 
 **Cover Order**:
 A Curator's ordered list of preferred Moments for one Album's cover. Each viewer sees the cover of the first Moment in the Cover Order they can access; when none applies, the earliest accessible Moment cover in capture order is used, so an Album with an empty Cover Order behaves as if none existed.
 _Avoid_: Priority, Ranking, Pin, Cover Override
 
 **Viewing Group**:
-The People who can see exactly the same Moment covers in one Album. Viewing Groups are derived from Access Decisions whenever a Curator reviews an Album's cover; they are never stored, named, or shown to viewers. A Person who can see no Moment cover belongs to no Viewing Group.
+The People who can see exactly the same Moment covers in one Album. Viewing Groups are derived from Access Decisions, Offers, and Joins whenever a Curator reviews an Album's cover; they are never stored, named, or shown to viewers. A Person who can see no Moment cover belongs to no Viewing Group.
 _Avoid_: Cohort, Access Set, Segment
 
 **Unannounced Change**:
-An Album or Album Entry that became visible to a Person after that Person's notification baseline. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email or Push delivery.
+An Album or Album Entry that became visible to a Person after that Person's notification baseline, counting only media they were granted directly or joined. An Album also counts once, as new to view, the first time it holds offered media that Person has not joined, unless that Person has turned off hearing about Albums they can join, in which case it is announced silently. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email or Push delivery.
 
 **Update Notification**:
 A Curator-approved summary of one or more Unannounced Changes for a Person, always readable inside Memento. Email and Push are optional delivery channels for the same notification, and neither creates a notification of its own. Email respects the Person's email preference, and Push follows the phone's own notification setting.
@@ -96,4 +108,4 @@ A single-use code the web sign-in gives the Mobile App so the phone gets a sessi
 _Avoid_: Mobile sign-in code, Exchange code
 
 **Onboarding**:
-The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible to them.
+The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible or offered to them.
