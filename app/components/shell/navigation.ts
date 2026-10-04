@@ -20,10 +20,19 @@ export type NavigationItem = {
   pending?: boolean;
 };
 
+// A Curator browsing the viewer pages gets the viewer navigation, so Albums
+// and Library behave the way they do for everyone else.
+export function inViewerArea(pathname: string) {
+  return /^\/(albums|library)(\/|$)/.test(pathname);
+}
+
 // The main navigation for a signed-in Person. The desktop header and the
 // phone sheet render the same list.
-export function navigationItems(person: Person): NavigationItem[] {
-  if (person.is_curator)
+export function navigationItems(
+  person: Person,
+  pathname: string,
+): NavigationItem[] {
+  if (person.is_curator && !inViewerArea(pathname))
     return [
       { to: "/curator", label: "Home", icon: House, end: true },
       { to: "/curator/albums", label: "Albums", icon: Images, end: true },

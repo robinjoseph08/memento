@@ -1,6 +1,6 @@
 import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation } from "react-router-dom";
 
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
@@ -17,6 +17,7 @@ export function MobileNavigation({
   pendingRequests?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const { pathname } = useLocation();
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 601px)");
     const closeOnDesktop = () => {
@@ -54,7 +55,7 @@ export function MobileNavigation({
           aria-label="Mobile navigation"
           className="mt-5 flex flex-col gap-1"
         >
-          {navigationItems(person).map((item) => (
+          {navigationItems(person, pathname).map((item) => (
             <NavLink
               className="group inline-flex cursor-pointer items-center gap-3 rounded-md px-3 py-3 text-sm hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring aria-[current=page]:bg-surface"
               end={item.end}

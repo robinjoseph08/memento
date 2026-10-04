@@ -543,6 +543,45 @@ it("keeps identity and secondary actions in a keyboard-accessible account menu",
   expect(screen.queryByRole("menu")).not.toBeInTheDocument();
 });
 
+it("lets a Curator switch between curating and the viewer pages", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: curator,
+          sign_in_methods: ["fake"],
+        });
+      if (path === "/api/curator/dashboard") return Response.json(quiet);
+      if (path === "/api/access-requests") return Response.json([]);
+      if (path === "/api/albums") return Response.json([]);
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  window.history.replaceState(null, "", "/curator");
+  const user = userEvent.setup();
+  render(<App />);
+  const links = () =>
+    within(screen.getByRole("navigation", { name: "Main navigation" }))
+      .getAllByRole("link")
+      .map((link) => link.textContent);
+  const account = await screen.findByRole("button", { name: "Account menu" });
+  expect(links()).toEqual(["Home", "Albums", "People", "Requests", "Updates"]);
+  await user.click(account);
+  await user.click(
+    await screen.findByRole("menuitem", { name: "Switch to viewing" }),
+  );
+  await waitFor(() => expect(window.location.pathname).toBe("/albums"));
+  expect(links()).toEqual(["Albums", "Library"]);
+  await user.click(screen.getByRole("button", { name: "Account menu" }));
+  await user.click(
+    await screen.findByRole("menuitem", { name: "Switch to curating" }),
+  );
+  await waitFor(() => expect(window.location.pathname).toBe("/curator"));
+  expect(links()).toEqual(["Home", "Albums", "People", "Requests", "Updates"]);
+});
+
 it("defaults to dark and remembers an explicit light theme across visits", async () => {
   serveIdentity();
   const user = userEvent.setup();

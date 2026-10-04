@@ -1,13 +1,14 @@
 import {
   CircleUser,
   Crown,
+  Eye,
   LogOut,
   Moon,
   Settings,
   type LucideIcon,
 } from "lucide-react";
-import { use, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { use, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 import { useSignOut } from "../../hooks/queries/identity";
 import type { useTheme } from "../../hooks/use-theme";
@@ -26,6 +27,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
+import { inViewerArea } from "./navigation";
 
 export function AccountMenu({
   person,
@@ -39,6 +41,7 @@ export function AccountMenu({
   onboarded?: boolean;
 } & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
+  const viewing = inViewerArea(useLocation().pathname);
   const unsavedRef = use(UnsavedChangesContext);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -85,19 +88,13 @@ export function AccountMenu({
             </p>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {preview || !onboarded ? (
-            <DropdownMenuItem disabled>
-              <MenuIcon icon={CircleUser} />
-              Profile
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem asChild>
-              <Link to="/profile">
-                <MenuIcon icon={CircleUser} />
-                Profile
-              </Link>
-            </DropdownMenuItem>
-          )}
+          <MenuLink
+            disabled={preview || !onboarded}
+            icon={CircleUser}
+            to="/profile"
+          >
+            Profile
+          </MenuLink>
           <DropdownMenuCheckboxItem
             checked={theme === "dark"}
             onCheckedChange={(checked) => setTheme(checked ? "dark" : "light")}
@@ -107,21 +104,24 @@ export function AccountMenu({
             Dark mode
           </DropdownMenuCheckboxItem>
           <DropdownMenuSeparator />
-          {person.is_curator &&
-            onboarded &&
-            (preview ? (
-              <DropdownMenuItem disabled>
-                <MenuIcon icon={Settings} />
+          {person.is_curator && onboarded && (
+            <>
+              <MenuLink
+                disabled={preview}
+                icon={viewing ? Crown : Eye}
+                to={viewing ? "/curator" : "/albums"}
+              >
+                {viewing ? "Switch to curating" : "Switch to viewing"}
+              </MenuLink>
+              <MenuLink
+                disabled={preview}
+                icon={Settings}
+                to="/curator/settings"
+              >
                 Settings
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem asChild>
-                <Link to="/curator/settings">
-                  <MenuIcon icon={Settings} />
-                  Settings
-                </Link>
-              </DropdownMenuItem>
-            ))}
+              </MenuLink>
+            </>
+          )}
           <DropdownMenuItem
             disabled={preview || signOut.isPending}
             onSelect={(event) => {
@@ -160,6 +160,36 @@ export function AccountMenu({
         title="Sign out?"
       />
     </>
+  );
+}
+
+// MenuLink is a menu item that navigates, shown disabled while the account
+// actions are unavailable.
+function MenuLink({
+  to,
+  icon,
+  disabled,
+  children,
+}: {
+  to: string;
+  icon: LucideIcon;
+  disabled: boolean;
+  children: ReactNode;
+}) {
+  if (disabled)
+    return (
+      <DropdownMenuItem disabled>
+        <MenuIcon icon={icon} />
+        {children}
+      </DropdownMenuItem>
+    );
+  return (
+    <DropdownMenuItem asChild>
+      <Link to={to}>
+        <MenuIcon icon={icon} />
+        {children}
+      </Link>
+    </DropdownMenuItem>
   );
 }
 
