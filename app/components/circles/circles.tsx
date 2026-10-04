@@ -2,6 +2,7 @@ import { Blend, Pencil, Plus, Trash2, UsersRound } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import {
+  useCircleOffers,
   useCircles,
   useCreateCircle,
   useDeleteCircle,
@@ -13,6 +14,7 @@ import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type { Circle } from "../../types/generated/identity";
+import type { OfferedAlbum } from "../../types/generated/publishing";
 import { PersonAvatar } from "../albums/person-avatar";
 import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
@@ -37,6 +39,7 @@ import { Input } from "../ui/input";
 
 export function CirclesPage() {
   const query = useCircles();
+  const offers = useCircleOffers();
   const create = useCreateCircle();
   const [creating, setCreating] = useState(false);
   return (
@@ -74,7 +77,14 @@ export function CirclesPage() {
         (query.data.length ? (
           <ul className="divide-y divide-border border-y border-border">
             {query.data.map((circle) => (
-              <CircleRow circle={circle} key={circle.id} />
+              <CircleRow
+                circle={circle}
+                key={circle.id}
+                offered={
+                  offers.data?.find((offer) => offer.circle_id === circle.id)
+                    ?.albums ?? []
+                }
+              />
             ))}
           </ul>
         ) : (
@@ -86,7 +96,36 @@ export function CirclesPage() {
   );
 }
 
-function CircleRow({ circle }: { circle: Circle }) {
+// Albums shown by title in the delete warning before the rest collapse into
+// a count.
+const namedAlbums = 3;
+
+// What deleting a Circle takes away. Its Offers go with it, so the warning
+// names the Albums its members could browse through it.
+function deleteDescription(offered: OfferedAlbum[]) {
+  const kept = "The people in it stay in Memento.";
+  if (offered.length === 0)
+    return `${kept} They're only taken out of this Circle.`;
+  const titles = offered
+    .slice(0, namedAlbums)
+    .map((album) => `“${album.title}”`);
+  const rest = offered.length - titles.length;
+  if (rest > 0)
+    titles.push(rest === 1 ? "1 more album" : `${rest} more albums`);
+  const list =
+    titles.length === 1
+      ? titles[0]
+      : `${titles.slice(0, -1).join(", ")}${titles.length > 2 ? "," : ""} and ${titles.at(-1)}`;
+  return `Deleting it withdraws its Offers of ${list}, so its members can't browse them anymore unless they have access another way. ${kept}`;
+}
+
+function CircleRow({
+  circle,
+  offered,
+}: {
+  circle: Circle;
+  offered: OfferedAlbum[];
+}) {
   const [editing, setEditing] = useState<"members" | "name" | null>(null);
   const remove = useDeleteCircle(circle.id);
   const rename = useRenameCircle(circle.id);
@@ -132,7 +171,7 @@ function CircleRow({ circle }: { circle: Circle }) {
           <ConfirmAction
             compact
             confirmLabel="Delete"
-            description="The people in it stay in Memento. They're only taken out of this Circle."
+            description={deleteDescription(offered)}
             destructive="deletes"
             error={remove.error}
             icon={Trash2}

@@ -211,9 +211,15 @@ type AccessUseCases interface {
 	SaveEntryRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
 	PreviewRemoveAccess(context.Context, string, RemoveAccessPreviewRequest) (RemoveAccessPreview, error)
 	RemoveAccess(context.Context, string, RemoveAccessRequest) (AlbumDetail, error)
+	ListCircleOffers(context.Context) ([]CircleOffers, error)
 }
 
 type accessHandlers struct{ module AccessUseCases }
+
+func (h *accessHandlers) circleOffers(c *echo.Context) error {
+	result, err := h.module.ListCircleOffers(c.Request().Context())
+	return respond(c, result, err)
+}
 
 func (h *accessHandlers) previewAlbumAccess(c *echo.Context) error {
 	var request SaveAlbumAccessRequest

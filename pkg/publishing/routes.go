@@ -25,6 +25,7 @@ func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, re
 // RegisterAccessRoutes keeps every access mutation behind the Curator guard.
 func RegisterAccessRoutes(e *echo.Echo, module AccessUseCases, requireCurator echo.MiddlewareFunc) {
 	h := &accessHandlers{module: module}
+	e.GET("/api/curator/circles/offers", h.circleOffers, requireCurator)
 	e.POST("/api/curator/albums/:id/access/preview", h.previewAlbumAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access", h.saveAlbumAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access/remove-all/preview", h.previewRemoveAccess, requireCurator)

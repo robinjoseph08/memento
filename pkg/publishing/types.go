@@ -366,6 +366,18 @@ type AlbumAccessChoice struct {
 	Allowed  bool   `json:"allowed"`
 }
 
+// CircleOffers lists the Albums one Circle is offered, by title, so a
+// Curator knows what deleting the Circle withdraws.
+type CircleOffers struct {
+	CircleID string         `json:"circle_id"`
+	Albums   []OfferedAlbum `json:"albums"`
+}
+
+type OfferedAlbum struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
 // AlbumOfferChoice offers the Album to a Circle or withdraws the Offer.
 type AlbumOfferChoice struct {
 	CircleID string `json:"circle_id" validate:"required,uuid"`

@@ -358,3 +358,21 @@ func requireInvalid(t *testing.T, err error) {
 	require.True(t, ok, "%v", err)
 	require.Equal(t, 422, invalid.HTTPCode)
 }
+
+func TestCircleOffersNameTheAlbumsEachCircleIsOffered(t *testing.T) {
+	t.Parallel()
+	f := newOfferFixture(t)
+	extended, college := f.circle(t, "Extended family"), f.circle(t, "College friends")
+	f.circle(t, "Neighbors")
+	f.offer(t, true, extended, college)
+	_, err := f.module.UpdateAlbum(t.Context(), f.album.ID, publishing.UpdateAlbumRequest{Title: "Reunion"})
+	require.NoError(t, err)
+	offers, err := f.module.ListCircleOffers(t.Context())
+	require.NoError(t, err)
+	reunion := []publishing.OfferedAlbum{{ID: f.album.ID, Title: "Reunion"}}
+	require.ElementsMatch(t, []publishing.CircleOffers{{CircleID: extended, Albums: reunion}, {CircleID: college, Albums: reunion}}, offers)
+	f.offer(t, false, college)
+	offers, err = f.module.ListCircleOffers(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []publishing.CircleOffers{{CircleID: extended, Albums: reunion}}, offers)
+}

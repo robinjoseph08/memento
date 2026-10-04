@@ -7,6 +7,7 @@ import type {
   CircleRequest,
   PersonCirclesRequest,
 } from "../../types/generated/identity";
+import type { CircleOffers } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
 export function useCircles() {
@@ -14,6 +15,18 @@ export function useCircles() {
   return useQuery({
     queryKey: [...scope, "circles"],
     queryFn: ({ signal }) => request<Circle[]>("/api/circles", { signal }),
+    retry: false,
+  });
+}
+
+// The Albums each Circle is offered. The key sits under "circles", so every
+// Circle change refreshes it too.
+export function useCircleOffers() {
+  const scope = usePrivateScope();
+  return useQuery({
+    queryKey: [...scope, "circles", "offers"],
+    queryFn: ({ signal }) =>
+      request<CircleOffers[]>("/api/curator/circles/offers", { signal }),
     retry: false,
   });
 }

@@ -328,6 +328,33 @@ func albumCircles(ctx context.Context, db bun.IDB, albumID string) ([]AlbumCircl
 	return result, errorstack.CaptureContext(ctx, err)
 }
 
+// ListCircleOffers lists every Circle with an Offer and the Albums it is
+// offered, by title. Circles without Offers are left out.
+func (m *Module) ListCircleOffers(ctx context.Context) ([]CircleOffers, error) {
+	type row struct {
+		CircleID string
+		AlbumID  string
+		Title    string
+	}
+	var rows []row
+	err := m.db.NewSelect().Model((*models.AlbumOffer)(nil)).
+		ColumnExpr("offer.circle_id, album.id AS album_id, album.title").
+		Join("JOIN albums AS album ON album.id = offer.album_id").
+		OrderExpr("offer.circle_id, lower(album.title), album.id").Scan(ctx, &rows)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	result := []CircleOffers{}
+	for _, r := range rows {
+		if len(result) == 0 || result[len(result)-1].CircleID != r.CircleID {
+			result = append(result, CircleOffers{CircleID: r.CircleID, Albums: []OfferedAlbum{}})
+		}
+		last := &result[len(result)-1]
+		last.Albums = append(last.Albums, OfferedAlbum{ID: r.AlbumID, Title: r.Title})
+	}
+	return result, nil
+}
+
 // albumAccessAfter applies the reviewed Album-wide choices to a copy of the
 // current structure so the preview and the save describe the same effect.
 func albumAccessAfter(ctx context.Context, db bun.IDB, state structureState, request SaveAlbumAccessRequest) (structureState, error) {
