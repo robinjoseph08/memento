@@ -92,7 +92,7 @@ function useAccessRequestAction(action: string) {
     mutationKey: scope,
     mutationFn: ({
       id,
-      body = { person_id: "", display_name: "" },
+      body = { person_id: "", display_name: "", circle_ids: [] },
     }: {
       id: string;
       body?: ApproveAccessRequestRequest;
@@ -108,6 +108,9 @@ function useAccessRequestAction(action: string) {
       });
       void client.invalidateQueries({ queryKey: [...scope, "people"] });
       void client.invalidateQueries({ queryKey: [...scope, "dashboard"] });
+      // Approval can add the Person to Circles.
+      void client.invalidateQueries({ queryKey: [...scope, "circles"] });
+      void client.invalidateQueries({ queryKey: [...scope, "person"] });
     },
   });
 }

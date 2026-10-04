@@ -236,6 +236,20 @@ func replaceMemberships(ctx context.Context, tx bun.Tx, column string, id models
 	return errorstack.CaptureContext(ctx, err)
 }
 
+// addMemberships puts a Person in more Circles, keeping the ones they are
+// already in.
+func addMemberships(ctx context.Context, tx bun.Tx, personID models.UUID, circles []models.UUID) error {
+	if len(circles) == 0 {
+		return nil
+	}
+	rows := make([]models.CircleMember, 0, len(circles))
+	for _, circle := range circles {
+		rows = append(rows, models.CircleMember{CircleID: circle, PersonID: personID})
+	}
+	_, err := tx.NewInsert().Model(&rows).On("CONFLICT DO NOTHING").Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
+}
+
 func projectCircle(ctx context.Context, tx bun.Tx, circle models.Circle) (Circle, error) {
 	circles, err := projectCircles(ctx, tx, []models.Circle{circle})
 	if err != nil {

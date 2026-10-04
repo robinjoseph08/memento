@@ -222,8 +222,9 @@ func accessRequestByID(ctx context.Context, tx bun.Tx, id string) (accessRequest
 }
 
 // ApproveAccessRequest records the decision and, for an unknown address,
-// chooses or creates the Person and adds the Preauthorization that admits it.
-// It never writes an Access Decision: Album access stays a separate review.
+// chooses or creates the Person, adds the Preauthorization that admits it, and
+// adds the Person to the picked Circles. It never writes an Access Decision:
+// Album access stays a separate review.
 func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, request ApproveAccessRequestRequest) (AccessRequest, error) {
 	var result AccessRequest
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
@@ -241,8 +242,15 @@ func (m *Module) ApproveAccessRequest(ctx context.Context, token, id string, req
 		}
 		now := m.now().UTC()
 		if row.Kind == RequestJoin {
+			circles, err := existingIDs(ctx, tx, (*models.Circle)(nil), request.CircleIDs, "circle_ids", chooseCircles)
+			if err != nil {
+				return err
+			}
 			person, err := m.admitRequestedAddress(ctx, tx, row.AccessRequest, request, now)
 			if err != nil {
+				return err
+			}
+			if err := addMemberships(ctx, tx, person.ID, circles); err != nil {
 				return err
 			}
 			row.PersonID = &person.ID

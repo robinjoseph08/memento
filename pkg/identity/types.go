@@ -257,8 +257,10 @@ type AccessRequest struct {
 }
 
 // ApproveAccessRequestRequest links an unknown address to an existing Person
-// or creates one. Requests from an existing Person need neither field.
+// or creates one, and adds that Person to any picked Circles. Requests from
+// an existing Person need none of the fields.
 type ApproveAccessRequestRequest struct {
-	PersonID    string `json:"person_id" validate:"omitempty,uuid"`
-	DisplayName string `json:"display_name" validate:"omitempty,max=100" mod:"trim"`
+	PersonID    string   `json:"person_id" validate:"omitempty,uuid"`
+	DisplayName string   `json:"display_name" validate:"omitempty,max=100" mod:"trim"`
+	CircleIDs   []string `json:"circle_ids"`
 }

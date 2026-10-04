@@ -149,6 +149,11 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
         return Response.json(requests[0]);
       }
       if (path.startsWith("/api/people?")) return Response.json([]);
+      if (path === "/api/circles")
+        return Response.json([
+          { id: "college", name: "College friends", members: [] },
+          { id: "family", name: "Extended family", members: [] },
+        ]);
       if (path === "/api/people/new-person")
         return Response.json({
           person: {
@@ -203,6 +208,13 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
   expect(name).toHaveValue("Stranger");
   await user.clear(name);
   await user.type(name, "Stranger Person");
+  const circles = within(dialog).getByRole("group", { name: "Circles" });
+  await user.click(
+    await within(circles).findByRole("checkbox", { name: "Extended family" }),
+  );
+  expect(
+    within(circles).getByRole("checkbox", { name: "College friends" }),
+  ).not.toBeChecked();
   await user.click(
     within(dialog).getByRole("button", { name: "Approve and open person" }),
   );
@@ -211,7 +223,7 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
   ).toBeVisible();
   expect(window.location.pathname).toBe("/curator/people/new-person");
   expect(approvals).toEqual([
-    { person_id: "", display_name: "Stranger Person" },
+    { person_id: "", display_name: "Stranger Person", circle_ids: ["family"] },
   ]);
   expect(
     screen.getByRole("button", {
