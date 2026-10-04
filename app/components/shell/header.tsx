@@ -7,9 +7,10 @@ import {
 } from "../../hooks/queries/admission";
 import { useIdentityStatus } from "../../hooks/queries/identity";
 import { useTheme } from "../../hooks/use-theme";
+import { cn } from "../../lib/utils";
 import { AccountMenu } from "./account-menu";
 import { MobileNavigation } from "./mobile-navigation";
-import { navigationItems } from "./navigation";
+import { navigationFit, navigationItems } from "./navigation";
 import { NotificationBell } from "./notification-bell";
 import { PendingBadge } from "./pending-badge";
 import { PreviewModeContext } from "./preview-mode";
@@ -43,7 +44,10 @@ export function Header() {
       {data?.person && onboarded && (
         <nav
           aria-label="Main navigation"
-          className="hidden flex-1 gap-1 pl-8 min-[601px]:flex"
+          className={cn(
+            "hidden flex-1 gap-1 pl-8",
+            navigationFit(data.person, pathname).show,
+          )}
         >
           {navigationItems(data.person, pathname).map((item) => (
             <NavLink

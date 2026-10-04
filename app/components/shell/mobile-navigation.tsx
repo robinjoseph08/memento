@@ -2,10 +2,11 @@ import { Menu } from "lucide-react";
 import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 
+import { cn } from "../../lib/utils";
 import type { Person } from "../../types/generated/identity";
 import { Button } from "../ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "../ui/sheet";
-import { navigationItems } from "./navigation";
+import { navigationFit, navigationItems } from "./navigation";
 import { PendingBadge } from "./pending-badge";
 import { Wordmark } from "./wordmark";
 
@@ -18,20 +19,21 @@ export function MobileNavigation({
 }) {
   const [open, setOpen] = useState(false);
   const { pathname } = useLocation();
+  const fit = navigationFit(person, pathname);
   useEffect(() => {
-    const desktop = window.matchMedia("(min-width: 601px)");
+    const desktop = window.matchMedia(fit.query);
     const closeOnDesktop = () => {
       if (desktop.matches) setOpen(false);
     };
     desktop.addEventListener("change", closeOnDesktop);
     return () => desktop.removeEventListener("change", closeOnDesktop);
-  }, []);
+  }, [fit.query]);
   return (
     <Sheet onOpenChange={setOpen} open={open}>
       <SheetTrigger asChild>
         <Button
           aria-label="Open navigation"
-          className="size-11 p-0 min-[601px]:hidden"
+          className={cn("size-11 p-0", fit.hide)}
           variant="ghost"
         >
           <Menu aria-hidden="true" size={22} strokeWidth={1.5} />
@@ -40,7 +42,7 @@ export function MobileNavigation({
       <SheetContent
         aria-describedby={undefined}
         onCloseAutoFocus={(event) => {
-          if (window.matchMedia("(min-width: 601px)").matches) {
+          if (window.matchMedia(fit.query).matches) {
             event.preventDefault();
             document
               .querySelector<HTMLAnchorElement>('a[aria-label="Memento home"]')

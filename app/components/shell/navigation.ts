@@ -1,4 +1,5 @@
 import {
+  Blend,
   House,
   Images,
   Inbox,
@@ -26,6 +27,24 @@ export function inViewerArea(pathname: string) {
   return /^\/(albums|library)(\/|$)/.test(pathname);
 }
 
+// Where the header has room for the full navigation; below it the phone
+// sheet takes over. The Curator navigation has more destinations, so it
+// needs more width. Tailwind only sees whole class names, so each is spelled
+// out.
+export function navigationFit(person: Person, pathname: string) {
+  return person.is_curator && !inViewerArea(pathname)
+    ? {
+        query: "(min-width: 1025px)",
+        show: "min-[1025px]:flex",
+        hide: "min-[1025px]:hidden",
+      }
+    : {
+        query: "(min-width: 601px)",
+        show: "min-[601px]:flex",
+        hide: "min-[601px]:hidden",
+      };
+}
+
 // The main navigation for a signed-in Person. The desktop header and the
 // phone sheet render the same list.
 export function navigationItems(
@@ -37,6 +56,7 @@ export function navigationItems(
       { to: "/curator", label: "Home", icon: House, end: true },
       { to: "/curator/albums", label: "Albums", icon: Images, end: true },
       { to: "/curator/people", label: "People", icon: Users },
+      { to: "/curator/circles", label: "Circles", icon: Blend },
       {
         to: "/curator/requests",
         label: "Requests",

@@ -57,7 +57,7 @@ export const routes = [
                   { path: "import", element: <ImportPage /> },
                   { path: "import/ignored", element: <ImportPage ignored /> },
                   { path: "people", element: <PeoplePage /> },
-                  { path: "people/circles", element: <CirclesPage /> },
+                  { path: "circles", element: <CirclesPage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
                   { path: "updates", element: <UpdatesPage /> },

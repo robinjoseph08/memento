@@ -16,7 +16,6 @@ import type { Circle } from "../../types/generated/identity";
 import { PersonAvatar } from "../albums/person-avatar";
 import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
-import { BackLink } from "../shell/back-link";
 import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -43,7 +42,6 @@ export function CirclesPage() {
   return (
     <div className="mx-auto max-w-280">
       <PageTitle title="Circles" />
-      <BackLink to="/curator/people">All people</BackLink>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-5">
         <h1 className={headingClass}>Circles</h1>
         <Button onClick={() => setCreating(true)}>

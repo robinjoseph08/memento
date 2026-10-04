@@ -334,7 +334,7 @@ function PersonCircles({ detail }: { detail: PersonDetail }) {
   const manage = (
     <Link
       className="-mx-2 rounded-sm px-2 py-1 text-accent-foreground hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
-      to="/curator/people/circles"
+      to="/curator/circles"
     >
       Manage circles
     </Link>
