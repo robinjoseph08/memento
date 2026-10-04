@@ -57,6 +57,24 @@ func (ApproveAccessRequestRequest) ValidationMessage(field, rule string) string 
 	}
 	return ""
 }
+func (CircleRequest) ValidationMessage(field, rule string) string {
+	if field == "name" && rule == "required" {
+		return "Enter a Circle name."
+	}
+	return ""
+}
+func (CircleMembersRequest) ValidationMessage(field, _ string) string {
+	if field == "person_ids" {
+		return choosePeople
+	}
+	return ""
+}
+func (PersonCirclesRequest) ValidationMessage(field, _ string) string {
+	if field == "circle_ids" {
+		return chooseCircles
+	}
+	return ""
+}
 func (LinkFaceRequest) ValidationMessage(field, _ string) string {
 	if field == "source_face_id" {
 		return "Refresh faces and choose one shown in this Album."
@@ -77,15 +95,25 @@ func (SetPersonAvatarRequest) ValidationMessage(field, _ string) string {
 }
 
 func displayName(value string) (string, error) {
+	return shortName("display_name", "Enter a display name.", value)
+}
+
+func circleName(value string) (string, error) {
+	return shortName("name", "Enter a Circle name.", value)
+}
+
+// shortName trims a required name of at most 100 characters, reporting
+// problems on field with empty as the message for a blank name.
+func shortName(field, empty, value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "", fieldError("display_name", "Enter a display name.")
+		return "", fieldError(field, empty)
 	}
 	if len([]rune(value)) > 100 {
-		return "", fieldError("display_name", "Use 100 characters or fewer.")
+		return "", fieldError(field, "Use 100 characters or fewer.")
 	}
 	if strings.ContainsRune(value, 0) {
-		return "", fieldError("display_name", "Remove the invalid character.")
+		return "", fieldError(field, "Remove the invalid character.")
 	}
 	return value, nil
 }

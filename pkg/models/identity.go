@@ -113,3 +113,18 @@ type AccessRequest struct {
 	ResolvedAt    *time.Time
 	ResolvedBy    *UUID `bun:"resolved_by,type:uuid"`
 }
+
+// Circle is a Curator-named set of People. Names are Curator-only.
+type Circle struct {
+	bun.BaseModel `bun:"table:circles,alias:circle"`
+	ID            UUID `bun:"id,pk,type:uuid"`
+	Name          string
+	CreatedAt     time.Time
+}
+
+// CircleMember places one Person in one Circle.
+type CircleMember struct {
+	bun.BaseModel `bun:"table:circle_members,alias:member"`
+	CircleID      UUID `bun:"circle_id,pk,type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+}

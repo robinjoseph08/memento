@@ -567,7 +567,14 @@ it("lets a Curator switch between curating and the viewer pages", async () => {
       .getAllByRole("link")
       .map((link) => link.textContent);
   const account = await screen.findByRole("button", { name: "Account menu" });
-  expect(links()).toEqual(["Home", "Albums", "People", "Requests", "Updates"]);
+  expect(links()).toEqual([
+    "Home",
+    "Albums",
+    "People",
+    "Circles",
+    "Requests",
+    "Updates",
+  ]);
   await user.click(account);
   await user.click(
     await screen.findByRole("menuitem", { name: "Switch to viewing" }),
@@ -579,7 +586,14 @@ it("lets a Curator switch between curating and the viewer pages", async () => {
     await screen.findByRole("menuitem", { name: "Switch to curating" }),
   );
   await waitFor(() => expect(window.location.pathname).toBe("/curator"));
-  expect(links()).toEqual(["Home", "Albums", "People", "Requests", "Updates"]);
+  expect(links()).toEqual([
+    "Home",
+    "Albums",
+    "People",
+    "Circles",
+    "Requests",
+    "Updates",
+  ]);
 });
 
 it("defaults to dark and remembers an explicit light theme across visits", async () => {

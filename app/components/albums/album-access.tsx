@@ -456,7 +456,7 @@ function RemoveAllAccessDialog({
           }}
         >
           <fieldset className="flex gap-2" disabled={remove.isPending}>
-            <Button disabled={!review.data} type="submit">
+            <Button disabled={!review.data} type="submit" variant="destructive">
               {remove.isPending ? "Removing…" : "Remove all access"}
             </Button>
             <Button onClick={onClose} type="button" variant="outline">

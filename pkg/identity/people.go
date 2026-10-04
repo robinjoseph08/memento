@@ -196,7 +196,7 @@ func signInStanding(ctx context.Context, tx bun.Tx, people []models.Person) (map
 }
 
 func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail, error) {
-	result := PersonDetail{Faces: []LinkedFace{}, Emails: []LinkedEmail{}, Preauthorizations: []Preauthorization{}, Invitations: []Invitation{}, Sessions: []BrowserSession{}}
+	result := PersonDetail{Faces: []LinkedFace{}, Emails: []LinkedEmail{}, Preauthorizations: []Preauthorization{}, Invitations: []Invitation{}, Sessions: []BrowserSession{}, Circles: []PersonCircle{}}
 	err := m.change(ctx, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := m.actor(ctx, tx, token, true); err != nil {
 			return err
@@ -226,6 +226,10 @@ func (m *Module) GetPerson(ctx context.Context, token, id string) (PersonDetail,
 			result.Preauthorizations = append(result.Preauthorizations, projectPreauthorization(approval))
 		}
 		result.Invitations, err = m.personInvitations(ctx, tx, person.ID)
+		if err != nil {
+			return err
+		}
+		result.Circles, err = personCircles(ctx, tx, person.ID)
 		if err != nil {
 			return err
 		}

@@ -112,6 +112,7 @@ export function PreauthorizationTables({
                       <ConfirmAction
                         compact
                         description="This unused approval will no longer grant sign-in access."
+                        destructive="removes"
                         error={error}
                         label={`Revoke ${authorization.email}`}
                         onConfirm={() => revoke(authorization.id)}

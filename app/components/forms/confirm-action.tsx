@@ -17,6 +17,7 @@ export function ConfirmAction({
   disabled = false,
   compact = false,
   icon: Icon,
+  destructive,
 }: {
   label: string;
   triggerLabel?: string;
@@ -30,6 +31,9 @@ export function ConfirmAction({
   disabled?: boolean;
   compact?: boolean;
   icon?: LucideIcon;
+  // "removes" colors the confirm button red for an action that takes access
+  // away. "deletes" also colors the trigger, for a permanent deletion.
+  destructive?: "removes" | "deletes";
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -41,7 +45,7 @@ export function ConfirmAction({
         disabled={disabled || pending}
         onClick={() => setOpen(true)}
         size={compact ? "sm" : "default"}
-        variant="outline"
+        variant={destructive === "deletes" ? "destructive-outline" : "outline"}
       >
         {Icon && (
           <Icon aria-hidden="true" className="size-4" strokeWidth={1.5} />
@@ -52,6 +56,7 @@ export function ConfirmAction({
         confirmLabel={confirmLabel}
         confirmName={label}
         description={description}
+        destructive={!!destructive}
         error={error}
         onConfirm={() => {
           void onConfirm()

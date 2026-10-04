@@ -74,6 +74,7 @@ export function LinkedEmails({
                   <ConfirmAction
                     compact
                     description="This email will no longer be able to sign in, and its browser sessions will end."
+                    destructive="removes"
                     disabled={keepLast}
                     error={error}
                     icon={Unlink}

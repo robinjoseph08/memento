@@ -146,3 +146,39 @@ test("Immich search keeps focus, clears immediately, and follows browser history
     page.getByRole("heading", { name: "Your albums", exact: true }),
   ).toBeVisible();
 });
+
+test("the Curator navigation moves into the drawer until every destination fits", async ({
+  page,
+}) => {
+  const fits = () =>
+    page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    );
+  await page.goto("/setup");
+  await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
+  const header = page.getByRole("navigation", { name: "Main navigation" });
+  await page.setViewportSize({ width: 900, height: 800 });
+  await expect(header).toBeHidden();
+  expect(await fits()).toBeTruthy();
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page
+    .getByRole("dialog", { name: "Navigation" })
+    .getByRole("link", { name: "Circles", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/curator\/circles$/);
+  await expect(
+    page.getByRole("heading", { name: "Circles", exact: true }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1025, height: 800 });
+  await expect(
+    header.getByRole("link", { name: "Circles", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  expect(await fits()).toBeTruthy();
+
+  // The viewer pages have two destinations, so they keep the phone breakpoint.
+  await page.goto("/albums");
+  await page.setViewportSize({ width: 700, height: 800 });
+  await expect(header.getByRole("link", { name: "Library" })).toBeVisible();
+  expect(await fits()).toBeTruthy();
+});

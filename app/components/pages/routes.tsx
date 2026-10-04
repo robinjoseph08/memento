@@ -1,6 +1,7 @@
 import { AlbumPage } from "../albums/album-detail";
 import { CuratorAlbumsPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
+import { CirclesPage } from "../circles/circles";
 import { DashboardPage } from "../dashboard/dashboard";
 import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
@@ -56,6 +57,7 @@ export const routes = [
                   { path: "import", element: <ImportPage /> },
                   { path: "import/ignored", element: <ImportPage ignored /> },
                   { path: "people", element: <PeoplePage /> },
+                  { path: "circles", element: <CirclesPage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
                   { path: "updates", element: <UpdatesPage /> },

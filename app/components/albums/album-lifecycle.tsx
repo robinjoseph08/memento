@@ -61,11 +61,10 @@ export function DangerZone({ album }: { album: AlbumDetail }) {
           </span>
         </p>
         <Button
-          className="text-destructive"
           onClick={() => setDeleteOpen(true)}
           size="sm"
           type="button"
-          variant="outline"
+          variant="destructive-outline"
         >
           Delete Album
         </Button>
@@ -138,7 +137,11 @@ function DeleteAlbumDialog({
                 value={title}
               />
               <div className="flex flex-wrap gap-2">
-                <Button disabled={title !== album.title} type="submit">
+                <Button
+                  disabled={title !== album.title}
+                  type="submit"
+                  variant="destructive"
+                >
                   {remove.isPending ? "Deleting…" : "Permanently delete Album"}
                 </Button>
                 <Button onClick={close} type="button" variant="outline">
