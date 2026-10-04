@@ -16,6 +16,8 @@
   --color-primary-foreground: #083344;
   --color-ring: var(--focus);
   --color-destructive: var(--destructive);
+  --color-destructive-fill: #c0352f;
+  --color-destructive-fill-foreground: #ffffff;
   --font-sans: "Montserrat", sans-serif;
   --font-heading: "Slabo 13px", Georgia, serif;
 }

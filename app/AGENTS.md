@@ -85,6 +85,17 @@
   `role="status"`. ESLint's `no-alert` rule enforces this.
   The only exception is the `beforeunload` handler, where the browser owns the
   prompt.
+- Red means an action deletes something or takes access away, and cannot
+  simply be undone. Keep it rare so it still stands out:
+  - A permanent deletion, such as deleting an Album or a Circle, gets a
+    `destructive-outline` trigger and a `destructive` confirm button. With
+    `ConfirmAction`, pass `destructive="deletes"`.
+  - Removing someone's access, such as Remove all access, Unlink, Revoke, or
+    Deactivate, keeps a neutral trigger and gets a `destructive` confirm
+    button. Pass `destructive="removes"` to `ConfirmAction` or `destructive`
+    to `ConfirmDialog`.
+  - Actions that are easy to reverse or only affect the person doing them,
+    such as Unpublish, Dismiss, or Sign out everywhere, stay neutral.
 - Text-styled buttons and summaries still need a hover surface. Keep real
   padding such as `px-2 py-1` and pull the control back into alignment with
   matching negative margins (`-mx-2`) instead of zeroing the padding, so hover

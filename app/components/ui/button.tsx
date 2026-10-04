@@ -16,6 +16,12 @@ const buttonVariants = cva(
         default: "bg-primary text-primary-foreground hover:bg-primary/90",
         outline: "border border-border bg-background hover:bg-surface",
         ghost: "hover:bg-surface",
+        // Confirms an action that deletes something or takes access away.
+        destructive:
+          "bg-destructive-fill text-destructive-fill-foreground hover:bg-destructive-fill/90",
+        // Starts a permanent deletion.
+        "destructive-outline":
+          "border border-border bg-background text-destructive hover:bg-surface",
       },
     },
     defaultVariants: { variant: "default", size: "default" },

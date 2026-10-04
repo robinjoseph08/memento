@@ -26,6 +26,7 @@ export function ConfirmDialog({
   onConfirm,
   pending = false,
   error = null,
+  destructive = false,
   onCloseAutoFocus,
 }: {
   open: boolean;
@@ -39,6 +40,9 @@ export function ConfirmDialog({
   onConfirm: () => void;
   pending?: boolean;
   error?: unknown;
+  // Colors the confirm button red for an action that deletes something or
+  // takes access away.
+  destructive?: boolean;
   onCloseAutoFocus?: ComponentProps<typeof DialogContent>["onCloseAutoFocus"];
 }) {
   const returnFocus = useReturnFocus(open);
@@ -63,7 +67,12 @@ export function ConfirmDialog({
             if (!pending) onConfirm();
           }}
         >
-          <Button aria-label={confirmName} disabled={pending} type="submit">
+          <Button
+            aria-label={confirmName}
+            disabled={pending}
+            type="submit"
+            variant={destructive ? "destructive" : "default"}
+          >
             {pending ? pendingLabel : confirmLabel}
           </Button>
           <Button

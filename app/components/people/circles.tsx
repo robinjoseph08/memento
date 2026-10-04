@@ -133,6 +133,7 @@ function CircleRow({ circle }: { circle: Circle }) {
             compact
             confirmLabel="Delete"
             description="The people in it stay in Memento. They're only taken out of this Circle."
+            destructive="deletes"
             error={remove.error}
             icon={Trash2}
             label={`Delete ${circle.name}`}

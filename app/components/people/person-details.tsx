@@ -161,6 +161,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
             <ConfirmDialog
               confirmLabel="Deactivate"
               description={`${values.display_name.trim() || person.display_name} will be signed out everywhere and unable to sign in until you reactivate them.`}
+              destructive
               onConfirm={() => {
                 setConfirmingDeactivation(false);
                 save();
