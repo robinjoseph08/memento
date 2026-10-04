@@ -50,6 +50,7 @@ const album: AlbumDetail = {
   end_date: "2026-07-01",
   cover_url: "/media/beach",
   access: [],
+  circles: [],
   excluded: [],
   moments: [
     {
@@ -198,6 +199,8 @@ function reviewFor(request: SyncRequest): SyncReview {
             display_name: "Alex",
             gained_entry_ids: [],
             lost_entry_ids: ["beach"],
+            offered_gained_entry_ids: [],
+            offered_lost_entry_ids: [],
           },
         ]
       : [
@@ -206,6 +209,8 @@ function reviewFor(request: SyncRequest): SyncReview {
             display_name: "Alex",
             gained_entry_ids: ["source:asset-new"],
             lost_entry_ids: ["beach"],
+            offered_gained_entry_ids: [],
+            offered_lost_entry_ids: [],
           },
         ],
     blockers,

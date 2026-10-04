@@ -13,6 +13,8 @@ func (SaveAlbumAccessRequest) ValidationMessage(field, _ string) string {
 		return "Choose the people to review."
 	case "person_id":
 		return "Choose active non-Curator Persons."
+	case "circles", "circle_id":
+		return "Choose existing Circles."
 	}
 	return ""
 }

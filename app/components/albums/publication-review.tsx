@@ -4,7 +4,10 @@ import {
 } from "../../hooks/queries/publication";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { cn } from "../../lib/utils";
-import type { AlbumDetail } from "../../types/generated/publishing";
+import type {
+  AlbumDetail,
+  PublicationAudience,
+} from "../../types/generated/publishing";
 import { Form, ReadFailure } from "../people/form-fields";
 import { Button } from "../ui/button";
 import {
@@ -15,6 +18,16 @@ import {
 } from "../ui/dialog";
 import { countLabel } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
+
+// How much of the Album one Person will see: their own media, and what their
+// Circles are offered beyond it.
+function audienceCount(person: PublicationAudience, total: number) {
+  if (person.offered_count === 0)
+    return `${person.accessible_count} of ${total} items`;
+  if (person.accessible_count === 0)
+    return `${person.offered_count} of ${total} items offered`;
+  return `${person.accessible_count} of ${total} items, ${person.offered_count} more offered`;
+}
 
 // Review & publish is the only command bar action and exists only while the
 // Album is unpublished. It confirms the audience and blockers before publishing.
@@ -69,7 +82,7 @@ export function PublishDialog({
                       {person.display_name}
                     </strong>
                     <span className="ml-auto text-xs text-muted">
-                      {person.accessible_count} of {total} items
+                      {audienceCount(person, total)}
                     </span>
                   </div>
                 ))

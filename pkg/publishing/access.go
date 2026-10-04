@@ -312,6 +312,22 @@ func accessEntry(ctx context.Context, db bun.IDB, albumID, entryID string) (mode
 	return entry, errorstack.CaptureContext(ctx, err)
 }
 
+// albumCircles lists every Circle with whether the Album is offered to it.
+func albumCircles(ctx context.Context, db bun.IDB, albumID string) ([]AlbumCircle, error) {
+	result := []AlbumCircle{}
+	members := db.NewSelect().TableExpr("circle_members AS member").ColumnExpr("count(*)").
+		Join("JOIN persons AS person ON person.id = member.person_id AND person.deactivated_at IS NULL AND NOT person.is_curator").
+		Where("member.circle_id = circle.id")
+	offered := db.NewSelect().Model((*models.AlbumOffer)(nil)).ColumnExpr("1").
+		Where("offer.circle_id = circle.id AND offer.album_id = ?", albumID)
+	err := db.NewSelect().Model((*models.Circle)(nil)).
+		ColumnExpr("circle.id AS circle_id, circle.name").
+		ColumnExpr("EXISTS (?) AS offered", offered).
+		ColumnExpr("(?) AS member_count", members).
+		OrderExpr("lower(circle.name), circle.id").Scan(ctx, &result)
+	return result, errorstack.CaptureContext(ctx, err)
+}
+
 // albumAccessAfter applies the reviewed Album-wide choices to a copy of the
 // current structure so the preview and the save describe the same effect.
 func albumAccessAfter(ctx context.Context, db bun.IDB, state structureState, request SaveAlbumAccessRequest) (structureState, error) {
@@ -333,6 +349,26 @@ func albumAccessAfter(ctx context.Context, db bun.IDB, state structureState, req
 			after.AlbumDecisions[person.String()] = DecisionAllow
 		} else {
 			delete(after.AlbumDecisions, person.String())
+		}
+	}
+	seen = map[string]bool{}
+	for _, choice := range request.Circles {
+		circle, err := uuid.Parse(choice.CircleID)
+		if err != nil || seen[circle.String()] {
+			return after, structureField("circles", "Choose each Circle once.")
+		}
+		seen[circle.String()] = true
+		exists, err := db.NewSelect().Model((*models.Circle)(nil)).Where("circle.id = ?", circle.String()).Exists(ctx)
+		if err != nil {
+			return after, errorstack.CaptureContext(ctx, err)
+		}
+		if !exists {
+			return after, structureField("circles", "Choose existing Circles.")
+		}
+		if choice.Offered {
+			after.AlbumOffers[circle.String()] = true
+		} else {
+			delete(after.AlbumOffers, circle.String())
 		}
 	}
 	return after, nil
@@ -358,8 +394,9 @@ func (m *Module) PreviewAlbumAccess(ctx context.Context, albumID string, request
 	return result, transactionError(ctx, err)
 }
 
-// SaveAlbumAccess replaces only the Album-wide allows named in the request.
-// Unchecking removes the Album allow and leaves narrower decisions alone.
+// SaveAlbumAccess replaces only the Album-wide allows and Offers named in the
+// request. Unchecking a Person removes the Album allow and leaves narrower
+// decisions alone.
 func (m *Module) SaveAlbumAccess(ctx context.Context, albumID string, request SaveAlbumAccessRequest) (AlbumDetail, error) {
 	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
 		if _, err := albumRow(ctx, tx, albumID, true); err != nil {
@@ -382,6 +419,11 @@ func (m *Module) SaveAlbumAccess(ctx context.Context, albumID string, request Sa
 				return err
 			}
 		}
+		for _, choice := range request.Circles {
+			if err := writeAlbumOffer(ctx, tx, albumID, choice, now); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -390,9 +432,20 @@ func (m *Module) SaveAlbumAccess(ctx context.Context, albumID string, request Sa
 	return m.GetAlbum(ctx, albumID)
 }
 
+// writeAlbumOffer saves or withdraws one Circle's Album Offer.
+func writeAlbumOffer(ctx context.Context, db bun.IDB, albumID string, choice AlbumOfferChoice, now time.Time) error {
+	if !choice.Offered {
+		_, err := db.NewDelete().Model((*models.AlbumOffer)(nil)).Where("album_id = ? AND circle_id = ?", albumID, choice.CircleID).Exec(ctx)
+		return errorstack.CaptureContext(ctx, err)
+	}
+	row := models.AlbumOffer{AlbumID: models.UUID(uuid.MustParse(albumID)), CircleID: models.UUID(uuid.MustParse(choice.CircleID)), CreatedAt: now}
+	_, err := db.NewInsert().Model(&row).On("CONFLICT (album_id, circle_id) DO NOTHING").Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
+}
+
 // removalPreview describes losing every rule for one Person, active or
-// deactivated. Removal can only take media away, so the change is the current
-// visible set.
+// deactivated. Removal takes away direct access, and an Offer to the Person's
+// Circles then reaches what no rule decides any more.
 func removalPreview(state structureState, person models.Person) (RemoveAccessPreview, error) {
 	personID := person.ID.String()
 	result := RemoveAccessPreview{PersonID: personID, DisplayName: person.DisplayName, Changes: []AudienceChange{}}
@@ -404,8 +457,9 @@ func removalPreview(state structureState, person models.Person) (RemoveAccessPre
 	for _, decisions := range after.EntryDecisions {
 		delete(decisions, personID)
 	}
-	if lost := visibleEntries(state.facts(), personID); len(lost) > 0 {
-		result.Changes = append(result.Changes, AudienceChange{PersonID: personID, DisplayName: person.DisplayName, GainedEntryIDs: []string{}, LostEntryIDs: lost})
+	for _, change := range audienceChanges(state.facts(), after.facts(), []string{personID}) {
+		change.DisplayName = person.DisplayName
+		result.Changes = append(result.Changes, change)
 	}
 	token, err := reviewToken("remove-access", state, personID, after)
 	result.ReviewToken = token

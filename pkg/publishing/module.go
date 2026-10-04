@@ -99,9 +99,11 @@ func albumSummaries(db bun.IDB) *bun.SelectQuery {
 		Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.removed_at IS NULL AND NOT item.offline AND NOT item.trashed").
 		OrderExpr("moment.album_id, moment.cover_position ASC NULLS LAST, " + momentCaptureOrder)
-	// An Album is ready to publish once at least one allowing decision exists
-	// at any scope; until then publishing would show it to nobody.
-	audience := db.NewSelect().TableExpr("album_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'").
+	// An Album is ready to publish once at least one allowing decision or
+	// Offer exists at any scope; until then publishing would show it to
+	// nobody. Membership is live, so an Offer counts before its Circle fills.
+	audience := db.NewSelect().TableExpr("album_offers AS offer").ColumnExpr("1").Where("offer.album_id = album.id").
+		UnionAll(db.NewSelect().TableExpr("album_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'")).
 		UnionAll(db.NewSelect().TableExpr("moment_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'")).
 		UnionAll(db.NewSelect().TableExpr("entry_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'"))
 	return db.NewSelect().Model((*models.Album)(nil)).Column("album.*").
@@ -152,7 +154,7 @@ func (m *Module) GetAlbum(ctx context.Context, id string) (AlbumDetail, error) {
 }
 
 func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetail, error) {
-	result := AlbumDetail{Moments: []Moment{}, Excluded: []ExcludedEntry{}}
+	result := AlbumDetail{Moments: []Moment{}, Circles: []AlbumCircle{}, Excluded: []ExcludedEntry{}}
 	if _, err := uuid.Parse(id); err != nil {
 		return result, errcodes.NotFound("Album")
 	}
@@ -243,6 +245,9 @@ func getAlbum(ctx context.Context, db bun.IDB, id, immichURL string) (AlbumDetai
 			CoverEntryID: moment.CoverEntryID.String(), CoverPosition: position, Entries: byMoment[moment.ID], Access: access[moment.ID]})
 	}
 	if err := attachAccess(ctx, db, &result); err != nil {
+		return result, err
+	}
+	if result.Circles, err = albumCircles(ctx, db, id); err != nil {
 		return result, err
 	}
 	type excludedRow struct {

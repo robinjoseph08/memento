@@ -42,6 +42,7 @@ export function ViewerAlbumRedirect() {
 export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
   const { id = "", entryID } = useParams();
   const base = `/albums/${encodeURIComponent(id)}`;
+  const opened = entryID ? `/${encodeURIComponent(entryID)}` : "";
   return (
     <>
       <BackLink className="min-[761px]:mb-10" to="/albums">
@@ -51,6 +52,51 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
         context={{ albumID: id }}
         entryID={entryID}
         entryLink={(entry) => `${base}/${tab}/${encodeURIComponent(entry)}`}
+        fallback={{
+          context: { albumID: id, offered: true },
+          to: `${base}/preview/${tab}${opened}`,
+        }}
+        tab={tab}
+        tabLinks={{ photos: `${base}/photos`, videos: `${base}/videos` }}
+      />
+    </>
+  );
+}
+
+export function ViewerOfferedAlbumRedirect() {
+  const { id = "" } = useParams();
+  return (
+    <>
+      <PageTitle title="Album" />
+      <Navigate
+        replace
+        to={`/albums/${encodeURIComponent(id)}/preview/photos`}
+      />
+    </>
+  );
+}
+
+// An Album offered to the viewer, browsed apart from their own Albums. A
+// shared link reaching someone with nothing offered but the Album of their
+// own opens their own copy.
+export function ViewerOfferedAlbumPage({ tab }: { tab: ViewerTab }) {
+  const { id = "", entryID } = useParams();
+  const own = `/albums/${encodeURIComponent(id)}`;
+  const base = `${own}/preview`;
+  const opened = entryID ? `/${encodeURIComponent(entryID)}` : "";
+  return (
+    <>
+      <BackLink className="min-[761px]:mb-10" to="/albums">
+        All albums
+      </BackLink>
+      <ViewerGallery
+        context={{ albumID: id, offered: true }}
+        entryID={entryID}
+        entryLink={(entry) => `${base}/${tab}/${encodeURIComponent(entry)}`}
+        fallback={{
+          context: { albumID: id },
+          to: `${own}/${tab}${opened}`,
+        }}
         tab={tab}
         tabLinks={{ photos: `${base}/photos`, videos: `${base}/videos` }}
       />

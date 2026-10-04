@@ -15,12 +15,38 @@ func entryAllowed(album, moment, entry Decision) bool {
 	return false
 }
 
-// accessFacts supplies membership and saved rules to structural audience review.
+// undecided reports that none of a Person's own rules applies to an entry,
+// which is the only case where an Offer counts (ADR 0015).
+func undecided(album, moment, entry Decision) bool {
+	for _, decision := range []Decision{entry, moment, album} {
+		if decision == DecisionAllow || decision == DecisionDeny {
+			return false
+		}
+	}
+	return true
+}
+
+// accessFacts supplies membership, saved rules, and Offers to structural
+// audience review. Offers are reviewed as they apply after publication.
 type accessFacts struct {
 	EntryMoments   map[string]string
 	Decisions      map[string]map[string]Decision
 	AlbumDecisions map[string]Decision
 	EntryDecisions map[string]map[string]Decision
+	// AlbumOffers holds the Circles the Album is offered to.
+	AlbumOffers map[string]bool
+	// Circles maps each active Person to the Circles they belong to.
+	Circles map[string][]string
+}
+
+// offered reports whether an Album Offer reaches any of the Person's Circles.
+func (facts accessFacts) offered(personID string) bool {
+	for _, circleID := range facts.Circles[personID] {
+		if facts.AlbumOffers[circleID] {
+			return true
+		}
+	}
+	return false
 }
 
 func visibleEntries(facts accessFacts, personID string) []string {
@@ -34,30 +60,46 @@ func visibleEntries(facts accessFacts, personID string) []string {
 	return result
 }
 
+// offeredEntries lists the entries an Offer reaches for the Person: those no
+// rule of their own decides.
+func offeredEntries(facts accessFacts, personID string) []string {
+	result := []string{}
+	if !facts.offered(personID) {
+		return result
+	}
+	for entryID, momentID := range facts.EntryMoments {
+		if undecided(facts.AlbumDecisions[personID], facts.Decisions[momentID][personID], facts.EntryDecisions[entryID][personID]) {
+			result = append(result, entryID)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+// difference lists the entries in after that are missing from before.
+func difference(before, after []string) []string {
+	seen := make(map[string]bool, len(before))
+	for _, id := range before {
+		seen[id] = true
+	}
+	result := []string{}
+	for _, id := range after {
+		if !seen[id] {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
 func audienceChanges(before, after accessFacts, personIDs []string) []AudienceChange {
 	result := []AudienceChange{}
 	for _, personID := range personIDs {
-		oldEntries := visibleEntries(before, personID)
-		newEntries := visibleEntries(after, personID)
-		oldSet, newSet := map[string]bool{}, map[string]bool{}
-		for _, id := range oldEntries {
-			oldSet[id] = true
-		}
-		for _, id := range newEntries {
-			newSet[id] = true
-		}
-		change := AudienceChange{PersonID: personID, GainedEntryIDs: []string{}, LostEntryIDs: []string{}}
-		for _, id := range newEntries {
-			if !oldSet[id] {
-				change.GainedEntryIDs = append(change.GainedEntryIDs, id)
-			}
-		}
-		for _, id := range oldEntries {
-			if !newSet[id] {
-				change.LostEntryIDs = append(change.LostEntryIDs, id)
-			}
-		}
-		if len(change.GainedEntryIDs) > 0 || len(change.LostEntryIDs) > 0 {
+		oldEntries, newEntries := visibleEntries(before, personID), visibleEntries(after, personID)
+		oldOffered, newOffered := offeredEntries(before, personID), offeredEntries(after, personID)
+		change := AudienceChange{PersonID: personID,
+			GainedEntryIDs: difference(oldEntries, newEntries), LostEntryIDs: difference(newEntries, oldEntries),
+			OfferedGainedEntryIDs: difference(oldOffered, newOffered), OfferedLostEntryIDs: difference(newOffered, oldOffered)}
+		if len(change.GainedEntryIDs)+len(change.LostEntryIDs)+len(change.OfferedGainedEntryIDs)+len(change.OfferedLostEntryIDs) > 0 {
 			result = append(result, change)
 		}
 	}

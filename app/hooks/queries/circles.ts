@@ -18,9 +18,10 @@ export function useCircles() {
   });
 }
 
-// Membership shows on both the Circles page and each Person's details, so
-// every Circle change refreshes both. A failure refreshes them too, since it
-// usually means a Circle changed elsewhere.
+// Membership shows on the Circles page, each Person's details, and every
+// Album's Offers, which decide who an Album reaches, so every Circle change
+// refreshes them all. A failure refreshes them too, since it usually means a
+// Circle changed elsewhere.
 function useCircleMutation<T, V>(fn: (variables: V) => Promise<T>) {
   const client = useQueryClient();
   const scope = usePrivateScope();
@@ -31,6 +32,9 @@ function useCircleMutation<T, V>(fn: (variables: V) => Promise<T>) {
       Promise.all([
         client.invalidateQueries({ queryKey: [...scope, "circles"] }),
         client.invalidateQueries({ queryKey: [...scope, "person"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+        client.invalidateQueries({ queryKey: [...scope, "albums"] }),
+        client.invalidateQueries({ queryKey: [...scope, "publication"] }),
       ]),
   });
 }

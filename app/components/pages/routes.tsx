@@ -30,6 +30,8 @@ import {
   ViewerAlbumRedirect,
   ViewerLibraryPage,
   ViewerLibraryRedirect,
+  ViewerOfferedAlbumPage,
+  ViewerOfferedAlbumRedirect,
 } from "./viewer";
 
 export const routes = [
@@ -108,6 +110,18 @@ export const routes = [
               {
                 path: "/albums/:id/videos/:entryID",
                 element: <ViewerAlbumPage tab="videos" />,
+              },
+              {
+                path: "/albums/:id/preview",
+                element: <ViewerOfferedAlbumRedirect />,
+              },
+              {
+                path: "/albums/:id/preview/photos/:entryID?",
+                element: <ViewerOfferedAlbumPage tab="photos" />,
+              },
+              {
+                path: "/albums/:id/preview/videos/:entryID?",
+                element: <ViewerOfferedAlbumPage tab="videos" />,
               },
             ],
           },

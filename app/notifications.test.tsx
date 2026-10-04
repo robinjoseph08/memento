@@ -207,7 +207,8 @@ it("marks every update read at once", async () => {
           unread: 0,
         });
       }
-      if (path === "/api/albums") return Response.json([]);
+      if (path === "/api/albums" || path === "/api/albums/more")
+        return Response.json([]);
       throw new Error(`Unexpected request: ${path}`);
     }),
   );
@@ -420,7 +421,8 @@ it("keeps an update unread and stays put when marking it read fails", async () =
           { error: { message: "Server exploded", code: "internal" } },
           { status: 500 },
         );
-      if (path === "/api/albums") return Response.json([]);
+      if (path === "/api/albums" || path === "/api/albums/more")
+        return Response.json([]);
       throw new Error(`Unexpected request: ${path}`);
     }),
   );

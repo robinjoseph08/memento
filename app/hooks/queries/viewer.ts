@@ -12,9 +12,12 @@ import type {
 import { usePrivateScope } from "./people";
 
 // An omitted Album selects the cross-album library, which has no preview mode.
+// personID selects a Curator's preview as that Person; offered selects the
+// viewer's own preview of an Album offered to them.
 export type ViewerContext =
-  | { albumID: string; personID?: string }
-  | { albumID?: never; personID?: never };
+  | { albumID: string; personID?: string; offered?: never }
+  | { albumID: string; personID?: never; offered: true }
+  | { albumID?: never; personID?: never; offered?: never };
 
 // Galleries load every page, so refetching them on each window focus would
 // replay the whole Album. Keys already name the Person, so nothing leaks
@@ -22,18 +25,19 @@ export type ViewerContext =
 const viewerStaleTime = 5 * 60_000;
 export type ViewerTab = "photos" | "videos";
 
-function galleryURL({ albumID, personID }: ViewerContext) {
+function galleryURL({ albumID, personID, offered }: ViewerContext) {
   if (albumID === undefined) return "/api/library";
   const id = encodeURIComponent(albumID);
+  if (offered) return `/api/albums/${id}/preview`;
   return personID === undefined
     ? `/api/albums/${id}`
     : `/api/curator/albums/${id}/preview/${encodeURIComponent(personID)}`;
 }
 
-function contextKey({ albumID, personID }: ViewerContext) {
+function contextKey({ albumID, personID, offered }: ViewerContext) {
   return [
     "viewer",
-    personID === undefined ? "member" : "preview",
+    offered ? "offered" : personID === undefined ? "member" : "preview",
     albumID ?? "library",
     personID ?? "",
   ] as const;
@@ -44,6 +48,18 @@ export function useViewerAlbums() {
   return useQuery({
     queryKey: [...scope, "viewer", "member", "albums"],
     queryFn: ({ signal }) => request<ViewerAlbum[]>("/api/albums", { signal }),
+    retry: false,
+  });
+}
+
+// Albums offered to the viewer beyond their own, with counts and covers from
+// the offered media only.
+export function useMoreAlbums() {
+  const scope = usePrivateScope();
+  return useQuery({
+    queryKey: [...scope, "viewer", "offered", "albums"],
+    queryFn: ({ signal }) =>
+      request<ViewerAlbum[]>("/api/albums/more", { signal }),
     retry: false,
   });
 }

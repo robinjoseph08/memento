@@ -156,3 +156,71 @@ func TestViewerHTTPUsesOnlyAuthenticatedIdentityAndExplicitCuratorPreview(t *tes
 	require.Equal(t, "alex", module.preview)
 	require.Equal(t, 404, get("/api/curator/albums/album/preview/alex/download").Code)
 }
+
+type offeredUseCases struct {
+	publishing.ViewerUseCases
+	actor string
+	album string
+	kind  string
+	page  publishing.EntryPageRequest
+}
+
+func (f *offeredUseCases) ViewMoreAlbums(_ context.Context, actor string) ([]publishing.ViewerAlbum, error) {
+	f.actor = actor
+	return []publishing.ViewerAlbum{{ID: "offered", Title: "Reunion", Days: []publishing.ViewerDay{}}}, nil
+}
+
+func (f *offeredUseCases) ViewOfferedAlbum(_ context.Context, actor, album string) (publishing.ViewerAlbum, error) {
+	f.actor, f.album = actor, album
+	if album == "hidden" {
+		return publishing.ViewerAlbum{}, errcodes.NotFound("Album")
+	}
+	return publishing.ViewerAlbum{ID: album, Title: "Reunion", Days: []publishing.ViewerDay{}}, nil
+}
+
+func (f *offeredUseCases) ViewOfferedEntries(_ context.Context, actor, album, kind string, page publishing.EntryPageRequest) (publishing.ViewerPage, error) {
+	f.actor, f.album, f.kind, f.page = actor, album, kind, page
+	return publishing.ViewerPage{Entries: []publishing.ViewerEntry{}}, nil
+}
+
+func TestOfferedAlbumHTTPUsesOnlyTheSignedInViewer(t *testing.T) {
+	t.Parallel()
+	module := &offeredUseCases{}
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	signedIn := false
+	person := func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c *echo.Context) error {
+			if !signedIn {
+				return echo.ErrUnauthorized
+			}
+			c.Set("identity.person_id", "signed-in")
+			return next(c)
+		}
+	}
+	publishing.RegisterViewerRoutes(e, module, person, person)
+	get := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRecorder()
+		e.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
+		return r
+	}
+	for _, path := range []string{"/api/albums/more", "/api/albums/album/preview", "/api/albums/album/preview/photos", "/api/albums/album/preview/videos"} {
+		require.Equal(t, 401, get(path).Code, path)
+	}
+	signedIn = true
+	response := get("/api/albums/more?person=forged")
+	require.Equal(t, 200, response.Code)
+	require.Contains(t, response.Body.String(), `"title":"Reunion"`)
+	require.Equal(t, "signed-in", module.actor)
+	response = get("/api/albums/album/preview?person=forged")
+	require.Equal(t, 200, response.Code)
+	require.Equal(t, "album", module.album)
+	require.Equal(t, 404, get("/api/albums/hidden/preview").Code)
+	for path, kind := range map[string]string{"photos": "IMAGE", "videos": "VIDEO"} {
+		response = get("/api/albums/album/preview/" + path + "?cursor=next&from=2026-07-04&to=2026-07-06")
+		require.Equal(t, 200, response.Code)
+		require.JSONEq(t, `{"entries":[],"next_cursor":""}`, response.Body.String())
+		require.Equal(t, kind, module.kind)
+		require.Equal(t, publishing.EntryPageRequest{Cursor: "next", From: "2026-07-04", To: "2026-07-06"}, module.page)
+	}
+}

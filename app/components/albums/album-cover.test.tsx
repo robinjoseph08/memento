@@ -50,6 +50,7 @@ const album: AlbumDetail = {
   end_date: "2026-07-02",
   cover_url: "/media/beach",
   access: [],
+  circles: [],
   excluded: [],
   moments: [
     {

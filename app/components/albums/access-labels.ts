@@ -1,4 +1,7 @@
-import type { AccessPerson } from "../../types/generated/publishing";
+import type {
+  AccessPerson,
+  AudienceChange,
+} from "../../types/generated/publishing";
 import { countLabel } from "./moment-labels";
 
 // Most-seen people first, then alphabetical, so the busiest rows lead.
@@ -17,4 +20,20 @@ export function accessDetail(person: AccessPerson) {
   if (person.inherited) return `Album access, ${seen}`;
   if (person.suggested) return "Detected here, not shared yet";
   return seen.charAt(0).toUpperCase() + seen.slice(1);
+}
+
+// What one Person gains or loses after a change: media of their own, then
+// media offered to their Circles, which they browse apart from their own.
+export function audienceSummary(change: AudienceChange) {
+  return [
+    change.gained_entry_ids.length > 0 &&
+      `gains ${change.gained_entry_ids.length}`,
+    change.lost_entry_ids.length > 0 && `loses ${change.lost_entry_ids.length}`,
+    change.offered_gained_entry_ids.length > 0 &&
+      `is offered ${change.offered_gained_entry_ids.length}`,
+    change.offered_lost_entry_ids.length > 0 &&
+      `is no longer offered ${change.offered_lost_entry_ids.length}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
 }
