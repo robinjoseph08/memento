@@ -1,12 +1,12 @@
 import { AlbumPage } from "../albums/album-detail";
 import { CuratorAlbumsPage } from "../albums/albums";
 import { ImportPage } from "../albums/sources";
+import { CirclesPage } from "../circles/circles";
 import { DashboardPage } from "../dashboard/dashboard";
 import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
 import { UnsubscribePage } from "../notifications/unsubscribe";
 import { UpdatesPage } from "../notifications/updates";
-import { CirclesPage } from "../people/circles";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
 import { SettingsPage } from "../settings/settings";

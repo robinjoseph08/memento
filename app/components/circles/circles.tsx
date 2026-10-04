@@ -16,6 +16,14 @@ import type { Circle } from "../../types/generated/identity";
 import { PersonAvatar } from "../albums/person-avatar";
 import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
+import {
+  Field,
+  FieldError,
+  Form,
+  headingClass,
+  ReadFailure,
+  sectionHeadingClass,
+} from "../people/form-fields";
 import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
@@ -26,14 +34,6 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { Input } from "../ui/input";
-import {
-  Field,
-  FieldError,
-  Form,
-  headingClass,
-  ReadFailure,
-  sectionHeadingClass,
-} from "./form-fields";
 
 export function CirclesPage() {
   const query = useCircles();
