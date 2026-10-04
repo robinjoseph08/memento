@@ -1,4 +1,5 @@
 import {
+  Blend,
   CircleCheck,
   Crown,
   Link2,
@@ -72,49 +73,57 @@ export function PeoplePage() {
       <PageTitle title="People" />
       <div className="mb-9 flex flex-wrap items-center justify-between gap-5">
         <h1 className={headingClass}>People</h1>
-        <Dialog onOpenChange={changeOpen} open={open}>
-          <DialogTrigger asChild>
-            <Button>
-              <UserPlus
-                aria-hidden="true"
-                className="size-4"
-                strokeWidth={1.5}
-              />
-              Add person
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogTitle>Add person</DialogTitle>
-            <DialogDescription className="mt-3 mb-6 text-sm text-muted">
-              Create a person, then approve an email address when you're ready
-              to give them access.
-            </DialogDescription>
-            <Form
-              aria-busy={create.isPending}
-              aria-label="Create person"
-              error={create.error}
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!create.isPending) create.mutate({ display_name: name });
-              }}
-            >
-              <fieldset disabled={create.isPending}>
-                <Field
-                  error={fieldErrors(create.error).display_name}
-                  label="Display name"
-                  maxLength={100}
-                  name="display_name"
-                  onChange={(event) => setName(event.target.value)}
-                  required
-                  value={name}
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link to="/curator/people/circles">
+              <Blend aria-hidden="true" className="size-4" strokeWidth={1.5} />
+              Circles
+            </Link>
+          </Button>
+          <Dialog onOpenChange={changeOpen} open={open}>
+            <DialogTrigger asChild>
+              <Button>
+                <UserPlus
+                  aria-hidden="true"
+                  className="size-4"
+                  strokeWidth={1.5}
                 />
-                <Button type="submit">
-                  {create.isPending ? "Creating…" : "Create person"}
-                </Button>
-              </fieldset>
-            </Form>
-          </DialogContent>
-        </Dialog>
+                Add person
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogTitle>Add person</DialogTitle>
+              <DialogDescription className="mt-3 mb-6 text-sm text-muted">
+                Create a person, then approve an email address when you're ready
+                to give them access.
+              </DialogDescription>
+              <Form
+                aria-busy={create.isPending}
+                aria-label="Create person"
+                error={create.error}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (!create.isPending) create.mutate({ display_name: name });
+                }}
+              >
+                <fieldset disabled={create.isPending}>
+                  <Field
+                    error={fieldErrors(create.error).display_name}
+                    label="Display name"
+                    maxLength={100}
+                    name="display_name"
+                    onChange={(event) => setName(event.target.value)}
+                    required
+                    value={name}
+                  />
+                  <Button type="submit">
+                    {create.isPending ? "Creating…" : "Create person"}
+                  </Button>
+                </fieldset>
+              </Form>
+            </DialogContent>
+          </Dialog>
+        </div>
         <ConfirmDialog
           confirmLabel="Discard"
           description="The name you entered will not be saved."

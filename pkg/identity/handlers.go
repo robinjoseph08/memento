@@ -20,6 +20,7 @@ const CookieName = "memento_session"
 type UseCases interface {
 	AuthenticationUseCases
 	PeopleUseCases
+	CircleUseCases
 	ProfileUseCases
 	FaceUseCases
 	AdmissionUseCases
@@ -51,6 +52,15 @@ type PeopleUseCases interface {
 	UpdatePerson(context.Context, string, string, UpdatePersonRequest) (Person, error)
 	Preauthorize(context.Context, string, string, PreauthorizeRequest) (Preauthorization, error)
 	RevokePreauthorization(context.Context, string, string, string) error
+}
+
+type CircleUseCases interface {
+	ListCircles(context.Context, string) ([]Circle, error)
+	CreateCircle(context.Context, string, CircleRequest) (Circle, error)
+	RenameCircle(context.Context, string, string, CircleRequest) (Circle, error)
+	DeleteCircle(context.Context, string, string) error
+	SetCircleMembers(context.Context, string, string, CircleMembersRequest) (Circle, error)
+	SetPersonCircles(context.Context, string, string, PersonCirclesRequest) error
 }
 
 type ProfileUseCases interface {

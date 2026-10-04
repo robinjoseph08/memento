@@ -1,5 +1,6 @@
 import {
   Bell,
+  Blend,
   CircleUser,
   ExternalLink,
   Info,
@@ -7,11 +8,13 @@ import {
   MonitorSmartphone,
 } from "lucide-react";
 import { useState } from "react";
+import { Link } from "react-router-dom";
 
 import {
   useRetryInvitation,
   useSendInvitation,
 } from "../../hooks/queries/admission";
+import { useSetPersonCircles } from "../../hooks/queries/circles";
 import { useIdentityStatus } from "../../hooks/queries/identity";
 import {
   usePreauthorize,
@@ -167,6 +170,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
               title="Deactivate this person?"
             />
           </section>
+          <PersonCircles detail={detail} />
           <AvatarEditor detail={detail} />
           <section
             aria-labelledby="notification-preferences"
@@ -306,6 +310,100 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
         </div>
       </div>
     </>
+  );
+}
+
+// The Circles picker places one Person without visiting every Circle.
+function PersonCircles({ detail }: { detail: PersonDetail }) {
+  const { person } = detail;
+  const circles = detail.circles ?? [];
+  const save = useSetPersonCircles(person.id);
+  const initial = circles
+    .filter((circle) => circle.member)
+    .map((circle) => circle.id);
+  const [draft, setDraft] = useState<string[] | null>(null);
+  // A Circle deleted elsewhere drops out of the draft with its checkbox.
+  const selected = new Set(
+    (draft ?? initial).filter((id) =>
+      circles.some((circle) => circle.id === id),
+    ),
+  );
+  const dirty =
+    selected.size !== initial.length || initial.some((id) => !selected.has(id));
+  useUnsavedChanges(dirty || save.isPending);
+  const manage = (
+    <Link
+      className="-mx-2 rounded-sm px-2 py-1 text-accent-foreground hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring"
+      to="/curator/people/circles"
+    >
+      Manage circles
+    </Link>
+  );
+  return (
+    <section
+      aria-labelledby="person-circles"
+      className="border-t border-border py-8"
+    >
+      <SectionHeading icon={Blend} id="person-circles">
+        Circles
+      </SectionHeading>
+      {circles.length === 0 ? (
+        <p className="mt-5 text-sm text-muted">No circles yet. {manage}</p>
+      ) : (
+        <Form
+          aria-busy={save.isPending}
+          aria-label="Person circles"
+          className="mt-5"
+          error={save.error}
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!save.isPending)
+              save.mutate(
+                { circle_ids: [...selected] },
+                { onSuccess: () => setDraft(null) },
+              );
+          }}
+        >
+          <fieldset disabled={save.isPending}>
+            <legend className="mb-3 text-xs text-muted">
+              Only Curators see which Circles someone is in.
+            </legend>
+            {circles.map((circle) => (
+              <CheckField
+                checked={selected.has(circle.id)}
+                key={circle.id}
+                name="circle_ids"
+                onChange={(event) => {
+                  save.reset();
+                  const next = new Set(selected);
+                  if (event.target.checked) next.add(circle.id);
+                  else next.delete(circle.id);
+                  setDraft([...next]);
+                }}
+                value={circle.id}
+              >
+                <span className="wrap-anywhere">{circle.name}</span>
+              </CheckField>
+            ))}
+            <FieldError
+              error={fieldErrors(save.error).circle_ids}
+              id="person-circles-error"
+            />
+            <div className="flex flex-wrap items-center gap-4">
+              <Button disabled={!dirty} type="submit">
+                {save.isPending ? "Saving…" : "Save circles"}
+              </Button>
+              {manage}
+            </div>
+          </fieldset>
+          {save.isSuccess && !dirty && (
+            <p className="mt-4 text-sm text-muted" role="status">
+              Circles saved.
+            </p>
+          )}
+        </Form>
+      )}
+    </section>
   );
 }
 

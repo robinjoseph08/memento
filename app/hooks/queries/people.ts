@@ -21,9 +21,10 @@ export function usePrivateScope() {
   return ["private", data?.person?.id] as const;
 }
 
-export function usePeople(search: string) {
+export function usePeople(search: string, enabled = true) {
   const scope = usePrivateScope();
   return useQuery({
+    enabled,
     queryKey: [...scope, "people", search],
     queryFn: ({ signal }) =>
       request<PersonSummary[]>(`/api/people?q=${encodeURIComponent(search)}`, {

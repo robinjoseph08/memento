@@ -6,6 +6,7 @@ import { WelcomePage } from "../identity/onboarding";
 import { ProfilePage } from "../identity/profile";
 import { UnsubscribePage } from "../notifications/unsubscribe";
 import { UpdatesPage } from "../notifications/updates";
+import { CirclesPage } from "../people/circles";
 import { PeoplePage, PersonPage } from "../people/people";
 import { RequestsPage } from "../people/requests";
 import { SettingsPage } from "../settings/settings";
@@ -56,6 +57,7 @@ export const routes = [
                   { path: "import", element: <ImportPage /> },
                   { path: "import/ignored", element: <ImportPage ignored /> },
                   { path: "people", element: <PeoplePage /> },
+                  { path: "people/circles", element: <CirclesPage /> },
                   { path: "people/:id", element: <PersonPage /> },
                   { path: "requests", element: <RequestsPage /> },
                   { path: "updates", element: <UpdatesPage /> },

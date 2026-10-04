@@ -155,6 +155,38 @@ type PersonDetail struct {
 	Invitations       []Invitation       `json:"invitations"`
 	Sessions          []BrowserSession   `json:"sessions"`
 	Announced         AnnouncedContent   `json:"announced"`
+	Circles           []PersonCircle     `json:"circles"`
+}
+
+// PersonCircle is one Circle on a Person's details page and whether the
+// Person belongs to it.
+type PersonCircle struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Member bool   `json:"member"`
+}
+
+// Circle is a Curator-named set of People with its members in name order.
+// Circles are Curator-only and never appear in a viewer response.
+type Circle struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Members []Person `json:"members"`
+}
+
+// CircleRequest names a new Circle or renames one.
+type CircleRequest struct {
+	Name string `json:"name" validate:"required,max=100" mod:"trim"`
+}
+
+// CircleMembersRequest is the complete set of People in a Circle.
+type CircleMembersRequest struct {
+	PersonIDs []string `json:"person_ids" validate:"required"`
+}
+
+// PersonCirclesRequest is the complete set of Circles a Person belongs to.
+type PersonCirclesRequest struct {
+	CircleIDs []string `json:"circle_ids" validate:"required"`
 }
 
 type Profile struct {
