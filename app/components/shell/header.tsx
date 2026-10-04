@@ -1,5 +1,5 @@
 import { use } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 
 import {
   pendingRequestCount,
@@ -18,6 +18,7 @@ import { Wordmark } from "./wordmark";
 
 export function Header() {
   const { data } = useIdentityStatus();
+  const { pathname } = useLocation();
   const theme = useTheme();
   const preview = use(PreviewModeContext).active;
   const requests = useAccessRequests();
@@ -44,7 +45,7 @@ export function Header() {
           aria-label="Main navigation"
           className="hidden flex-1 gap-1 pl-8 min-[601px]:flex"
         >
-          {navigationItems(data.person).map((item) => (
+          {navigationItems(data.person, pathname).map((item) => (
             <NavLink
               className="group inline-flex items-center gap-2 rounded-md px-4 py-3 text-sm hover:bg-surface aria-[current=page]:bg-surface"
               end={item.end}
