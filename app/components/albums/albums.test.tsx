@@ -774,7 +774,7 @@ it("reviews visibility before saving Album access and removes only the Album all
   expect(checkbox).not.toBeChecked();
   const review = screen.getByRole("region", { name: "Visibility review" });
   expect(await within(review).findByText("Alex")).toBeVisible();
-  expect(within(review).getByText("loses 1")).toBeVisible();
+  expect(within(review).getByText("loses 1 item")).toBeVisible();
   expect(posts.at(-1)).toEqual({
     path: "/api/curator/albums/album-1/access/preview",
     body: { people: [{ person_id: "alex", allowed: false }], circles: [] },
@@ -855,7 +855,7 @@ it("offers the Album to a Circle and previews what its members are offered", asy
   expect(offer).not.toBeChecked();
   await user.click(offer);
   const review = screen.getByRole("region", { name: "Visibility review" });
-  expect(await within(review).findByText("is offered 2")).toBeVisible();
+  expect(await within(review).findByText("is offered 2 items")).toBeVisible();
   expect(posts.at(-1)).toEqual({
     path: "/api/curator/albums/album-1/access/preview",
     body: { people: [], circles: [{ circle_id: "extended", offered: true }] },
@@ -1222,7 +1222,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
     name: "Visibility review",
   });
   expect(await within(visibility).findByText("Alex")).toBeVisible();
-  expect(within(visibility).getByText("loses 1")).toBeVisible();
+  expect(within(visibility).getByText("loses 1 item")).toBeVisible();
   expect(removed).toBeUndefined();
   await user.click(
     within(review).getByRole("button", { name: "Remove all access" }),

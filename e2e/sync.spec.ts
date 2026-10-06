@@ -210,8 +210,8 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
       name: "Visibility review",
     });
     await expect(visibility).toContainText("Alex");
-    await expect(visibility).toContainText("gains 2");
-    await expect(visibility).toContainText("loses 1");
+    await expect(visibility).toContainText("gains 2 items");
+    await expect(visibility).toContainText("loses 1 item");
     const apply = dialog.getByRole("button", { name: "Apply changes" });
     await expect(apply).toBeDisabled();
     await expect(dialog.getByRole("alert")).toContainText(
@@ -321,7 +321,7 @@ test("Curator reviews Immich changes, cancels, places additions, replaces a cove
     await expect(keepOut).toContainText("loses its last item");
     await expect(
       keepOut.getByRole("region", { name: "Visibility review" }),
-    ).toContainText("loses 1");
+    ).toContainText("loses 1 item");
     await keepOut.getByRole("button", { name: "Keep out" }).click();
     await expect(keepOut).toHaveCount(0);
     await expect(

@@ -22,17 +22,30 @@ export function accessDetail(person: AccessPerson) {
   return seen.charAt(0).toUpperCase() + seen.slice(1);
 }
 
-// What one Person gains or loses after a change: media of their own, then
-// media offered to their Circles, which they browse apart from their own.
+const items = (ids: string[]) => countLabel(ids.length, "item", "items");
+
+// What one Person gains or loses after a change: media of their own, media
+// offered to their Circles, and media moving between the two, which they can
+// see either way and so is never described as a loss.
 export function audienceSummary(change: AudienceChange) {
+  const offeredBefore = new Set(change.offered_lost_entry_ids);
+  const offeredAfter = new Set(change.offered_gained_entry_ids);
+  const nowOwn = change.gained_entry_ids.filter((id) => offeredBefore.has(id));
+  const nowOffered = change.lost_entry_ids.filter((id) => offeredAfter.has(id));
+  const moved = new Set([...nowOwn, ...nowOffered]);
+  const only = (ids: string[]) => ids.filter((id) => !moved.has(id));
+  const gained = only(change.gained_entry_ids);
+  const lost = only(change.lost_entry_ids);
+  const offered = only(change.offered_gained_entry_ids);
+  const withdrawn = only(change.offered_lost_entry_ids);
   return [
-    change.gained_entry_ids.length > 0 &&
-      `gains ${change.gained_entry_ids.length}`,
-    change.lost_entry_ids.length > 0 && `loses ${change.lost_entry_ids.length}`,
-    change.offered_gained_entry_ids.length > 0 &&
-      `is offered ${change.offered_gained_entry_ids.length}`,
-    change.offered_lost_entry_ids.length > 0 &&
-      `is no longer offered ${change.offered_lost_entry_ids.length}`,
+    gained.length > 0 && `gains ${items(gained)}`,
+    nowOwn.length > 0 && `gets ${items(nowOwn)} they were offered`,
+    offered.length > 0 && `is offered ${items(offered)}`,
+    nowOffered.length > 0 &&
+      `can still browse ${items(nowOffered)} through an Offer`,
+    lost.length > 0 && `loses ${items(lost)}`,
+    withdrawn.length > 0 && `is no longer offered ${items(withdrawn)}`,
   ]
     .filter(Boolean)
     .join(", ");

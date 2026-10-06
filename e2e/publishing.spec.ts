@@ -124,7 +124,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await expect(visibility).toContainText("Change access above to review it.");
   await alexAlbum.check();
   await expect(visibility).toContainText("Alex");
-  await expect(visibility).toContainText("gains 6");
+  await expect(visibility).toContainText("gains 6 items");
   await captureLayouts(page, "album-access");
   await albumAccess
     .getByRole("button", { name: "Save Album access", exact: true })
@@ -457,7 +457,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     });
     await expect(
       removal.getByRole("region", { name: "Visibility review" }),
-    ).toContainText(/Sam\s*loses 1/);
+    ).toContainText(/Sam\s*loses 1 item/);
     await removal
       .getByRole("button", { name: "Remove all access", exact: true })
       .click();
@@ -736,7 +736,7 @@ test("Curator offers an Album to a Circle and a viewer finds and previews it fro
   const review = albumAccess.getByRole("region", {
     name: "Visibility review",
   });
-  await expect(review).toContainText(/Sam\s+is offered \d+/);
+  await expect(review).toContainText(/Sam\s+is offered \d+ items/);
   await expect(review).not.toContainText("Pat");
   await albumAccess.getByRole("button", { name: "Save Album access" }).click();
   await expect(albumAccess.getByRole("status")).toHaveText(
