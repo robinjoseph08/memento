@@ -166,7 +166,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     >
       <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-sm">
         <input
-          aria-label={`Album access for ${person.display_name}`}
+          aria-label={`Album access for ${person.display_name}${person.joined ? ", joined" : ""}`}
           checked={allowed(person.person_id)}
           className="size-4 cursor-pointer accent-primary"
           onChange={(event) =>
@@ -176,9 +176,16 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
         />
         <PersonAvatar person={person} />
         <span className="min-w-0">
-          <strong className="block truncate font-medium">
-            {person.display_name}
-          </strong>
+          <span className="flex min-w-0 items-center gap-2">
+            <strong className="truncate font-medium">
+              {person.display_name}
+            </strong>
+            {person.joined && (
+              <span className="shrink-0 rounded-full bg-accent px-2 text-xs/5 font-medium text-muted">
+                Joined
+              </span>
+            )}
+          </span>
           <small className="block text-xs text-muted">
             {person.moments_detected > 0
               ? `Seen in ${person.moments_detected} of ${countLabel(totalMoments, "Moment", "Moments")}`

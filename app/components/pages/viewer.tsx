@@ -3,6 +3,11 @@ import { Navigate, useParams } from "react-router-dom";
 import type { ViewerTab } from "../../hooks/queries/viewer";
 import { BackLink } from "../shell/back-link";
 import { PageTitle } from "../shell/page-title";
+import {
+  JoinAlbum,
+  LeaveAlbum,
+  MoreAvailable,
+} from "../viewer/album-membership";
 import { ViewerGallery } from "../viewer/viewer-gallery";
 
 export function ViewerLibraryPage({ tab }: { tab: ViewerTab }) {
@@ -49,6 +54,7 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
         All albums
       </BackLink>
       <ViewerGallery
+        actions={(album) => album.joined && <LeaveAlbum albumID={id} />}
         context={{ albumID: id }}
         entryID={entryID}
         entryLink={(entry) => `${base}/${tab}/${encodeURIComponent(entry)}`}
@@ -56,6 +62,9 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
           context: { albumID: id, offered: true },
           to: `${base}/preview/${tab}${opened}`,
         }}
+        footer={(album) =>
+          album.more_available && <MoreAvailable albumID={id} tab={tab} />
+        }
         tab={tab}
         tabLinks={{ photos: `${base}/photos`, videos: `${base}/videos` }}
       />
@@ -76,9 +85,9 @@ export function ViewerOfferedAlbumRedirect() {
   );
 }
 
-// An Album offered to the viewer, browsed apart from their own Albums. A
-// shared link reaching someone with nothing offered but the Album of their
-// own opens their own copy.
+// An Album offered to the viewer, browsed apart from their own Albums as it
+// would look once joined. A shared link reaching someone with nothing offered
+// but the Album of their own, or who already joined it, opens their own copy.
 export function ViewerOfferedAlbumPage({ tab }: { tab: ViewerTab }) {
   const { id = "", entryID } = useParams();
   const own = `/albums/${encodeURIComponent(id)}`;
@@ -90,6 +99,7 @@ export function ViewerOfferedAlbumPage({ tab }: { tab: ViewerTab }) {
         All albums
       </BackLink>
       <ViewerGallery
+        actions={() => <JoinAlbum albumID={id} tab={tab} />}
         context={{ albumID: id, offered: true }}
         entryID={entryID}
         entryLink={(entry) => `${base}/${tab}/${encodeURIComponent(entry)}`}

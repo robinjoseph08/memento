@@ -25,6 +25,9 @@ const album: ViewerAlbum = {
   end_date: "2025-06-14",
   cover_url: "",
   cover_preview_url: "",
+  has_own_media: false,
+  more_available: false,
+  joined: false,
   days: [
     {
       date: "2025-06-14",

@@ -19,6 +19,8 @@ type ViewerUseCases interface {
 	ViewMoreAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
 	ViewOfferedAlbum(ctx context.Context, actorID, albumID string) (ViewerAlbum, error)
 	ViewOfferedEntries(ctx context.Context, actorID, albumID, kind string, page EntryPageRequest) (ViewerPage, error)
+	JoinAlbum(ctx context.Context, actorID, albumID string) error
+	LeaveAlbum(ctx context.Context, actorID, albumID string) error
 }
 
 type viewerHandlers struct{ module ViewerUseCases }
@@ -42,6 +44,12 @@ func (h *viewerHandlers) moreAlbums(c *echo.Context) error {
 func (h *viewerHandlers) offeredAlbum(c *echo.Context) error {
 	result, err := h.module.ViewOfferedAlbum(c.Request().Context(), actorID(c), c.Param("id"))
 	return respond(c, result, err)
+}
+func (h *viewerHandlers) join(c *echo.Context) error {
+	return respond(c, struct{}{}, h.module.JoinAlbum(c.Request().Context(), actorID(c), c.Param("id")))
+}
+func (h *viewerHandlers) leave(c *echo.Context) error {
+	return respond(c, struct{}{}, h.module.LeaveAlbum(c.Request().Context(), actorID(c), c.Param("id")))
 }
 func (h *viewerHandlers) offeredPhotos(c *echo.Context) error { return h.offeredEntries(c, "IMAGE") }
 func (h *viewerHandlers) offeredVideos(c *echo.Context) error { return h.offeredEntries(c, "VIDEO") }

@@ -3,11 +3,14 @@ import { CalendarDays } from "lucide-react";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { AlbumImage } from "../albums/album-image";
 import { MediaCounts } from "../albums/media-counts";
+import { countLabel } from "../albums/moment-labels";
 import { PrintStack } from "../albums/print-stack";
 import { captureRange } from "./labels";
 
 // The viewer's Album tile: square cover, title, counts, and capture range.
-// The Album list wraps it in a link; Onboarding shows it as a preview.
+// The Album list wraps it in a link; Onboarding shows it as a preview. A
+// More albums tile for an Album the viewer already has part of says how many
+// more photos and videos it holds.
 export function AlbumCard({ album }: { album: ViewerAlbum }) {
   return (
     <>
@@ -30,11 +33,24 @@ export function AlbumCard({ album }: { album: ViewerAlbum }) {
         />
         {captureRange(album)}
       </span>
-      <MediaCounts
-        className="flex text-xs/5 text-muted"
-        photos={album.photo_count}
-        videos={album.video_count}
-      />
+      {album.has_own_media ? (
+        <span className="block text-xs/5 text-muted">{moreLabel(album)}</span>
+      ) : (
+        <MediaCounts
+          className="flex text-xs/5 text-muted"
+          photos={album.photo_count}
+          videos={album.video_count}
+        />
+      )}
     </>
   );
+}
+
+function moreLabel({ photo_count, video_count }: ViewerAlbum) {
+  return [
+    photo_count > 0 && countLabel(photo_count, "more photo", "more photos"),
+    video_count > 0 && countLabel(video_count, "more video", "more videos"),
+  ]
+    .filter(Boolean)
+    .join(" and ");
 }

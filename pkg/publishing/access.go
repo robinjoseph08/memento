@@ -185,9 +185,13 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 			momentPeople[i][album.Moments[i].Access.People[j].PersonID] = &album.Moments[i].Access.People[j]
 		}
 	}
+	joined, err := joinedPeople(ctx, db, album.ID)
+	if err != nil {
+		return err
+	}
 	album.Access = []AccessPerson{}
 	for _, row := range people {
-		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()]}
+		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()]}
 		if row.AvatarFaceID != nil {
 			person.AvatarURL = media.AvatarURL(row.ID.String(), *row.AvatarFaceID, row.AvatarVersion)
 		}

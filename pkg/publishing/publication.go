@@ -80,8 +80,8 @@ func (m *Module) publicationReview(ctx context.Context, db bun.IDB, album models
 	digest := sha256.Sum256(data)
 	result.ReviewToken = hex.EncodeToString(digest[:])
 	for _, person := range people {
-		accessible := len(visibleEntries(structure.facts(), person.ID.String()))
-		offered := len(offeredEntries(structure.facts(), person.ID.String()))
+		accessible := len(ownEntries(structure.facts(), person.ID.String()))
+		offered := len(browsableEntries(structure.facts(), person.ID.String()))
 		if accessible+offered == 0 {
 			continue
 		}

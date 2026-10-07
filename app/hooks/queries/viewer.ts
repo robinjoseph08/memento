@@ -1,4 +1,9 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { request } from "../../lib/http";
@@ -62,6 +67,30 @@ export function useMoreAlbums() {
       request<ViewerAlbum[]>("/api/albums/more", { signal }),
     retry: false,
   });
+}
+
+// Join places an offered Album among the viewer's own, and Leave takes the
+// offered media back out. Either moves media between the viewer's Albums,
+// More albums, and Library, so every viewer query is refreshed.
+function useMembership(albumID: string, action: "join" | "leave") {
+  const scope = usePrivateScope();
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      request(`/api/albums/${encodeURIComponent(albumID)}/${action}`, {
+        body: {},
+      }),
+    onSuccess: () =>
+      void client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
+  });
+}
+
+export function useJoinAlbum(albumID: string) {
+  return useMembership(albumID, "join");
+}
+
+export function useLeaveAlbum(albumID: string) {
+  return useMembership(albumID, "leave");
 }
 
 export function useViewerGallery(context: ViewerContext) {

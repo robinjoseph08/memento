@@ -49,14 +49,19 @@ func projectChapters(stored []models.Chapter) []Chapter {
 type viewerReach int
 
 const (
-	// reachOwn is media granted directly: the Person's own Albums and Library.
+	// reachOwn is the Person's own media: what they were granted directly,
+	// and offered media in Albums they joined. Their Albums and Library.
 	reachOwn viewerReach = iota
 	// reachOffered is media offered to the Person's Circles that no rule of
-	// their own decides: "More albums".
+	// their own decides, in Albums they have not joined: "More albums".
 	reachOffered
-	// reachAny is both, which is what an offered Album's preview shows and
-	// what media requests may load.
+	// reachAny is own and offered media, joined or not, which is what an
+	// offered Album's preview shows and what media requests may load.
 	reachAny
+	// reachJoined is offered media in Albums the Person joined.
+	reachJoined
+	// reachDirect is only what the Person was granted directly.
+	reachDirect
 )
 
 // viewerContext can only be constructed after checking the actor and selected
@@ -120,29 +125,41 @@ func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 		q = q.Where("album.published_at IS NOT NULL")
 	}
 	if viewer.curator {
-		if viewer.reach == reachOffered {
+		if viewer.reach == reachOffered || viewer.reach == reachJoined {
 			q = q.Where("false")
 		}
 		return q
 	}
 	q = q.Join("LEFT JOIN moment_access_decisions AS moment_access ON moment_access.moment_id = entry.moment_id AND moment_access.person_id = ?", viewer.personID).
 		Join("LEFT JOIN album_access_decisions AS album_access ON album_access.album_id = entry.album_id AND album_access.person_id = ?", viewer.personID).
-		Join("LEFT JOIN entry_access_decisions AS entry_access ON entry_access.entry_id = entry.id AND entry_access.person_id = ?", viewer.personID)
+		Join("LEFT JOIN entry_access_decisions AS entry_access ON entry_access.entry_id = entry.id AND entry_access.person_id = ?", viewer.personID).
+		Join("LEFT JOIN album_joins AS album_join ON album_join.album_id = entry.album_id AND album_join.person_id = ?", viewer.personID)
 	const decision = "coalesce(entry_access.decision, moment_access.decision, album_access.decision)"
-	const own = decision + " = 'allow'"
-	const offered = decision + " IS NULL AND album.published_at IS NOT NULL AND EXISTS (?)"
+	const direct = decision + " = 'allow'"
+	const offered = "(" + decision + " IS NULL AND album.published_at IS NOT NULL AND EXISTS (?))"
 	circles := db.NewSelect().TableExpr("album_offers AS offer").ColumnExpr("1").
 		Join("JOIN circle_members AS member ON member.circle_id = offer.circle_id").
 		Where("offer.album_id = entry.album_id AND member.person_id = ?", viewer.personID)
 	switch viewer.reach {
 	case reachOwn:
-		q = q.Where(own)
+		q = q.Where("("+direct+" OR ("+offered+" AND album_join.person_id IS NOT NULL))", circles)
 	case reachOffered:
-		q = q.Where(offered, circles)
+		q = q.Where(offered+" AND album_join.person_id IS NULL", circles)
 	case reachAny:
-		q = q.Where("("+own+" OR ("+offered+"))", circles)
+		q = q.Where("("+direct+" OR "+offered+")", circles)
+	case reachJoined:
+		q = q.Where(offered+" AND album_join.person_id IS NOT NULL", circles)
+	case reachDirect:
+		q = q.Where(direct)
 	}
 	return q
+}
+
+// reaches reports whether any of the viewer's media in the Album falls
+// within reach.
+func reaches(ctx context.Context, db bun.IDB, viewer viewerContext, reach viewerReach, albumID string) (bool, error) {
+	exists, err := viewerEntries(db, viewer.reaching(reach)).Where("entry.album_id = ?", albumID).Exists(ctx)
+	return exists, errorstack.CaptureContext(ctx, err)
 }
 
 // galleryEntries deduplicates library media only after checking each Entry's access.
@@ -323,11 +340,11 @@ func (m *Module) ViewLibraryEntries(ctx context.Context, actorID, kind string, p
 }
 
 // widenToOffered widens a viewer to an Album's preview, which exists only
-// while something in the Album is offered to them.
+// while something in the Album is offered to them and not yet joined.
 func widenToOffered(ctx context.Context, db bun.IDB, viewer viewerContext, albumID string) (viewerContext, error) {
-	exists, err := viewerEntries(db, viewer.reaching(reachOffered)).Where("entry.album_id = ?", albumID).Exists(ctx)
+	exists, err := reaches(ctx, db, viewer, reachOffered, albumID)
 	if err != nil {
-		return viewer, errorstack.CaptureContext(ctx, err)
+		return viewer, err
 	}
 	if !exists {
 		return viewer, errcodes.NotFound("Album")
@@ -368,9 +385,9 @@ func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albu
 				return err
 			}
 		} else if albumID != "" {
-			exists, err := viewerEntries(tx, viewer).Where("entry.album_id = ?", albumID).Exists(ctx)
+			exists, err := reaches(ctx, tx, viewer, viewer.reach, albumID)
 			if err != nil {
-				return errorstack.CaptureContext(ctx, err)
+				return err
 			}
 			if !exists {
 				return errcodes.NotFound("Album")
@@ -499,8 +516,9 @@ func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum,
 }
 
 // ViewMoreAlbums lists the Albums with media offered to the viewer's Circles
-// beyond what they were granted, newest first. Counts and covers come from
-// the offered media only, so a card never repeats the viewer's own Album.
+// beyond their own, newest first, leaving out Albums they joined. Counts and
+// covers come from the offered media only, so a card never repeats the
+// viewer's own Album.
 func (m *Module) ViewMoreAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error) {
 	return m.viewAlbums(ctx, actorID, reachOffered)
 }
@@ -522,6 +540,11 @@ func (m *Module) viewAlbums(ctx context.Context, actorID string, reach viewerRea
 			album, err := viewAlbum(ctx, tx, viewer, id, false)
 			if err != nil {
 				return err
+			}
+			if reach == reachOffered {
+				if album.HasOwnMedia, err = reaches(ctx, tx, viewer, reachOwn, id); err != nil {
+					return err
+				}
 			}
 			result = append(result, album)
 		}
@@ -553,7 +576,10 @@ func (m *Module) ViewOfferedAlbum(ctx context.Context, actorID, albumID string) 
 	return result, transactionError(ctx, err)
 }
 
-// ViewAlbum uses one snapshot for identity, effective counts and configured cover.
+// ViewAlbum uses one snapshot for identity, effective counts and configured
+// cover. A viewer's own Album also says whether they joined it and whether
+// more is offered to them in its preview; a Curator's preview leaves both
+// unset.
 func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumID string) (ViewerAlbum, error) {
 	var result ViewerAlbum
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
@@ -561,16 +587,94 @@ func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumI
 		if err != nil {
 			return err
 		}
-		result, err = viewAlbum(ctx, tx, viewer, albumID, true)
+		if result, err = viewAlbum(ctx, tx, viewer, albumID, true); err != nil {
+			return err
+		}
+		if viewer.preview {
+			return nil
+		}
+		if result.MoreAvailable, err = reaches(ctx, tx, viewer, reachOffered, albumID); err != nil {
+			return err
+		}
+		result.Joined, err = reaches(ctx, tx, viewer, reachJoined, albumID)
 		return err
 	})
 	return result, transactionError(ctx, err)
 }
 
+// JoinAlbum places everything offered to the viewer in an Album among their
+// own. It is not found when nothing in the Album is offered to them, and
+// joining again changes nothing.
+func (m *Module) JoinAlbum(ctx context.Context, actorID, albumID string) error {
+	if _, err := uuid.Parse(albumID); err != nil {
+		return errcodes.NotFound("Album")
+	}
+	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		viewer, err := resolveViewer(ctx, tx, actorID, "")
+		if err != nil {
+			return err
+		}
+		offered, err := reaches(ctx, tx, viewer, reachOffered, albumID)
+		if err != nil {
+			return err
+		}
+		if !offered {
+			joined, err := reaches(ctx, tx, viewer, reachJoined, albumID)
+			if err != nil || joined {
+				return err
+			}
+			return errcodes.NotFound("Album")
+		}
+		row := models.AlbumJoin{AlbumID: models.UUID(uuid.MustParse(albumID)), PersonID: models.UUID(uuid.MustParse(viewer.personID)), CreatedAt: time.Now().UTC()}
+		_, err = tx.NewInsert().Model(&row).On("CONFLICT (album_id, person_id) DO NOTHING").Exec(ctx)
+		return errorstack.CaptureContext(ctx, err)
+	})
+	return transactionError(ctx, err)
+}
+
+// LeaveAlbum takes the offered media in an Album out of the viewer's own,
+// keeping what they were granted directly. Leaving an Album they never
+// joined changes nothing, so one delete needs no transaction or checks.
+func (m *Module) LeaveAlbum(ctx context.Context, actorID, albumID string) error {
+	if _, err := uuid.Parse(albumID); err != nil {
+		return errcodes.NotFound("Album")
+	}
+	viewer, err := resolveViewer(ctx, m.db, actorID, "")
+	if err != nil {
+		return err
+	}
+	_, err = m.db.NewDelete().Model((*models.AlbumJoin)(nil)).Where("album_id = ? AND person_id = ?", albumID, viewer.personID).Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
+}
+
+// joinedPeople lists the People who joined the Album and currently have
+// offered media in it, for the Curator's "Joined" tag.
+func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]bool, error) {
+	var joins []models.AlbumJoin
+	err := db.NewSelect().Model(&joins).
+		Where("album_id = ? AND person_id IN (?)", albumID, db.NewSelect().Model((*models.Person)(nil)).Column("id").Where("deactivated_at IS NULL")).
+		Scan(ctx)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	result := map[string]bool{}
+	for _, join := range joins {
+		personID := join.PersonID.String()
+		joined, err := reaches(ctx, db, viewerContext{personID: personID}, reachJoined, albumID)
+		if err != nil {
+			return nil, err
+		}
+		result[personID] = joined
+	}
+	return result, nil
+}
+
 // VisibleEntries lists every Album Entry the Person can view as an ordinary
-// viewer: published Albums and allowing Access Decisions only. A Curator's
-// administrative bypass is deliberately excluded so announcement baselines never
-// treat unpublished or otherwise viewer-ineligible content as announced.
+// viewer through allowing Access Decisions in published Albums. Joined media
+// stays out, so a Join never queues an Update Notification for the Album just
+// joined. A Curator's administrative bypass is deliberately excluded so
+// announcement baselines never treat unpublished or otherwise
+// viewer-ineligible content as announced.
 func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
 	if _, err := uuid.Parse(personID); err != nil {
 		return nil, errcodes.NotFound("Person")
@@ -582,7 +686,7 @@ func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string
 		Kind       string
 	}
 	rows := []row{}
-	err := viewerEntries(db, viewerContext{personID: personID}).
+	err := viewerEntries(db, viewerContext{personID: personID, reach: reachDirect}).
 		ColumnExpr("entry.album_id, album.title AS album_title, entry.id AS entry_id, item.kind").
 		OrderExpr("entry.album_id, entry.id").Scan(ctx, &rows)
 	if err != nil {

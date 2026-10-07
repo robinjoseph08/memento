@@ -137,6 +137,15 @@ type AlbumOffer struct {
 	CreatedAt     time.Time
 }
 
+// AlbumJoin places an Album's offered media among one Person's own. It
+// outlives the Offers it covers.
+type AlbumJoin struct {
+	bun.BaseModel `bun:"table:album_joins,alias:album_join"`
+	AlbumID       UUID `bun:"album_id,pk,type:uuid"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	CreatedAt     time.Time
+}
+
 type MediaFaceAssociation struct {
 	bun.BaseModel `bun:"table:media_face_associations,alias:face"`
 	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`

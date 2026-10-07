@@ -38,6 +38,7 @@ type structureState struct {
 	EntryDecisions map[string]map[string]Decision
 	AlbumOffers    map[string]bool
 	Circles        map[string][]string
+	Joins          map[string]bool
 	People         map[string]string
 	PersonOrder    []string
 }
@@ -66,7 +67,7 @@ func (s structureState) remainingEntries(momentID string, exclude map[string]boo
 }
 
 func (s structureState) facts() accessFacts {
-	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: s.Circles}
+	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: s.Circles, Joins: s.Joins}
 }
 
 func (s structureState) clone() structureState {
@@ -79,6 +80,7 @@ func (s structureState) clone() structureState {
 		EntryDecisions: make(map[string]map[string]Decision, len(s.EntryDecisions)),
 		AlbumOffers:    maps.Clone(s.AlbumOffers),
 		Circles:        maps.Clone(s.Circles),
+		Joins:          maps.Clone(s.Joins),
 		People:         make(map[string]string, len(s.People)),
 		PersonOrder:    append([]string(nil), s.PersonOrder...),
 	}
@@ -97,7 +99,7 @@ func (s structureState) clone() structureState {
 }
 
 func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, lock bool) (structureState, error) {
-	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, AlbumOffers: map[string]bool{}, Circles: map[string][]string{}, People: map[string]string{}}
+	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, AlbumOffers: map[string]bool{}, Circles: map[string][]string{}, Joins: map[string]bool{}, People: map[string]string{}}
 	var moments []models.Moment
 	momentQuery := db.NewSelect().Model(&moments).Where("moment.album_id = ?", albumID).Order("moment.sort_order", "moment.id")
 	if lock {
@@ -200,6 +202,18 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 		id := member.PersonID.String()
 		if _, active := state.People[id]; active {
 			state.Circles[id] = append(state.Circles[id], member.CircleID.String())
+		}
+	}
+	// Joins are a viewer's own choice, so they stay out of review tokens: a
+	// Join never makes a Curator's open review stale.
+	var joins []models.AlbumJoin
+	if err := db.NewSelect().Model(&joins).Where("album_id = ?", albumID).Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, join := range joins {
+		id := join.PersonID.String()
+		if _, active := state.People[id]; active {
+			state.Joins[id] = true
 		}
 	}
 	return state, nil

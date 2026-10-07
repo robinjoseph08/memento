@@ -687,7 +687,7 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
   }
 });
 
-test("Curator offers an Album to a Circle and a viewer finds and previews it from More albums", async ({
+test("Curator offers an Album to a Circle and a viewer finds, previews, and joins it from More albums", async ({
   page,
   browser,
   baseURL,
@@ -805,9 +805,33 @@ test("Curator offers an Album to a Circle and a viewer finds and previews it fro
     await expect(
       member.getByRole("heading", { name: "Fixture Album - Coast" }),
     ).toBeVisible();
+
+    // Joining moves the Album among Sam's own and its media into the Library.
+    await member.getByRole("button", { name: "Join album" }).click();
+    await expect(member).toHaveURL(new RegExp(`${viewerPath}/photos$`));
+    await expect(
+      member.getByRole("button", { name: "Leave album" }),
+    ).toBeVisible();
+    await member.goto("/albums");
+    await expect(
+      member.getByRole("link", { name: /Fixture Album - Coast/ }),
+    ).toHaveAttribute("href", `${viewerPath}/photos`);
+    await expect(
+      member.getByRole("region", { name: "More albums" }),
+    ).toHaveCount(0);
+    await member.goto("/library/photos");
+    await loadedImage(
+      member.getByRole("img", { name: /^Photo taken / }).first(),
+    );
   } finally {
     await sam.context.close();
   }
+
+  await page.reload();
+  await albumAccess.getByText("2 people not seen in this album").click();
+  await expect(
+    albumAccess.getByRole("checkbox", { name: "Album access for Sam, joined" }),
+  ).toBeVisible();
 
   const pat = await signIn("pat@example.test");
   try {

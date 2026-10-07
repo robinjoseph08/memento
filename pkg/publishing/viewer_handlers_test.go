@@ -159,10 +159,25 @@ func TestViewerHTTPUsesOnlyAuthenticatedIdentityAndExplicitCuratorPreview(t *tes
 
 type offeredUseCases struct {
 	publishing.ViewerUseCases
-	actor string
-	album string
-	kind  string
-	page  publishing.EntryPageRequest
+	actor  string
+	album  string
+	kind   string
+	page   publishing.EntryPageRequest
+	joined bool
+}
+
+func (f *offeredUseCases) JoinAlbum(_ context.Context, actor, album string) error {
+	f.actor, f.album = actor, album
+	if album == "hidden" {
+		return errcodes.NotFound("Album")
+	}
+	f.joined = true
+	return nil
+}
+
+func (f *offeredUseCases) LeaveAlbum(_ context.Context, actor, album string) error {
+	f.actor, f.album, f.joined = actor, album, false
+	return nil
 }
 
 func (f *offeredUseCases) ViewMoreAlbums(_ context.Context, actor string) ([]publishing.ViewerAlbum, error) {
@@ -204,8 +219,18 @@ func TestOfferedAlbumHTTPUsesOnlyTheSignedInViewer(t *testing.T) {
 		e.ServeHTTP(r, httptest.NewRequest(http.MethodGet, path, nil))
 		return r
 	}
+	post := func(path string) *httptest.ResponseRecorder {
+		r := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		e.ServeHTTP(r, req)
+		return r
+	}
 	for _, path := range []string{"/api/albums/more", "/api/albums/album/preview", "/api/albums/album/preview/photos", "/api/albums/album/preview/videos"} {
 		require.Equal(t, 401, get(path).Code, path)
+	}
+	for _, path := range []string{"/api/albums/album/join", "/api/albums/album/leave"} {
+		require.Equal(t, 401, post(path).Code, path)
 	}
 	signedIn = true
 	response := get("/api/albums/more?person=forged")
@@ -223,4 +248,12 @@ func TestOfferedAlbumHTTPUsesOnlyTheSignedInViewer(t *testing.T) {
 		require.Equal(t, kind, module.kind)
 		require.Equal(t, publishing.EntryPageRequest{Cursor: "next", From: "2026-07-04", To: "2026-07-06"}, module.page)
 	}
+	require.Equal(t, 404, post("/api/albums/hidden/join").Code)
+	require.False(t, module.joined)
+	require.Equal(t, 200, post("/api/albums/album/join?person=forged").Code)
+	require.True(t, module.joined)
+	require.Equal(t, "signed-in", module.actor)
+	require.Equal(t, 200, post("/api/albums/album/leave").Code)
+	require.False(t, module.joined)
+	require.Equal(t, "album", module.album)
 }
