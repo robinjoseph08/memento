@@ -8,6 +8,7 @@ import {
   useDenyAccessRequest,
   useReconsiderAccessRequest,
 } from "../../hooks/queries/admission";
+import { useCircles } from "../../hooks/queries/circles";
 import { usePeople } from "../../hooks/queries/people";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { errorMessage, fieldErrors } from "../../lib/http";
@@ -26,6 +27,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import {
+  CheckField,
   Field,
   FieldError,
   Form,
@@ -158,8 +160,10 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </p>
           )}
           <p className="mt-2 text-xs text-muted">
-            First {formatDate(request.created_at)} · Last{" "}
-            {formatDate(request.updated_at)} · {history}
+            {count === 1
+              ? formatDate(request.created_at)
+              : `First ${formatDate(request.created_at)} · Last ${formatDate(request.updated_at)}`}{" "}
+            · {history}
           </p>
           {request.status === "denied" && (
             <p className="mt-2 text-xs text-muted">
@@ -254,8 +258,9 @@ function RequestRow({ request }: { request: AccessRequest }) {
   );
 }
 
-// Approval never grants Album access. It links or creates the Person and
-// approves the exact verified email; the Person page then offers an Invitation.
+// Approval never grants Album access. It links or creates the Person, approves
+// the exact verified email, and adds the Person to any picked Circles; the
+// Person page then offers an Invitation.
 function ApproveDialog({
   request,
   open,
@@ -268,7 +273,9 @@ function ApproveDialog({
   const [mode, setMode] = useState<"create" | "link">("create");
   const [name, setName] = useState(request.display_name);
   const [personID, setPersonID] = useState("");
+  const [circleIDs, setCircleIDs] = useState<string[]>([]);
   const people = usePeople("");
+  const circles = useCircles();
   const approve = useApproveAccessRequest();
   const navigate = useNavigate();
   const personFieldId = useId();
@@ -289,6 +296,19 @@ function ApproveDialog({
       label: person.display_name,
       description: person.is_curator ? "Curator" : undefined,
     }));
+  // Approval only adds Circles, so a linked Person's current ones aren't
+  // offered here.
+  const pickable = (circles.data ?? []).filter(
+    (circle) =>
+      mode === "create" ||
+      !circle.members.some((person) => person.id === personID),
+  );
+  const circlesFieldId = useId();
+  // Only ticked boxes still on screen count, so a Circle deleted elsewhere or
+  // hidden by choosing a Person drops out of the picks.
+  const picked = circleIDs.filter((id) =>
+    pickable.some((circle) => circle.id === id),
+  );
   return (
     <Dialog
       onOpenChange={(next) => {
@@ -316,10 +336,11 @@ function ApproveDialog({
             if (approve.isPending) return;
             approve.mutate({
               id: request.id,
-              body:
-                mode === "create"
-                  ? { person_id: "", display_name: name }
-                  : { person_id: personID, display_name: "" },
+              body: {
+                person_id: mode === "link" ? personID : "",
+                display_name: mode === "create" ? name : "",
+                circle_ids: picked,
+              },
             });
           }}
         >
@@ -393,6 +414,42 @@ function ApproveDialog({
                   id={`${personFieldId}-error`}
                 />
               </div>
+            )}
+            {!!pickable.length && (
+              <fieldset
+                aria-describedby={`${circlesFieldId}-hint${errors.circle_ids ? ` ${circlesFieldId}-error` : ""}`}
+                className="mb-1"
+              >
+                <legend className="mb-1 text-xs font-medium">Circles</legend>
+                <p
+                  className="mb-3 text-xs text-muted"
+                  id={`${circlesFieldId}-hint`}
+                >
+                  Only Curators see which Circles someone is in.
+                </p>
+                {pickable.map((circle) => (
+                  <CheckField
+                    checked={circleIDs.includes(circle.id)}
+                    key={circle.id}
+                    name="circle_ids"
+                    onChange={(event) => {
+                      approve.reset();
+                      setCircleIDs(
+                        event.target.checked
+                          ? [...circleIDs, circle.id]
+                          : circleIDs.filter((id) => id !== circle.id),
+                      );
+                    }}
+                    value={circle.id}
+                  >
+                    <span className="wrap-anywhere">{circle.name}</span>
+                  </CheckField>
+                ))}
+                <FieldError
+                  error={errors.circle_ids}
+                  id={`${circlesFieldId}-error`}
+                />
+              </fieldset>
             )}
             <Button type="submit">
               {approve.isPending ? "Approving…" : "Approve and open person"}

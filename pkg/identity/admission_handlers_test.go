@@ -41,7 +41,7 @@ func (m *admissionIdentity) ListAccessRequests(context.Context, string) ([]ident
 	return []identity.AccessRequest{{ID: "request", Email: "stranger@example.test"}}, m.err
 }
 func (m *admissionIdentity) ApproveAccessRequest(_ context.Context, _ string, id string, request identity.ApproveAccessRequestRequest) (identity.AccessRequest, error) {
-	m.record("approve:" + id + ":" + request.PersonID + ":" + request.DisplayName)
+	m.record("approve:" + id + ":" + request.PersonID + ":" + request.DisplayName + ":" + strings.Join(request.CircleIDs, ","))
 	return identity.AccessRequest{ID: id, Status: "approved"}, m.err
 }
 func (m *admissionIdentity) DenyAccessRequest(_ context.Context, _ string, id string) (identity.AccessRequest, error) {
@@ -67,8 +67,9 @@ func TestAdmissionHTTPRoutesBindAndAuthorize(t *testing.T) {
 		"member requests album access":      {http.MethodPost, "/api/albums/album-1/request-access", `{}`, false, 200, "request:album-1", `"album_id":"album-1"`},
 		"member cannot list requests":       {http.MethodGet, "/api/access-requests", "", false, 403, "", "access_denied"},
 		"curator lists requests":            {http.MethodGet, "/api/access-requests", "", true, 200, "list", "stranger@example.test"},
-		"curator approves with new person":  {http.MethodPost, "/api/access-requests/r1/approve", `{"display_name":"New"}`, true, 200, "approve:r1::New", `"status":"approved"`},
-		"curator approves with person":      {http.MethodPost, "/api/access-requests/r1/approve", `{"person_id":"0192a0f0-0000-7000-8000-000000000000"}`, true, 200, "approve:r1:0192a0f0-0000-7000-8000-000000000000:", `"approved"`},
+		"curator approves with new person":  {http.MethodPost, "/api/access-requests/r1/approve", `{"display_name":"New"}`, true, 200, "approve:r1::New:", `"status":"approved"`},
+		"curator approves with circles":     {http.MethodPost, "/api/access-requests/r1/approve", `{"display_name":"New","circle_ids":["c1","c2"]}`, true, 200, "approve:r1::New:c1,c2", `"status":"approved"`},
+		"curator approves with person":      {http.MethodPost, "/api/access-requests/r1/approve", `{"person_id":"0192a0f0-0000-7000-8000-000000000000"}`, true, 200, "approve:r1:0192a0f0-0000-7000-8000-000000000000::", `"approved"`},
 		"approve rejects invalid person id": {http.MethodPost, "/api/access-requests/r1/approve", `{"person_id":"nope"}`, true, 422, "", "Choose an existing person."},
 		"curator denies":                    {http.MethodPost, "/api/access-requests/r1/deny", `{}`, true, 200, "deny:r1", `"denied"`},
 		"curator reconsiders":               {http.MethodPost, "/api/access-requests/r1/reconsider", `{}`, true, 200, "reconsider:r1", `"pending"`},

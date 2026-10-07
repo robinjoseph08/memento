@@ -41,6 +41,15 @@ test("a Curator invites and onboards a Person, resolves an unknown identity, and
   await expect(page.getByText(/Nothing is imported yet/)).toBeVisible();
   await finishOnboarding(page);
   await expect(page).toHaveURL(/\/curator$/);
+  await page.goto("/curator/circles");
+  await page.getByRole("button", { name: "New circle" }).click();
+  await page
+    .getByRole("textbox", { name: "Circle name" })
+    .fill("Extended family");
+  await page.getByRole("button", { name: "Create circle" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Extended family" }),
+  ).toBeVisible();
 
   // Invitation: outreach through the controlled SMTP server, no token in the link.
   await createApprovedPerson(page, "Alex", "alex@example.test");
@@ -149,12 +158,18 @@ test("a Curator invites and onboards a Person, resolves an unknown identity, and
     await dialog
       .getByRole("textbox", { name: "Display name" })
       .fill("Sam Stranger");
+    await dialog.getByRole("checkbox", { name: "Extended family" }).check();
     await dialog
       .getByRole("button", { name: "Approve and open person" })
       .click();
     await expect(
       page.getByRole("heading", { name: "Sam Stranger", exact: true }),
     ).toBeVisible();
+    await expect(
+      page
+        .getByRole("form", { name: "Person circles" })
+        .getByRole("checkbox", { name: "Extended family" }),
+    ).toBeChecked();
     await expect(
       page
         .getByRole("table", { name: "Preauthorizations", exact: true })

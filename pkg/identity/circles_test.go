@@ -39,6 +39,20 @@ func memberNames(t *testing.T, module *identity.Module, token, circleID string) 
 	return nil
 }
 
+// personCircleIDs lists the Circles a Person belongs to, in name order.
+func personCircleIDs(t *testing.T, module *identity.Module, token, personID string) []string {
+	t.Helper()
+	detail, err := module.GetPerson(t.Context(), token, personID)
+	require.NoError(t, err)
+	ids := []string{}
+	for _, circle := range detail.Circles {
+		if circle.Member {
+			ids = append(ids, circle.ID)
+		}
+	}
+	return ids
+}
+
 func requireCircleFieldError(t *testing.T, err error, field, message string) {
 	t.Helper()
 	var fields *errcodes.FieldError
@@ -119,15 +133,7 @@ func TestCircleMembershipFromBothSides(t *testing.T) {
 	require.NoError(t, err)
 	circlesOf := func(name string) []string {
 		t.Helper()
-		detail, err := module.GetPerson(t.Context(), curator.Token, people[name].ID)
-		require.NoError(t, err)
-		ids := []string{}
-		for _, circle := range detail.Circles {
-			if circle.Member {
-				ids = append(ids, circle.ID)
-			}
-		}
-		return ids
+		return personCircleIDs(t, module, curator.Token, people[name].ID)
 	}
 
 	// From the Circles page.
@@ -214,4 +220,86 @@ func TestCirclesAreCuratorOnly(t *testing.T) {
 		assert.NotContains(t, string(body), circle.ID)
 		assert.NotContains(t, string(body), "circle")
 	}
+}
+
+func TestApprovingAJoinRequestPicksCircles(t *testing.T) {
+	t.Parallel()
+	module := identity.New(testdb.New(t), nil)
+	curator := claimCurator(t, module)
+	family, err := module.CreateCircle(t.Context(), curator.Token, identity.CircleRequest{Name: "Extended family"})
+	require.NoError(t, err)
+	college, err := module.CreateCircle(t.Context(), curator.Token, identity.CircleRequest{Name: "College friends"})
+	require.NoError(t, err)
+	joinRequest := func(email string) identity.AccessRequest {
+		t.Helper()
+		_, err := module.SignIn(t.Context(), identity.Claims{Email: email, EmailVerified: true, DisplayName: "Stranger"})
+		require.ErrorIs(t, err, identity.ErrAccessRequested)
+		requests, err := module.ListAccessRequests(t.Context(), curator.Token)
+		require.NoError(t, err)
+		for _, request := range requests {
+			if request.Email == email {
+				return request
+			}
+		}
+		t.Fatalf("no Access Request for %s", email)
+		return identity.AccessRequest{}
+	}
+
+	// An unknown or deleted Circle is refused before anyone is created.
+	sam := joinRequest("sam@example.test")
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, sam.ID, identity.ApproveAccessRequestRequest{DisplayName: "Sam", CircleIDs: []string{family.ID, "not-a-circle"}})
+	requireCircleFieldError(t, err, "circle_ids", "Refresh the page and choose Circles from the list.")
+	gone, err := module.CreateCircle(t.Context(), curator.Token, identity.CircleRequest{Name: "Old roommates"})
+	require.NoError(t, err)
+	require.NoError(t, module.DeleteCircle(t.Context(), curator.Token, gone.ID))
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, sam.ID, identity.ApproveAccessRequestRequest{DisplayName: "Sam", CircleIDs: []string{gone.ID}})
+	requireCircleFieldError(t, err, "circle_ids", "Refresh the page and choose Circles from the list.")
+	people, err := module.ListPeople(t.Context(), curator.Token, "Sam")
+	require.NoError(t, err)
+	assert.Empty(t, people)
+
+	// A new Person arrives in the picked Circles.
+	approved, err := module.ApproveAccessRequest(t.Context(), curator.Token, sam.ID, identity.ApproveAccessRequestRequest{DisplayName: "Sam", CircleIDs: []string{family.ID, family.ID}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{family.ID}, personCircleIDs(t, module, curator.Token, approved.PersonID))
+	_, err = module.ApproveAccessRequest(t.Context(), curator.Token, sam.ID, identity.ApproveAccessRequestRequest{DisplayName: "Sam", CircleIDs: []string{college.ID}})
+	require.NoError(t, err)
+	assert.Equal(t, []string{family.ID}, personCircleIDs(t, module, curator.Token, approved.PersonID), "approving again changes nothing")
+	admitted, err := module.SignIn(t.Context(), identity.Claims{Email: "sam@example.test", EmailVerified: true, DisplayName: "Sam"})
+	require.NoError(t, err)
+	assert.Equal(t, approved.PersonID, admitted.Person.ID)
+	assert.Equal(t, []string{"Sam"}, memberNames(t, module, curator.Token, family.ID))
+
+	// Linking an existing Person adds the picked Circles to the ones they had.
+	alex, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Alex"})
+	require.NoError(t, err)
+	require.NoError(t, module.SetPersonCircles(t.Context(), curator.Token, alex.ID, identity.PersonCirclesRequest{CircleIDs: []string{college.ID}}))
+	linked, err := module.ApproveAccessRequest(t.Context(), curator.Token, joinRequest("alex@example.test").ID, identity.ApproveAccessRequestRequest{PersonID: alex.ID, CircleIDs: []string{family.ID, college.ID}})
+	require.NoError(t, err)
+	assert.Equal(t, alex.ID, linked.PersonID)
+	assert.Equal(t, []string{college.ID, family.ID}, personCircleIDs(t, module, curator.Token, alex.ID))
+
+	// Leaving the picker empty assigns nothing.
+	jo, err := module.ApproveAccessRequest(t.Context(), curator.Token, joinRequest("jo@example.test").ID, identity.ApproveAccessRequestRequest{DisplayName: "Jo"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, personCircleIDs(t, module, curator.Token, jo.PersonID))
+	assert.Equal(t, []string{"Alex", "Sam"}, memberNames(t, module, curator.Token, family.ID))
+}
+
+func TestCirclesPickedBeforeSignInStayThroughIt(t *testing.T) {
+	t.Parallel()
+	module := identity.New(testdb.New(t), nil)
+	curator := claimCurator(t, module)
+	college, err := module.CreateCircle(t.Context(), curator.Token, identity.CircleRequest{Name: "College friends"})
+	require.NoError(t, err)
+	person, err := module.CreatePerson(t.Context(), curator.Token, identity.CreatePersonRequest{DisplayName: "Sam"})
+	require.NoError(t, err)
+	require.NoError(t, module.SetPersonCircles(t.Context(), curator.Token, person.ID, identity.PersonCirclesRequest{CircleIDs: []string{college.ID}}))
+	_, err = module.Preauthorize(t.Context(), curator.Token, person.ID, identity.PreauthorizeRequest{Email: "sam@example.test"})
+	require.NoError(t, err)
+
+	session, err := module.SignIn(t.Context(), identity.Claims{Email: "sam@example.test", EmailVerified: true, DisplayName: "Sam"})
+	require.NoError(t, err)
+	assert.Equal(t, person.ID, session.Person.ID)
+	assert.Equal(t, []string{college.ID}, personCircleIDs(t, module, curator.Token, person.ID))
 }
