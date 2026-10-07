@@ -649,12 +649,13 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
     await expect(
       page.getByRole("img", { name: "Album cover", exact: true }),
     ).toHaveCount(0);
-    await loadedImage(
-      page.getByRole("img", {
-        name: "Photo taken June 2, 2026 at 12:00 AM",
-        exact: true,
-      }),
-    );
+    const remaining = page.getByRole("img", {
+      name: "Photo taken June 2, 2026 at 12:00 AM",
+      exact: true,
+    });
+    // The preview cached before the denial shows until its refetch lands.
+    await expect(remaining).toHaveCount(1);
+    await loadedImage(remaining);
 
     await member.reload();
     await counts(member, 1, 1);
