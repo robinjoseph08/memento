@@ -304,9 +304,10 @@ function ApproveDialog({
       !circle.members.some((person) => person.id === personID),
   );
   const circlesFieldId = useId();
-  // A Circle deleted elsewhere drops out of the picks with its checkbox.
+  // Only ticked boxes still on screen count, so a Circle deleted elsewhere or
+  // hidden by choosing a Person drops out of the picks.
   const picked = circleIDs.filter((id) =>
-    circles.data?.some((circle) => circle.id === id),
+    pickable.some((circle) => circle.id === id),
   );
   return (
     <Dialog
