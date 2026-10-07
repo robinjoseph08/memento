@@ -7,6 +7,7 @@ import type {
   CircleRequest,
   PersonCirclesRequest,
 } from "../../types/generated/identity";
+import type { CircleOffers } from "../../types/generated/publishing";
 import { usePrivateScope } from "./people";
 
 export function useCircles() {
@@ -18,9 +19,22 @@ export function useCircles() {
   });
 }
 
-// Membership shows on both the Circles page and each Person's details, so
-// every Circle change refreshes both. A failure refreshes them too, since it
-// usually means a Circle changed elsewhere.
+// The Albums each Circle is offered. The key sits under "circles", so every
+// Circle change refreshes it, and Album saves and deletions refresh it too.
+export function useCircleOffers() {
+  const scope = usePrivateScope();
+  return useQuery({
+    queryKey: [...scope, "circles", "offers"],
+    queryFn: ({ signal }) =>
+      request<CircleOffers[]>("/api/curator/circles/offers", { signal }),
+    retry: false,
+  });
+}
+
+// Membership shows on the Circles page, each Person's details, and every
+// Album's Offers, which decide who an Album reaches, so every Circle change
+// refreshes them all. A failure refreshes them too, since it usually means a
+// Circle changed elsewhere.
 function useCircleMutation<T, V>(fn: (variables: V) => Promise<T>) {
   const client = useQueryClient();
   const scope = usePrivateScope();
@@ -31,6 +45,9 @@ function useCircleMutation<T, V>(fn: (variables: V) => Promise<T>) {
       Promise.all([
         client.invalidateQueries({ queryKey: [...scope, "circles"] }),
         client.invalidateQueries({ queryKey: [...scope, "person"] }),
+        client.invalidateQueries({ queryKey: [...scope, "album"] }),
+        client.invalidateQueries({ queryKey: [...scope, "albums"] }),
+        client.invalidateQueries({ queryKey: [...scope, "publication"] }),
       ]),
   });
 }

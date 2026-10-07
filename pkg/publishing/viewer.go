@@ -45,12 +45,32 @@ func projectChapters(stored []models.Chapter) []Chapter {
 	return chapters
 }
 
+// viewerReach selects which of a viewer's Album Entries a query covers.
+type viewerReach int
+
+const (
+	// reachOwn is media granted directly: the Person's own Albums and Library.
+	reachOwn viewerReach = iota
+	// reachOffered is media offered to the Person's Circles that no rule of
+	// their own decides: "More albums".
+	reachOffered
+	// reachAny is both, which is what an offered Album's preview shows and
+	// what media requests may load.
+	reachAny
+)
+
 // viewerContext can only be constructed after checking the actor and selected
 // Person. Preview ignores publication, but never borrows the actor's bypass.
 type viewerContext struct {
 	personID string
 	preview  bool
 	curator  bool
+	reach    viewerReach
+}
+
+func (v viewerContext) reaching(reach viewerReach) viewerContext {
+	v.reach = reach
+	return v
 }
 
 func resolveViewer(ctx context.Context, db bun.IDB, actorID, previewPersonID string) (viewerContext, error) {
@@ -88,6 +108,9 @@ func resolveViewer(ctx context.Context, db bun.IDB, actorID, previewPersonID str
 
 // viewerEntries is shared by Album summaries, galleries, covers and media
 // authorization. Membership always belongs to this Album Entry, not its media.
+// The Person's own rules decide first; only when none applies does an Offer
+// to one of their Circles count, and only while the Album is published (ADR
+// 0015). A Curator's bypass sees everything as their own.
 func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 	q := db.NewSelect().TableExpr("album_entries AS entry").
 		Join("JOIN albums AS album ON album.id = entry.album_id").
@@ -96,11 +119,28 @@ func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 	if !viewer.preview && !viewer.curator {
 		q = q.Where("album.published_at IS NOT NULL")
 	}
-	if !viewer.curator {
-		q = q.Join("LEFT JOIN moment_access_decisions AS moment_access ON moment_access.moment_id = entry.moment_id AND moment_access.person_id = ?", viewer.personID).
-			Join("LEFT JOIN album_access_decisions AS album_access ON album_access.album_id = entry.album_id AND album_access.person_id = ?", viewer.personID).
-			Join("LEFT JOIN entry_access_decisions AS entry_access ON entry_access.entry_id = entry.id AND entry_access.person_id = ?", viewer.personID).
-			Where("coalesce(entry_access.decision, moment_access.decision, album_access.decision, 'deny') = 'allow'")
+	if viewer.curator {
+		if viewer.reach == reachOffered {
+			q = q.Where("false")
+		}
+		return q
+	}
+	q = q.Join("LEFT JOIN moment_access_decisions AS moment_access ON moment_access.moment_id = entry.moment_id AND moment_access.person_id = ?", viewer.personID).
+		Join("LEFT JOIN album_access_decisions AS album_access ON album_access.album_id = entry.album_id AND album_access.person_id = ?", viewer.personID).
+		Join("LEFT JOIN entry_access_decisions AS entry_access ON entry_access.entry_id = entry.id AND entry_access.person_id = ?", viewer.personID)
+	const decision = "coalesce(entry_access.decision, moment_access.decision, album_access.decision)"
+	const own = decision + " = 'allow'"
+	const offered = decision + " IS NULL AND album.published_at IS NOT NULL AND EXISTS (?)"
+	circles := db.NewSelect().TableExpr("album_offers AS offer").ColumnExpr("1").
+		Join("JOIN circle_members AS member ON member.circle_id = offer.circle_id").
+		Where("offer.album_id = entry.album_id AND member.person_id = ?", viewer.personID)
+	switch viewer.reach {
+	case reachOwn:
+		q = q.Where(own)
+	case reachOffered:
+		q = q.Where(offered, circles)
+	case reachAny:
+		q = q.Where("("+own+" OR ("+offered+"))", circles)
 	}
 	return q
 }
@@ -155,7 +195,8 @@ func (v viewerContext) previewURL(entryID, version string) string {
 	return v.mediaURL(entryID, "preview", version)
 }
 
-// downloadURL exists only for a Person's own media; preview has no download.
+// downloadURL exists for every viewer's media, offered media included; a
+// Curator's selected-Person preview has no download.
 func (v viewerContext) downloadURL(entryID, version string) string {
 	if v.preview {
 		return ""
@@ -264,15 +305,37 @@ func (m *Module) ViewEntries(ctx context.Context, actorID, previewPersonID, albu
 	if _, err := uuid.Parse(albumID); err != nil {
 		return ViewerPage{Entries: []ViewerEntry{}}, errcodes.NotFound("Album")
 	}
-	return m.viewEntries(ctx, actorID, previewPersonID, albumID, kind, page)
+	return m.viewEntries(ctx, actorID, previewPersonID, albumID, kind, page, false)
+}
+
+// ViewOfferedEntries pages an offered Album's preview gallery: the viewer's
+// own media in it together with what their Circles are offered.
+func (m *Module) ViewOfferedEntries(ctx context.Context, actorID, albumID, kind string, page EntryPageRequest) (ViewerPage, error) {
+	if _, err := uuid.Parse(albumID); err != nil {
+		return ViewerPage{Entries: []ViewerEntry{}}, errcodes.NotFound("Album")
+	}
+	return m.viewEntries(ctx, actorID, "", albumID, kind, page, true)
 }
 
 // ViewLibraryEntries returns newest-first media with one accessible Entry per item.
 func (m *Module) ViewLibraryEntries(ctx context.Context, actorID, kind string, page EntryPageRequest) (ViewerPage, error) {
-	return m.viewEntries(ctx, actorID, "", "", kind, page)
+	return m.viewEntries(ctx, actorID, "", "", kind, page, false)
 }
 
-func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error) {
+// widenToOffered widens a viewer to an Album's preview, which exists only
+// while something in the Album is offered to them.
+func widenToOffered(ctx context.Context, db bun.IDB, viewer viewerContext, albumID string) (viewerContext, error) {
+	exists, err := viewerEntries(db, viewer.reaching(reachOffered)).Where("entry.album_id = ?", albumID).Exists(ctx)
+	if err != nil {
+		return viewer, errorstack.CaptureContext(ctx, err)
+	}
+	if !exists {
+		return viewer, errcodes.NotFound("Album")
+	}
+	return viewer.reaching(reachAny), nil
+}
+
+func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest, offered bool) (ViewerPage, error) {
 	result := ViewerPage{Entries: []ViewerEntry{}}
 	if kind != "IMAGE" && kind != "VIDEO" {
 		return result, errcodes.NotFound("Gallery")
@@ -300,7 +363,11 @@ func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albu
 		if err != nil {
 			return err
 		}
-		if albumID != "" {
+		if offered {
+			if viewer, err = widenToOffered(ctx, tx, viewer, albumID); err != nil {
+				return err
+			}
+		} else if albumID != "" {
 			exists, err := viewerEntries(tx, viewer).Where("entry.album_id = ?", albumID).Exists(ctx)
 			if err != nil {
 				return errorstack.CaptureContext(ctx, err)
@@ -382,6 +449,9 @@ func (m *Module) viewEntries(ctx context.Context, actorID, previewPersonID, albu
 
 // AuthorizeViewerEntry is the Media boundary. Every uncached thumbnail request
 // checks current membership and access before resolving an Immich variant.
+// A viewer may load offered media too, so an offered Album's preview plays
+// like any Album; a Curator's selected-Person preview covers only that
+// Person's own media.
 func (m *Module) AuthorizeViewerEntry(ctx context.Context, actorID, previewPersonID, entryID string) error {
 	if _, err := uuid.Parse(entryID); err != nil {
 		return errcodes.NotFound("Thumbnail")
@@ -389,6 +459,9 @@ func (m *Module) AuthorizeViewerEntry(ctx context.Context, actorID, previewPerso
 	viewer, err := resolveViewer(ctx, m.db, actorID, previewPersonID)
 	if err != nil {
 		return err
+	}
+	if !viewer.preview {
+		viewer = viewer.reaching(reachAny)
 	}
 	allowed, err := viewerEntries(m.db, viewer).Where("entry.id = ?", entryID).Exists(ctx)
 	if err != nil {
@@ -422,12 +495,24 @@ func (m *Module) ViewLibrary(ctx context.Context, actorID string) (ViewerLibrary
 }
 
 func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error) {
+	return m.viewAlbums(ctx, actorID, reachOwn)
+}
+
+// ViewMoreAlbums lists the Albums with media offered to the viewer's Circles
+// beyond what they were granted, newest first. Counts and covers come from
+// the offered media only, so a card never repeats the viewer's own Album.
+func (m *Module) ViewMoreAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error) {
+	return m.viewAlbums(ctx, actorID, reachOffered)
+}
+
+func (m *Module) viewAlbums(ctx context.Context, actorID string, reach viewerReach) ([]ViewerAlbum, error) {
 	result := []ViewerAlbum{}
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		viewer, err := resolveViewer(ctx, tx, actorID, "")
 		if err != nil {
 			return err
 		}
+		viewer = viewer.reaching(reach)
 		ids := []string{}
 		err = viewerEntries(tx, viewer).ColumnExpr("entry.album_id").Group("entry.album_id").OrderExpr("max(item.captured_at) DESC, entry.album_id").Scan(ctx, &ids)
 		if err != nil {
@@ -441,6 +526,29 @@ func (m *Module) ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum,
 			result = append(result, album)
 		}
 		return nil
+	})
+	return result, transactionError(ctx, err)
+}
+
+// ViewOfferedAlbum previews an Album offered to the viewer as it would look
+// once theirs: their own media in it together with the offered media. It is
+// not found when nothing in the Album is offered to them. Nothing records
+// that the preview was opened.
+func (m *Module) ViewOfferedAlbum(ctx context.Context, actorID, albumID string) (ViewerAlbum, error) {
+	var result ViewerAlbum
+	if _, err := uuid.Parse(albumID); err != nil {
+		return result, errcodes.NotFound("Album")
+	}
+	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+		viewer, err := resolveViewer(ctx, tx, actorID, "")
+		if err != nil {
+			return err
+		}
+		if viewer, err = widenToOffered(ctx, tx, viewer, albumID); err != nil {
+			return err
+		}
+		result, err = viewAlbum(ctx, tx, viewer, albumID, true)
+		return err
 	})
 	return result, transactionError(ctx, err)
 }

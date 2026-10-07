@@ -1,4 +1,7 @@
-import type { AccessPerson } from "../../types/generated/publishing";
+import type {
+  AccessPerson,
+  AudienceChange,
+} from "../../types/generated/publishing";
 import { countLabel } from "./moment-labels";
 
 // Most-seen people first, then alphabetical, so the busiest rows lead.
@@ -17,4 +20,33 @@ export function accessDetail(person: AccessPerson) {
   if (person.inherited) return `Album access, ${seen}`;
   if (person.suggested) return "Detected here, not shared yet";
   return seen.charAt(0).toUpperCase() + seen.slice(1);
+}
+
+const items = (ids: string[]) => countLabel(ids.length, "item", "items");
+
+// What one Person gains or loses after a change: media of their own, media
+// offered to their Circles, and media moving between the two, which they can
+// see either way and so is never described as a loss.
+export function audienceSummary(change: AudienceChange) {
+  const offeredBefore = new Set(change.offered_lost_entry_ids);
+  const offeredAfter = new Set(change.offered_gained_entry_ids);
+  const nowOwn = change.gained_entry_ids.filter((id) => offeredBefore.has(id));
+  const nowOffered = change.lost_entry_ids.filter((id) => offeredAfter.has(id));
+  const moved = new Set([...nowOwn, ...nowOffered]);
+  const only = (ids: string[]) => ids.filter((id) => !moved.has(id));
+  const gained = only(change.gained_entry_ids);
+  const lost = only(change.lost_entry_ids);
+  const offered = only(change.offered_gained_entry_ids);
+  const withdrawn = only(change.offered_lost_entry_ids);
+  return [
+    gained.length > 0 && `gains ${items(gained)}`,
+    nowOwn.length > 0 && `gets ${items(nowOwn)} they were offered`,
+    offered.length > 0 && `is offered ${items(offered)}`,
+    nowOffered.length > 0 &&
+      `can still browse ${items(nowOffered)} through an Offer`,
+    lost.length > 0 && `loses ${items(lost)}`,
+    withdrawn.length > 0 && `is no longer offered ${items(withdrawn)}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
 }

@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type { Locator, Page, Request } from "@playwright/test";
 
-import { expect, finishOnboarding, test } from "./fixtures";
+import { expect, finishOnboarding, playbackSource, test } from "./fixtures";
 
 async function captureLayouts(page: Page, name: string) {
   if (process.env.QA_CAPTURES !== "1") return;
@@ -124,7 +124,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
   await expect(visibility).toContainText("Change access above to review it.");
   await alexAlbum.check();
   await expect(visibility).toContainText("Alex");
-  await expect(visibility).toContainText("gains 6");
+  await expect(visibility).toContainText("gains 6 items");
   await captureLayouts(page, "album-access");
   await albumAccess
     .getByRole("button", { name: "Save Album access", exact: true })
@@ -457,7 +457,7 @@ test("Curator scopes access, previews two people, publishes, and hides the Album
     });
     await expect(
       removal.getByRole("region", { name: "Visibility review" }),
-    ).toContainText(/Sam\s*loses 1/);
+    ).toContainText(/Sam\s*loses 1 item/);
     await removal
       .getByRole("button", { name: "Remove all access", exact: true })
       .click();
@@ -683,6 +683,143 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
     await counts(member, 1, 1);
   } finally {
     await memberContext.close();
+  }
+});
+
+test("Curator offers an Album to a Circle and a viewer finds and previews it from More albums", async ({
+  page,
+  browser,
+  baseURL,
+  immich,
+}) => {
+  test.setTimeout(120_000);
+  await immich.online();
+  await page.goto("/setup");
+  await page.getByRole("button", { name: "Claim installation" }).click();
+  await finishOnboarding(page);
+  await createPerson(page, "Sam", "sam@example.test");
+  await createPerson(page, "Pat", "pat@example.test");
+
+  await page.getByRole("link", { name: "Circles", exact: true }).click();
+  await page.getByRole("button", { name: "New circle" }).click();
+  const naming = page.getByRole("dialog", { name: "New circle" });
+  await naming
+    .getByRole("textbox", { name: "Circle name" })
+    .fill("Extended family");
+  await naming.getByRole("button", { name: "Create circle" }).click();
+  await expect(naming).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Edit members of Extended family" })
+    .click();
+  const members = page.getByRole("dialog", {
+    name: "Members of Extended family",
+  });
+  await members.getByRole("checkbox", { name: "Sam", exact: true }).check();
+  await members.getByRole("button", { name: "Save members" }).click();
+  await expect(members).toHaveCount(0);
+
+  await page.goto("/curator/import?q=Coast");
+  await page.getByRole("button", { name: "Import", exact: true }).click();
+  const outline = page.getByRole("navigation", { name: "Album outline" });
+  await expect(outline).toBeVisible({ timeout: 60_000 });
+  const viewerPath = new URL(page.url()).pathname.replace("/curator", "");
+  await outline
+    .getByRole("link", { name: "Album access", exact: true })
+    .click();
+  const albumAccess = page.getByRole("form", {
+    name: "Album access",
+    exact: true,
+  });
+  await albumAccess
+    .getByRole("checkbox", { name: "Offer to Extended family" })
+    .check();
+  const review = albumAccess.getByRole("region", {
+    name: "Visibility review",
+  });
+  await expect(review).toContainText(/Sam\s+is offered \d+ items/);
+  await expect(review).not.toContainText("Pat");
+  await albumAccess.getByRole("button", { name: "Save Album access" }).click();
+  await expect(albumAccess.getByRole("status")).toHaveText(
+    "Album access saved.",
+  );
+  await page
+    .getByRole("button", { name: "Review & publish", exact: true })
+    .click();
+  const publication = page.getByRole("dialog", { name: "Ready to publish?" });
+  await expect(
+    publication.getByRole("region", { name: "Audience" }),
+  ).toContainText(/Sam\s*\d+ of \d+ items offered/);
+  await publication
+    .getByRole("button", { name: "Publish album", exact: true })
+    .click();
+  await expect(publication).toHaveCount(0);
+
+  const signIn = async (email: string) => {
+    const context = await browser.newContext({ baseURL });
+    const member = await context.newPage();
+    await member.goto("/sign-in");
+    await member
+      .getByRole("textbox", { name: "Email", exact: true })
+      .fill(email);
+    await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
+    return { context, member };
+  };
+  const sam = await signIn("sam@example.test");
+  try {
+    const member = sam.member;
+    await member.goto("/albums");
+    await expect(
+      member.getByText("None yet. You can browse the albums below."),
+    ).toBeVisible();
+    const more = member.getByRole("region", { name: "More albums" });
+    const card = more.getByRole("link", { name: /Fixture Album - Coast/ });
+    await loadedImage(card.getByRole("img", { name: "Fixture Album - Coast" }));
+    await card.click();
+    await expect(member).toHaveURL(new RegExp(`${viewerPath}/preview/photos$`));
+    await expect(
+      member.getByRole("heading", { name: "Fixture Album - Coast" }),
+    ).toBeVisible();
+    await loadedImage(
+      member.getByRole("img", { name: /^Photo taken / }).first(),
+    );
+    await member
+      .getByRole("navigation", { name: "Album media" })
+      .getByRole("link", { name: /^Videos/ })
+      .click();
+    await member
+      .getByRole("link", { name: /^Open video / })
+      .first()
+      .click();
+    await playbackSource(member.getByRole("dialog").locator("video"));
+
+    // Offered media stays out of Sam's Library, and a direct link to the
+    // Album opens the preview.
+    await member.goto("/library/photos");
+    await expect(
+      member.getByRole("img", { name: /^Photo taken / }),
+    ).toHaveCount(0);
+    await member.goto(`${viewerPath}/photos`);
+    await expect(member).toHaveURL(new RegExp(`${viewerPath}/preview/photos$`));
+    await expect(
+      member.getByRole("heading", { name: "Fixture Album - Coast" }),
+    ).toBeVisible();
+  } finally {
+    await sam.context.close();
+  }
+
+  const pat = await signIn("pat@example.test");
+  try {
+    await pat.member.goto("/albums");
+    await expect(
+      pat.member.getByRole("heading", { name: "No albums yet" }),
+    ).toBeVisible();
+    await pat.member.goto(`${viewerPath}/photos`);
+    await expect(
+      pat.member.getByRole("button", { name: "Request access" }),
+    ).toBeVisible();
+  } finally {
+    await pat.context.close();
   }
 });
 

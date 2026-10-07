@@ -100,6 +100,7 @@ export function useAlbumCache() {
         }),
         client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
         client.invalidateQueries({ queryKey: [...scope, "dashboard"] }),
+        client.invalidateQueries({ queryKey: [...scope, "circles", "offers"] }),
         client.invalidateQueries({
           queryKey: [...scope, "viewing-groups", album.id],
         }),

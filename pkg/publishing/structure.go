@@ -36,6 +36,8 @@ type structureState struct {
 	Decisions      map[string]map[string]Decision
 	AlbumDecisions map[string]Decision
 	EntryDecisions map[string]map[string]Decision
+	AlbumOffers    map[string]bool
+	Circles        map[string][]string
 	People         map[string]string
 	PersonOrder    []string
 }
@@ -64,7 +66,7 @@ func (s structureState) remainingEntries(momentID string, exclude map[string]boo
 }
 
 func (s structureState) facts() accessFacts {
-	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions}
+	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: s.Circles}
 }
 
 func (s structureState) clone() structureState {
@@ -75,6 +77,8 @@ func (s structureState) clone() structureState {
 		Decisions:      make(map[string]map[string]Decision, len(s.Decisions)),
 		AlbumDecisions: maps.Clone(s.AlbumDecisions),
 		EntryDecisions: make(map[string]map[string]Decision, len(s.EntryDecisions)),
+		AlbumOffers:    maps.Clone(s.AlbumOffers),
+		Circles:        maps.Clone(s.Circles),
 		People:         make(map[string]string, len(s.People)),
 		PersonOrder:    append([]string(nil), s.PersonOrder...),
 	}
@@ -93,7 +97,7 @@ func (s structureState) clone() structureState {
 }
 
 func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, lock bool) (structureState, error) {
-	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, People: map[string]string{}}
+	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, AlbumOffers: map[string]bool{}, Circles: map[string][]string{}, People: map[string]string{}}
 	var moments []models.Moment
 	momentQuery := db.NewSelect().Model(&moments).Where("moment.album_id = ?", albumID).Order("moment.sort_order", "moment.id")
 	if lock {
@@ -177,6 +181,27 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 		state.People[id] = person.DisplayName
 		state.PersonOrder = append(state.PersonOrder, id)
 	}
+	var offers []models.AlbumOffer
+	offerQuery := db.NewSelect().Model(&offers).Where("offer.album_id = ?", albumID)
+	if lock {
+		offerQuery = offerQuery.For("UPDATE")
+	}
+	if err := offerQuery.Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, offer := range offers {
+		state.AlbumOffers[offer.CircleID.String()] = true
+	}
+	var members []models.CircleMember
+	if err := db.NewSelect().Model(&members).Order("member.person_id", "member.circle_id").Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, member := range members {
+		id := member.PersonID.String()
+		if _, active := state.People[id]; active {
+			state.Circles[id] = append(state.Circles[id], member.CircleID.String())
+		}
+	}
 	return state, nil
 }
 
@@ -197,14 +222,26 @@ type reviewedFacts struct {
 	Decisions      map[string]map[string]Decision `json:"decisions"`
 	AlbumDecisions map[string]Decision            `json:"album_decisions"`
 	EntryDecisions map[string]map[string]Decision `json:"entry_decisions"`
+	AlbumOffers    map[string]bool                `json:"album_offers"`
+	Circles        map[string][]string            `json:"circles"`
 }
 
+// reviewed keeps only memberships of Circles the Album is offered to, so
+// editing an unrelated Circle never makes an open review stale.
 func (s structureState) reviewed() reviewedFacts {
 	covers := make(map[string]string, len(s.Moments))
 	for id, moment := range s.Moments {
 		covers[id] = moment.CoverID
 	}
-	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions}
+	circles := map[string][]string{}
+	for personID, circleIDs := range s.Circles {
+		for _, circleID := range circleIDs {
+			if s.AlbumOffers[circleID] {
+				circles[personID] = append(circles[personID], circleID)
+			}
+		}
+	}
+	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: circles}
 }
 
 func reviewToken(operation string, before structureState, request any, after structureState) (string, error) {

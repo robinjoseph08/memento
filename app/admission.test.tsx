@@ -239,7 +239,10 @@ it("offers an explicit Request access action on an inaccessible Album", async ()
         requested++;
         return Response.json({ id: "request", status: "pending" });
       }
-      if (path === "/api/albums/hidden")
+      if (
+        path === "/api/albums/hidden" ||
+        path === "/api/albums/hidden/preview"
+      )
         return Response.json(
           { error: { code: "not_found", message: "Album not found." } },
           { status: 404 },

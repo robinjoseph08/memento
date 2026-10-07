@@ -2,6 +2,7 @@ import { Blend, Pencil, Plus, Trash2, UsersRound } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import {
+  useCircleOffers,
   useCircles,
   useCreateCircle,
   useDeleteCircle,
@@ -13,6 +14,8 @@ import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type { Circle } from "../../types/generated/identity";
+import type { OfferedAlbum } from "../../types/generated/publishing";
+import { countLabel } from "../albums/moment-labels";
 import { PersonAvatar } from "../albums/person-avatar";
 import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
@@ -37,6 +40,7 @@ import { Input } from "../ui/input";
 
 export function CirclesPage() {
   const query = useCircles();
+  const offers = useCircleOffers();
   const create = useCreateCircle();
   const [creating, setCreating] = useState(false);
   return (
@@ -74,7 +78,17 @@ export function CirclesPage() {
         (query.data.length ? (
           <ul className="divide-y divide-border border-y border-border">
             {query.data.map((circle) => (
-              <CircleRow circle={circle} key={circle.id} />
+              <CircleRow
+                circle={circle}
+                key={circle.id}
+                offered={
+                  offers.data &&
+                  (offers.data.find((offer) => offer.circle_id === circle.id)
+                    ?.albums ??
+                    [])
+                }
+                offersPending={offers.isPending}
+              />
             ))}
           </ul>
         ) : (
@@ -86,7 +100,39 @@ export function CirclesPage() {
   );
 }
 
-function CircleRow({ circle }: { circle: Circle }) {
+// Albums shown by title in the delete warning before the rest collapse into
+// a count.
+const namedAlbums = 3;
+
+// What deleting a Circle takes away. Its Offers go with it, so the warning
+// names the Albums it is offered. Unknown Offers, when they failed to load,
+// get a warning that promises nothing either way.
+function deleteDescription(offered: OfferedAlbum[] | undefined) {
+  const kept = "The people in it stay in Memento.";
+  if (!offered)
+    return `Deleting it also withdraws anything offered to it. ${kept}`;
+  if (offered.length === 0)
+    return `${kept} They're only taken out of this Circle.`;
+  const titles = offered
+    .slice(0, namedAlbums)
+    .map((album) => `“${album.title}”`);
+  const rest = offered.length - titles.length;
+  if (rest > 0) titles.push(countLabel(rest, "more album", "more albums"));
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(
+    titles,
+  );
+  return `Deleting it withdraws its Offers of ${list}, so its members can't browse them through this Circle. ${kept}`;
+}
+
+function CircleRow({
+  circle,
+  offered,
+  offersPending,
+}: {
+  circle: Circle;
+  offered?: OfferedAlbum[];
+  offersPending: boolean;
+}) {
   const [editing, setEditing] = useState<"members" | "name" | null>(null);
   const remove = useDeleteCircle(circle.id);
   const rename = useRenameCircle(circle.id);
@@ -132,8 +178,9 @@ function CircleRow({ circle }: { circle: Circle }) {
           <ConfirmAction
             compact
             confirmLabel="Delete"
-            description="The people in it stay in Memento. They're only taken out of this Circle."
+            description={deleteDescription(offered)}
             destructive="deletes"
+            disabled={offersPending}
             error={remove.error}
             icon={Trash2}
             label={`Delete ${circle.name}`}

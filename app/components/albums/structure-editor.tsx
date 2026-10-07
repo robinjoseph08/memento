@@ -30,6 +30,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "../ui/dialog";
+import { audienceSummary } from "./access-labels";
 import { AlbumImage } from "./album-image";
 
 export type StructureOperation = "move" | "split" | "merge";
@@ -89,15 +90,7 @@ function VisibilityReview({ preview }: { preview: StructurePreview }) {
           {preview.changes.map((change) => (
             <p className="py-1 text-sm" key={change.person_id}>
               <strong>{change.display_name}</strong>{" "}
-              <span className="text-muted">
-                {change.gained_entry_ids.length > 0 &&
-                  `gains ${change.gained_entry_ids.length}`}
-                {change.gained_entry_ids.length > 0 &&
-                  change.lost_entry_ids.length > 0 &&
-                  ", "}
-                {change.lost_entry_ids.length > 0 &&
-                  `loses ${change.lost_entry_ids.length}`}
-              </span>
+              <span className="text-muted">{audienceSummary(change)}</span>
             </p>
           ))}
         </div>

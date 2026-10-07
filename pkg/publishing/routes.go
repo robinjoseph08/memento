@@ -3,23 +3,29 @@ package publishing
 import "github.com/labstack/echo/v5"
 
 // RegisterViewerRoutes keeps selected-Person preview behind the Curator guard.
+// A viewer's own preview of an offered Album lives under /api/albums.
 func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, requireCurator echo.MiddlewareFunc) {
 	h := &viewerHandlers{module: module}
 	e.GET("/api/library", h.library, requirePerson)
 	e.GET("/api/library/photos", h.libraryPhotos, requirePerson)
 	e.GET("/api/library/videos", h.libraryVideos, requirePerson)
 	e.GET("/api/albums", h.albums, requirePerson)
+	e.GET("/api/albums/more", h.moreAlbums, requirePerson)
 	e.GET("/api/albums/:id", h.album, requirePerson)
 	e.GET("/api/albums/:id/photos", h.photos, requirePerson)
 	e.GET("/api/albums/:id/videos", h.videos, requirePerson)
+	e.GET("/api/albums/:id/preview", h.offeredAlbum, requirePerson)
+	e.GET("/api/albums/:id/preview/photos", h.offeredPhotos, requirePerson)
+	e.GET("/api/albums/:id/preview/videos", h.offeredVideos, requirePerson)
 	e.GET("/api/curator/albums/:id/preview/:personID", h.album, requireCurator)
 	e.GET("/api/curator/albums/:id/preview/:personID/photos", h.photos, requireCurator)
 	e.GET("/api/curator/albums/:id/preview/:personID/videos", h.videos, requireCurator)
 }
 
-// RegisterAccessRoutes keeps every access mutation behind the Curator guard.
+// RegisterAccessRoutes keeps every access operation behind the Curator guard.
 func RegisterAccessRoutes(e *echo.Echo, module AccessUseCases, requireCurator echo.MiddlewareFunc) {
 	h := &accessHandlers{module: module}
+	e.GET("/api/curator/circles/offers", h.circleOffers, requireCurator)
 	e.POST("/api/curator/albums/:id/access/preview", h.previewAlbumAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access", h.saveAlbumAccess, requireCurator)
 	e.POST("/api/curator/albums/:id/access/remove-all/preview", h.previewRemoveAccess, requireCurator)

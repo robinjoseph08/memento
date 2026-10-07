@@ -1,6 +1,6 @@
 import { Image, Play, SquarePlay } from "lucide-react";
 import { useRef, type ReactNode } from "react";
-import { Link, type To } from "react-router-dom";
+import { Link, Navigate, type To } from "react-router-dom";
 
 import {
   dayCount,
@@ -28,10 +28,13 @@ import { Lightbox } from "./lightbox";
 import { RequestAccess } from "./request-access";
 import { Timeline } from "./timeline";
 
-// Shared presentation for the library, an Album, and Curator preview.
-// personName is set only in preview so empty states can say whose view it is.
-// entryID names the item open in the lightbox on the current tab; entryLink
-// builds each item's stable URL in whatever form the surrounding route uses.
+// Shared presentation for the library, an Album, an offered Album's preview,
+// and Curator preview. personName is set only in Curator preview so empty
+// states can say whose view it is. entryID names the item open in the
+// lightbox on the current tab; entryLink builds each item's stable URL in
+// whatever form the surrounding route uses. fallback is the other way the
+// viewer may see the same Album, their own copy or its offered preview, and
+// where to go when the gallery is not found but the fallback is.
 export function ViewerGallery({
   context,
   tab,
@@ -39,6 +42,7 @@ export function ViewerGallery({
   personName,
   entryID,
   entryLink,
+  fallback,
 }: {
   context: ViewerContext;
   tab: ViewerTab;
@@ -46,6 +50,7 @@ export function ViewerGallery({
   personName?: string;
   entryID?: string;
   entryLink: (id: string) => To;
+  fallback?: { context: ViewerContext; to: To };
 }) {
   const query = useViewerGallery(context);
   const library = context.albumID === undefined;
@@ -66,7 +71,9 @@ export function ViewerGallery({
   return (
     <>
       <PageTitle title={title} />
-      {query.isPending ? (
+      {noAccess && fallback ? (
+        <FallbackRedirect fallback={fallback} />
+      ) : query.isPending ? (
         <p role="status">
           {personName
             ? "Building the preview…"
@@ -75,35 +82,13 @@ export function ViewerGallery({
               : "Loading album…"}
         </p>
       ) : query.isError ? (
-        <section className="py-10">
-          <h1 className="font-heading text-3xl">
-            {library
-              ? "Could not load library"
-              : noAccess
-                ? "Album not available"
-                : "Could not load album"}
-          </h1>
-          <p className="mt-3 text-muted">
-            {noAccess && !library
-              ? personName
-                ? `${personName} has no access to this album.`
-                : "This album is not available to you."
-              : "Please try again."}
-          </p>
-          {!noAccess && (
-            <Button
-              className="mt-4"
-              disabled={query.isFetching}
-              onClick={() => void query.refetch()}
-              variant="outline"
-            >
-              Try again
-            </Button>
-          )}
-          {noAccess && !personName && context.albumID !== undefined && (
-            <RequestAccess albumID={context.albumID} />
-          )}
-        </section>
+        <GalleryFailure
+          albumID={context.albumID}
+          error={query.error}
+          fetching={query.isFetching}
+          personName={personName}
+          retry={() => void query.refetch()}
+        />
       ) : (
         <>
           {"title" in query.data ? (
@@ -173,6 +158,77 @@ export function ViewerGallery({
         </>
       )}
     </>
+  );
+}
+
+// A link to an Album the viewer reaches only the other way, offered rather
+// than their own or the reverse, opens that view. Anyone else sees the same
+// "Request access" as before.
+function FallbackRedirect({
+  fallback,
+}: {
+  fallback: { context: ViewerContext; to: To };
+}) {
+  const query = useViewerGallery(fallback.context);
+  if (query.isSuccess) return <Navigate replace to={fallback.to} />;
+  if (query.isPending) return <p role="status">Loading album…</p>;
+  return (
+    <GalleryFailure
+      albumID={fallback.context.albumID}
+      error={query.error}
+      fetching={query.isFetching}
+      retry={() => void query.refetch()}
+    />
+  );
+}
+
+// Why a gallery could not open. A missing Album offers "Request access",
+// except in Curator preview; other failures can be retried.
+function GalleryFailure({
+  albumID,
+  error,
+  fetching,
+  personName,
+  retry,
+}: {
+  albumID?: string;
+  error: Error;
+  fetching: boolean;
+  personName?: string;
+  retry: () => void;
+}) {
+  const library = albumID === undefined;
+  const noAccess = error instanceof HTTPError && error.status === 404;
+  return (
+    <section className="py-10">
+      <h1 className="font-heading text-3xl">
+        {library
+          ? "Could not load library"
+          : noAccess
+            ? "Album not available"
+            : "Could not load album"}
+      </h1>
+      <p className="mt-3 text-muted">
+        {noAccess && !library
+          ? personName
+            ? `${personName} has no access to this album.`
+            : "This album is not available to you."
+          : "Please try again."}
+      </p>
+      {!noAccess && (
+        <Button
+          className="mt-4"
+          disabled={fetching}
+          onClick={retry}
+          variant="outline"
+        >
+          Try again
+        </Button>
+      )}
+      {noAccess && !personName && albumID !== undefined && (
+        <RequestAccess albumID={albumID} />
+      )}
+    </section>
   );
 }
 

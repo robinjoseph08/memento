@@ -152,7 +152,7 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   await moveDialog.getByRole("button", { name: "Review move" }).click();
   await expect(
     moveDialog.getByRole("region", { name: "Visibility review" }),
-  ).toContainText("Alex loses 1");
+  ).toContainText("Alex loses 1 item");
   await moveDialog.getByRole("button", { name: "Confirm move" }).click();
   await expect(moveDialog).toHaveCount(0);
 

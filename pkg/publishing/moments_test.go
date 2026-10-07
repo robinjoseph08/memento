@@ -231,8 +231,8 @@ func TestStructuralChangesPreviewAndRevalidateEffectiveAudience(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, movePreview.RemovesMoment)
 	assert.Equal(t, []publishing.AudienceChange{
-		{PersonID: alex.ID.String(), DisplayName: "Alex", GainedEntryIDs: []string{second.Entries[0].ID, second.Entries[1].ID}, LostEntryIDs: []string{}},
-		{PersonID: sam.ID.String(), DisplayName: "Sam", GainedEntryIDs: []string{}, LostEntryIDs: []string{second.Entries[0].ID, second.Entries[1].ID}},
+		{PersonID: alex.ID.String(), DisplayName: "Alex", GainedEntryIDs: []string{second.Entries[0].ID, second.Entries[1].ID}, LostEntryIDs: []string{}, OfferedGainedEntryIDs: []string{}, OfferedLostEntryIDs: []string{}},
+		{PersonID: sam.ID.String(), DisplayName: "Sam", GainedEntryIDs: []string{}, LostEntryIDs: []string{second.Entries[0].ID, second.Entries[1].ID}, OfferedGainedEntryIDs: []string{}, OfferedLostEntryIDs: []string{}},
 	}, movePreview.Changes)
 	move.ReviewToken = movePreview.ReviewToken
 	moved, err := module.MoveEntries(t.Context(), album.ID, second.ID, move)

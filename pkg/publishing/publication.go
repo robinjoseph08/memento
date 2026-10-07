@@ -66,7 +66,7 @@ func (m *Module) publicationReview(ctx context.Context, db bun.IDB, album models
 		return result, err
 	}
 	// The token covers what publication exposes: the title, the blockers, and
-	// the membership and rules that decide the audience. Names, avatars, and
+	// the membership, rules, and Offers that decide the audience. Names, avatars, and
 	// warning counts may change without another review.
 	data, err := json.Marshal(struct {
 		AlbumID   string        `json:"album_id"`
@@ -81,10 +81,11 @@ func (m *Module) publicationReview(ctx context.Context, db bun.IDB, album models
 	result.ReviewToken = hex.EncodeToString(digest[:])
 	for _, person := range people {
 		accessible := len(visibleEntries(structure.facts(), person.ID.String()))
-		if accessible == 0 {
+		offered := len(offeredEntries(structure.facts(), person.ID.String()))
+		if accessible+offered == 0 {
 			continue
 		}
-		audience := PublicationAudience{PersonID: person.ID.String(), DisplayName: person.DisplayName, AccessibleCount: accessible}
+		audience := PublicationAudience{PersonID: person.ID.String(), DisplayName: person.DisplayName, AccessibleCount: accessible, OfferedCount: offered}
 		if person.AvatarFaceID != nil {
 			audience.AvatarURL = media.AvatarURL(person.ID.String(), *person.AvatarFaceID, person.AvatarVersion)
 		}

@@ -16,6 +16,9 @@ type ViewerUseCases interface {
 	ViewAlbum(ctx context.Context, actorID, previewPersonID, albumID string) (ViewerAlbum, error)
 	ViewAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
 	ViewEntries(ctx context.Context, actorID, previewPersonID, albumID, kind string, page EntryPageRequest) (ViewerPage, error)
+	ViewMoreAlbums(ctx context.Context, actorID string) ([]ViewerAlbum, error)
+	ViewOfferedAlbum(ctx context.Context, actorID, albumID string) (ViewerAlbum, error)
+	ViewOfferedEntries(ctx context.Context, actorID, albumID, kind string, page EntryPageRequest) (ViewerPage, error)
 }
 
 type viewerHandlers struct{ module ViewerUseCases }
@@ -30,6 +33,21 @@ func (h *viewerHandlers) album(c *echo.Context) error {
 }
 func (h *viewerHandlers) albums(c *echo.Context) error {
 	result, err := h.module.ViewAlbums(c.Request().Context(), actorID(c))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) moreAlbums(c *echo.Context) error {
+	result, err := h.module.ViewMoreAlbums(c.Request().Context(), actorID(c))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) offeredAlbum(c *echo.Context) error {
+	result, err := h.module.ViewOfferedAlbum(c.Request().Context(), actorID(c), c.Param("id"))
+	return respond(c, result, err)
+}
+func (h *viewerHandlers) offeredPhotos(c *echo.Context) error { return h.offeredEntries(c, "IMAGE") }
+func (h *viewerHandlers) offeredVideos(c *echo.Context) error { return h.offeredEntries(c, "VIDEO") }
+func (h *viewerHandlers) offeredEntries(c *echo.Context, kind string) error {
+	page := EntryPageRequest{Cursor: c.QueryParam("cursor"), From: c.QueryParam("from"), To: c.QueryParam("to")}
+	result, err := h.module.ViewOfferedEntries(c.Request().Context(), actorID(c), c.Param("id"), kind, page)
 	return respond(c, result, err)
 }
 func (h *viewerHandlers) library(c *echo.Context) error {
@@ -193,9 +211,15 @@ type AccessUseCases interface {
 	SaveEntryRules(context.Context, string, string, SaveRulesRequest) (AlbumDetail, error)
 	PreviewRemoveAccess(context.Context, string, RemoveAccessPreviewRequest) (RemoveAccessPreview, error)
 	RemoveAccess(context.Context, string, RemoveAccessRequest) (AlbumDetail, error)
+	ListCircleOffers(context.Context) ([]CircleOffers, error)
 }
 
 type accessHandlers struct{ module AccessUseCases }
+
+func (h *accessHandlers) circleOffers(c *echo.Context) error {
+	result, err := h.module.ListCircleOffers(c.Request().Context())
+	return respond(c, result, err)
+}
 
 func (h *accessHandlers) previewAlbumAccess(c *echo.Context) error {
 	var request SaveAlbumAccessRequest

@@ -180,6 +180,7 @@ const completeAlbum: AlbumDetail = {
   photo_count: 1,
   video_count: 1,
   access: [],
+  circles: [],
   excluded: [],
   moments: [
     {
@@ -718,6 +719,8 @@ it("reviews visibility before saving Album access and removes only the Album all
             display_name: "Alex",
             gained_entry_ids: [],
             lost_entry_ids: ["photo"],
+            offered_gained_entry_ids: [],
+            offered_lost_entry_ids: [],
           },
         ],
       });
@@ -771,16 +774,16 @@ it("reviews visibility before saving Album access and removes only the Album all
   expect(checkbox).not.toBeChecked();
   const review = screen.getByRole("region", { name: "Visibility review" });
   expect(await within(review).findByText("Alex")).toBeVisible();
-  expect(within(review).getByText("loses 1")).toBeVisible();
+  expect(within(review).getByText("loses 1 item")).toBeVisible();
   expect(posts.at(-1)).toEqual({
     path: "/api/curator/albums/album-1/access/preview",
-    body: { people: [{ person_id: "alex", allowed: false }] },
+    body: { people: [{ person_id: "alex", allowed: false }], circles: [] },
   });
   await user.click(save);
   await waitFor(() =>
     expect(posts.at(-1)).toEqual({
       path: "/api/curator/albums/album-1/access",
-      body: { people: [{ person_id: "alex", allowed: false }] },
+      body: { people: [{ person_id: "alex", allowed: false }], circles: [] },
     }),
   );
   expect(await screen.findByText("Album access saved.")).toBeVisible();
@@ -788,6 +791,105 @@ it("reviews visibility before saving Album access and removes only the Album all
     screen.getByText("0 of 2 items accessible now, 1 exception"),
   ).toBeVisible();
   expect(checkbox).not.toBeChecked();
+});
+
+it("offers the Album to a Circle and previews what its members are offered", async () => {
+  desktopViewport();
+  const extended = {
+    circle_id: "extended",
+    name: "Extended family",
+    offered: false,
+    member_count: 4,
+  };
+  let current: AlbumDetail = {
+    ...completeAlbum,
+    circles: [
+      {
+        circle_id: "college",
+        name: "College friends",
+        offered: false,
+        member_count: 1,
+      },
+      extended,
+    ],
+  };
+  const posts: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (path.endsWith("/access/preview")) {
+      posts.push({ path, body: JSON.parse(String(options?.body)) });
+      return Response.json({
+        changes: [
+          {
+            person_id: "grandma",
+            display_name: "Grandma",
+            gained_entry_ids: [],
+            lost_entry_ids: [],
+            offered_gained_entry_ids: ["photo", "clip"],
+            offered_lost_entry_ids: [],
+          },
+        ],
+      });
+    }
+    if (path.endsWith("/access")) {
+      posts.push({ path, body: JSON.parse(String(options?.body)) });
+      current = {
+        ...current,
+        ready: true,
+        circles: [current.circles[0], { ...extended, offered: true }],
+      };
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const circles = await screen.findByRole("region", { name: "Circles 2" });
+  expect(within(circles).getByText("4 people")).toBeVisible();
+  const offer = within(circles).getByRole("checkbox", {
+    name: "Offer to Extended family",
+  });
+  expect(offer).not.toBeChecked();
+  await user.click(offer);
+  const review = screen.getByRole("region", { name: "Visibility review" });
+  expect(await within(review).findByText("is offered 2 items")).toBeVisible();
+  expect(posts.at(-1)).toEqual({
+    path: "/api/curator/albums/album-1/access/preview",
+    body: { people: [], circles: [{ circle_id: "extended", offered: true }] },
+  });
+  await user.click(screen.getByRole("button", { name: "Save Album access" }));
+  expect(await screen.findByText("Album access saved.")).toBeVisible();
+  expect(posts.at(-1)).toEqual({
+    path: "/api/curator/albums/album-1/access",
+    body: { people: [], circles: [{ circle_id: "extended", offered: true }] },
+  });
+  expect(offer).toBeChecked();
+  await user.click(offer);
+  expect(posts.at(-1)).toEqual({
+    path: "/api/curator/albums/album-1/access/preview",
+    body: { people: [], circles: [{ circle_id: "extended", offered: false }] },
+  });
+  expect(
+    screen.getByRole("button", { name: "Save Album access" }),
+  ).toBeEnabled();
+});
+
+it("points to the Circles page when there are no Circles to offer to", async () => {
+  desktopViewport();
+  mockAPI(() => Response.json(completeAlbum));
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  render(<App />);
+  const circles = await screen.findByRole("region", { name: "Circles 0" });
+  expect(
+    within(circles).getByRole("link", { name: "Create one" }),
+  ).toHaveAttribute("href", "/curator/circles");
 });
 
 it("keeps a Moment access draft after a failed save and shows the error", async () => {
@@ -865,6 +967,7 @@ it("reviews publication counts and warnings before explicitly publishing without
             display_name: "Alex",
             avatar_url: "",
             accessible_count: 1,
+            offered_count: 0,
           },
         ],
         blockers: [],
@@ -1074,6 +1177,8 @@ it("reviews every scope before confirming removal of all a person's access", asy
             display_name: "Alex",
             gained_entry_ids: [],
             lost_entry_ids: ["photo"],
+            offered_gained_entry_ids: [],
+            offered_lost_entry_ids: [],
           },
         ],
         review_token: "reviewed-removal",
@@ -1117,7 +1222,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
     name: "Visibility review",
   });
   expect(await within(visibility).findByText("Alex")).toBeVisible();
-  expect(within(visibility).getByText("loses 1")).toBeVisible();
+  expect(within(visibility).getByText("loses 1 item")).toBeVisible();
   expect(removed).toBeUndefined();
   await user.click(
     within(review).getByRole("button", { name: "Remove all access" }),
@@ -1161,6 +1266,8 @@ it("lists a deactivated person's frozen rules and removes them without offering 
             display_name: "Alex",
             gained_entry_ids: [],
             lost_entry_ids: ["photo"],
+            offered_gained_entry_ids: [],
+            offered_lost_entry_ids: [],
           },
         ],
         review_token: "reviewed-removal",

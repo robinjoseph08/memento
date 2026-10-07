@@ -145,6 +145,7 @@ it("distinguishes unpublished, ready, published, and failed cards with a direct 
         status: "queued",
         moments: [],
         access: [],
+        circles: [],
         excluded: [],
       });
     }
@@ -192,6 +193,7 @@ it.each([
       video_count: 0,
       cover_url: "",
       access: [],
+      circles: [],
       excluded: [],
       moments: [
         {

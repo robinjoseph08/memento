@@ -32,6 +32,10 @@ func (f *accessUseCases) PreviewAlbumAccess(_ context.Context, album string, r p
 	return publishing.AlbumAccessPreview{Changes: []publishing.AudienceChange{{PersonID: r.People[0].PersonID, DisplayName: "Alex", GainedEntryIDs: []string{"one"}, LostEntryIDs: []string{}}}}, f.failure
 }
 
+func (f *accessUseCases) ListCircleOffers(context.Context) ([]publishing.CircleOffers, error) {
+	return []publishing.CircleOffers{{CircleID: "extended", Albums: []publishing.OfferedAlbum{{ID: "album", Title: "Reunion"}}}}, nil
+}
+
 func TestAccessHTTPGuardsAllMutationsAndReturnsStructuredErrors(t *testing.T) {
 	t.Parallel()
 	module := &accessUseCases{}
@@ -60,7 +64,14 @@ func TestAccessHTTPGuardsAllMutationsAndReturnsStructuredErrors(t *testing.T) {
 	for _, path := range []string{"/access/preview", "/access", "/access/remove-all/preview", "/access/remove-all", "/moments/moment/rules", "/entries/entry/rules"} {
 		assert.Equal(t, 403, post(path, `{}`).Code, path)
 	}
+	offers := httptest.NewRecorder()
+	e.ServeHTTP(offers, httptest.NewRequest(http.MethodGet, "/api/curator/circles/offers", nil))
+	assert.Equal(t, 403, offers.Code)
 	curator = true
+	offers = httptest.NewRecorder()
+	e.ServeHTTP(offers, httptest.NewRequest(http.MethodGet, "/api/curator/circles/offers", nil))
+	assert.Equal(t, 200, offers.Code)
+	assert.JSONEq(t, `[{"circle_id":"extended","albums":[{"id":"album","title":"Reunion"}]}]`, offers.Body.String())
 	invalid := post("/access", `{"people":[{"person_id":"bad","allowed":true}]}`)
 	assert.Equal(t, 422, invalid.Code)
 	assert.Contains(t, invalid.Body.String(), `"fields"`)
@@ -77,6 +88,9 @@ func TestAccessHTTPGuardsAllMutationsAndReturnsStructuredErrors(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `"accessible_count":2`)
 	assert.Contains(t, response.Body.String(), `"exceptions":1`)
 	assert.NotContains(t, response.Body.String(), `"undo"`)
+	offer := post("/access/preview", `{"people":[],"circles":[{"circle_id":"bad","offered":true}]}`)
+	assert.Equal(t, 422, offer.Code)
+	assert.Contains(t, offer.Body.String(), "Choose existing Circles.")
 	module.failure = errcodes.ValidationFields("Check the highlighted fields.", map[string]string{"people": "Choose an active Person."})
 	rejected := post("/access", body)
 	assert.Equal(t, 422, rejected.Code)

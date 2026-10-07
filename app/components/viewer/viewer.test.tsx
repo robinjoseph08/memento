@@ -156,6 +156,115 @@ it("lists only the authorized projection with a cover, date range, and separate 
   expect(document.title).toBe("Albums | Memento");
 });
 
+const reunion: ViewerAlbum = {
+  ...album,
+  id: "reunion",
+  title: "Family reunion",
+  description: "",
+  photo_count: 3,
+  cover_url: "/media/reunion/cover/thumb?person=jamie",
+};
+
+it("lists offered Albums under More albums and opens their preview", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums") return Response.json([album]);
+    if (path === "/api/albums/more") return Response.json([reunion]);
+    if (path === "/api/albums/reunion/preview") return Response.json(reunion);
+    if (path === "/api/albums/reunion/preview/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums");
+  const user = userEvent.setup();
+  render(<App />);
+  const more = await screen.findByRole("region", { name: "More albums" });
+  expect(more).toHaveTextContent(
+    "You may not be in these albums, but you might enjoy looking through them.",
+  );
+  const card = within(more).getByRole("link", { name: /Family reunion/ });
+  expect(card).toHaveAttribute("href", "/albums/reunion/preview/photos");
+  expect(card).toHaveTextContent("3 photos, 0 videos");
+  expect(
+    screen.getByRole("link", { name: /A weekend by the lake/ }),
+  ).not.toHaveAttribute("href", "/albums/lake/preview/photos");
+  await user.click(card);
+  expect(
+    await screen.findByRole("heading", { name: "Family reunion" }),
+  ).toBeVisible();
+  expect(
+    await screen.findByRole("img", {
+      name: "Photo taken June 14, 2025 at 12:15 AM",
+    }),
+  ).toHaveAttribute("src", photo.preview_url);
+  expect(
+    screen.getByRole("navigation", { name: "Album media" }),
+  ).toContainElement(screen.getByRole("link", { name: "Videos 0" }));
+  expect(screen.getByRole("link", { name: "Videos 0" })).toHaveAttribute(
+    "href",
+    "/albums/reunion/preview/videos",
+  );
+});
+
+it("opens the preview from a direct link to an Album offered to the viewer", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/reunion")
+      return Response.json(
+        { error: { code: "not_found", message: "Album not found." } },
+        { status: 404 },
+      );
+    if (path === "/api/albums/reunion/preview") return Response.json(reunion);
+    if (path === "/api/albums/reunion/preview/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/photos/photo-1");
+  render(<App />);
+  // The photo in the link stays open in the preview's lightbox.
+  expect(await screen.findByRole("dialog")).toBeVisible();
+  expect(window.location.pathname).toBe(
+    "/albums/reunion/preview/photos/photo-1",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Request access" }),
+  ).not.toBeInTheDocument();
+});
+
+it("opens a viewer's own Album from a preview link when nothing is offered to them", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/reunion/preview")
+      return Response.json(
+        { error: { code: "not_found", message: "Album not found." } },
+        { status: 404 },
+      );
+    if (path === "/api/albums/reunion") return Response.json(reunion);
+    if (path === "/api/albums/reunion/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/preview/photos");
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { name: "Family reunion" }),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/reunion/photos");
+});
+
+it("keeps the empty state for a viewer with no Albums of any kind", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums" || path === "/api/albums/more")
+      return Response.json([]);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums");
+  render(<App />);
+  expect(
+    await screen.findByRole("heading", { name: "No albums yet" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("region", { name: "More albums" }),
+  ).not.toBeInTheDocument();
+});
+
 it("paginates photos independently and keeps a truthful zero-count video tab", async () => {
   mockViewer((path) => {
     if (path === "/api/albums/lake") return Response.json(album);

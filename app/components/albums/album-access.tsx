@@ -1,4 +1,5 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 import {
   usePreviewAlbumAccess,
@@ -12,6 +13,7 @@ import { fieldErrors } from "../../lib/http";
 import { cn } from "../../lib/utils";
 import type {
   AccessPerson,
+  AlbumCircle,
   AlbumDetail,
   AudienceChange,
 } from "../../types/generated/publishing";
@@ -23,6 +25,7 @@ import {
   DialogDescription,
   DialogTitle,
 } from "../ui/dialog";
+import { audienceSummary } from "./access-labels";
 import { countLabel } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
 
@@ -54,15 +57,7 @@ export function VisibilityReview({
           {changes.map((change) => (
             <p className="py-1 text-sm" key={change.person_id}>
               <strong>{change.display_name}</strong>{" "}
-              <span className="text-muted">
-                {change.gained_entry_ids.length > 0 &&
-                  `gains ${change.gained_entry_ids.length}`}
-                {change.gained_entry_ids.length > 0 &&
-                  change.lost_entry_ids.length > 0 &&
-                  ", "}
-                {change.lost_entry_ids.length > 0 &&
-                  `loses ${change.lost_entry_ids.length}`}
-              </span>
+              <span className="text-muted">{audienceSummary(change)}</span>
             </p>
           ))}
         </div>
@@ -77,12 +72,14 @@ export function VisibilityReview({
   );
 }
 
-// Album-wide allows with an explicit Save. Each change previews who gains or
-// loses media before anything is written. People are grouped by how much of
-// the Album recognized them, since someone in every Moment usually belongs
-// here while someone in a few Moments is better served by Moment access.
+// Album-wide allows and Circle Offers with an explicit Save. Each change
+// previews who gains or loses media before anything is written. People are
+// grouped by how much of the Album recognized them, since someone in every
+// Moment usually belongs here while someone in a few Moments is better served
+// by Moment access.
 export function AlbumAccess({ album }: { album: AlbumDetail }) {
   const [draft, setDraft] = useState<Record<string, boolean>>({});
+  const [offers, setOffers] = useState<Record<string, boolean>>({});
   const review = usePreviewAlbumAccess(album.id);
   const save = useSaveAlbumAccess(album.id);
   const [removing, setRemoving] = useState<string | null>(null);
@@ -95,10 +92,20 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
   const changed = active.filter(
     (person) => (person.decision === "allow") !== allowed(person.person_id),
   );
-  const dirty = save.isPending || changed.length > 0;
+  const offered = (circle: AlbumCircle) =>
+    offers[circle.circle_id] ?? circle.offered;
+  const changedCircles = album.circles.filter(
+    (circle) => circle.offered !== offered(circle),
+  );
+  const dirty =
+    save.isPending || changed.length > 0 || changedCircles.length > 0;
   useUnsavedChanges(dirty, true);
   const saveErrors = fieldErrors(save.error);
-  const saveError = saveErrors.people ?? saveErrors.person_id;
+  const saveError =
+    saveErrors.people ??
+    saveErrors.person_id ??
+    saveErrors.circles ??
+    saveErrors.circle_id;
   const errorId = useId();
   const totalMoments = album.moments.length;
   const everywhere = active.filter(
@@ -109,13 +116,21 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
       person.moments_detected > 0 && person.moments_detected < totalMoments,
   );
   const nowhere = active.filter((person) => person.moments_detected === 0);
-  function change(next: Record<string, boolean>) {
+  function change(
+    next: Record<string, boolean>,
+    nextOffers: Record<string, boolean> = offers,
+  ) {
     setDraft(next);
+    setOffers(nextOffers);
     save.reset();
-    if (payload(next).people.length > 0) review.mutate(payload(next));
+    const body = payload(next, nextOffers);
+    if (body.people.length + body.circles.length > 0) review.mutate(body);
     else review.reset();
   }
-  const payload = (next: Record<string, boolean>) => ({
+  const payload = (
+    next: Record<string, boolean>,
+    nextOffers: Record<string, boolean>,
+  ) => ({
     people: active
       .filter(
         (person) =>
@@ -125,6 +140,16 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
       .map((person) => ({
         person_id: person.person_id,
         allowed: next[person.person_id],
+      })),
+    circles: album.circles
+      .filter(
+        (circle) =>
+          circle.circle_id in nextOffers &&
+          nextOffers[circle.circle_id] !== circle.offered,
+      )
+      .map((circle) => ({
+        circle_id: circle.circle_id,
+        offered: nextOffers[circle.circle_id],
       })),
   });
   const total = album.moments.reduce(
@@ -192,10 +217,11 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
         error={save.error}
         onSubmit={(event) => {
           event.preventDefault();
-          if (save.isPending || changed.length === 0) return;
-          save.mutate(payload(draft), {
+          if (save.isPending || !dirty) return;
+          save.mutate(payload(draft, offers), {
             onSuccess: () => {
               setDraft({});
+              setOffers({});
               review.reset();
             },
           });
@@ -204,7 +230,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
         <fieldset
           aria-describedby={saveError ? errorId : undefined}
           aria-invalid={!!saveError}
-          className="space-y-6"
+          className="min-w-0 space-y-6"
           disabled={save.isPending}
         >
           {active.length > 0 && (
@@ -265,6 +291,60 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
               No active viewers to grant access to.
             </p>
           )}
+          <section aria-labelledby="access-circles">
+            <h3 className="text-sm font-medium" id="access-circles">
+              Circles{" "}
+              <span className="ml-1 text-xs font-normal text-muted">
+                {album.circles.length}
+              </span>
+            </h3>
+            <p className="mt-1 text-xs text-muted">
+              Offer the album to a Circle. Its members can browse it under More
+              albums. Access chosen for a person above always comes first.
+            </p>
+            <div className="mt-2">
+              {album.circles.length > 0 ? (
+                album.circles.map((circle) => (
+                  <label
+                    className="flex cursor-pointer items-center gap-3 border-t border-border py-3 text-sm"
+                    key={circle.circle_id}
+                  >
+                    <input
+                      aria-label={`Offer to ${circle.name}`}
+                      checked={offered(circle)}
+                      className="size-4 cursor-pointer accent-primary"
+                      onChange={(event) =>
+                        change(draft, {
+                          ...offers,
+                          [circle.circle_id]: event.target.checked,
+                        })
+                      }
+                      type="checkbox"
+                    />
+                    <span className="min-w-0">
+                      <strong className="block truncate font-medium">
+                        {circle.name}
+                      </strong>
+                      <small className="block text-xs text-muted">
+                        {countLabel(circle.member_count, "person", "people")}
+                      </small>
+                    </span>
+                  </label>
+                ))
+              ) : (
+                <p className="border-t border-border py-3 text-xs text-muted">
+                  No Circles yet.{" "}
+                  <Link
+                    className="text-accent-foreground underline-offset-4 hover:underline"
+                    to="/curator/circles"
+                  >
+                    Create one
+                  </Link>{" "}
+                  to offer this album to a group of people.
+                </p>
+              )}
+            </div>
+          </section>
           {frozen.length > 0 && (
             <details>
               <summary className="-mx-2 cursor-pointer rounded-sm px-2 py-2 text-xs text-accent-foreground hover:bg-surface">

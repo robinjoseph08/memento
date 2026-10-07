@@ -12,11 +12,15 @@ const (
 )
 
 // AudienceChange describes the Album Entries whose effective access changes.
+// Gained and lost entries are granted directly; the offered lists are what
+// the Person's Circles are offered beyond that.
 type AudienceChange struct {
-	PersonID       string   `json:"person_id"`
-	DisplayName    string   `json:"display_name"`
-	GainedEntryIDs []string `json:"gained_entry_ids"`
-	LostEntryIDs   []string `json:"lost_entry_ids"`
+	PersonID              string   `json:"person_id"`
+	DisplayName           string   `json:"display_name"`
+	GainedEntryIDs        []string `json:"gained_entry_ids"`
+	LostEntryIDs          []string `json:"lost_entry_ids"`
+	OfferedGainedEntryIDs []string `json:"offered_gained_entry_ids"`
+	OfferedLostEntryIDs   []string `json:"offered_lost_entry_ids"`
 }
 
 // ViewerLibrary counts each accessible media item once across Albums.
@@ -99,11 +103,14 @@ type ViewerPage struct {
 	NextCursor string        `json:"next_cursor"`
 }
 
+// PublicationAudience is one Person publication reaches. AccessibleCount is
+// granted directly and OfferedCount is offered to their Circles beyond that.
 type PublicationAudience struct {
 	PersonID        string `json:"person_id"`
 	DisplayName     string `json:"display_name"`
 	AvatarURL       string `json:"avatar_url"`
 	AccessibleCount int    `json:"accessible_count"`
+	OfferedCount    int    `json:"offered_count"`
 }
 
 // PublicationReview lists what publication would expose and why it may wait.
@@ -175,7 +182,17 @@ type AlbumDetail struct {
 	Album    `tstype:",extends"`
 	Moments  []Moment        `json:"moments"`
 	Access   []AccessPerson  `json:"access"`
+	Circles  []AlbumCircle   `json:"circles"`
 	Excluded []ExcludedEntry `json:"excluded"`
+}
+
+// AlbumCircle is one Circle and whether the Album is offered to it.
+// MemberCount counts its active viewers. Circles are Curator-only.
+type AlbumCircle struct {
+	CircleID    string `json:"circle_id"`
+	Name        string `json:"name"`
+	Offered     bool   `json:"offered"`
+	MemberCount int    `json:"member_count"`
 }
 
 // ExcludedEntry is media the Curator keeps out of this Album while it stays
@@ -349,8 +366,28 @@ type AlbumAccessChoice struct {
 	Allowed  bool   `json:"allowed"`
 }
 
+// CircleOffers lists the Albums one Circle is offered, by title, so a
+// Curator knows what deleting the Circle withdraws.
+type CircleOffers struct {
+	CircleID string         `json:"circle_id"`
+	Albums   []OfferedAlbum `json:"albums"`
+}
+
+type OfferedAlbum struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+// AlbumOfferChoice offers the Album to a Circle or withdraws the Offer.
+type AlbumOfferChoice struct {
+	CircleID string `json:"circle_id" validate:"required,uuid"`
+	Offered  bool   `json:"offered"`
+}
+
+// SaveAlbumAccessRequest changes only the Album-wide allows and Offers it names.
 type SaveAlbumAccessRequest struct {
-	People []AlbumAccessChoice `json:"people" validate:"required,dive"`
+	People  []AlbumAccessChoice `json:"people" validate:"required,dive"`
+	Circles []AlbumOfferChoice  `json:"circles" validate:"dive"`
 }
 
 type AlbumAccessPreview struct {

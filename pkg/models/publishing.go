@@ -128,6 +128,15 @@ type MomentAccessDecision struct {
 	UpdatedAt     time.Time
 }
 
+// AlbumOffer makes a whole Album available to one Circle while the Album is
+// published. Person decisions still outrank it.
+type AlbumOffer struct {
+	bun.BaseModel `bun:"table:album_offers,alias:offer"`
+	AlbumID       UUID `bun:"album_id,pk,type:uuid"`
+	CircleID      UUID `bun:"circle_id,pk,type:uuid"`
+	CreatedAt     time.Time
+}
+
 type MediaFaceAssociation struct {
 	bun.BaseModel `bun:"table:media_face_associations,alias:face"`
 	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`
