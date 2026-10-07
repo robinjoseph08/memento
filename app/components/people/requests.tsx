@@ -160,8 +160,10 @@ function RequestRow({ request }: { request: AccessRequest }) {
             </p>
           )}
           <p className="mt-2 text-xs text-muted">
-            First {formatDate(request.created_at)} · Last{" "}
-            {formatDate(request.updated_at)} · {history}
+            {count === 1
+              ? formatDate(request.created_at)
+              : `First ${formatDate(request.created_at)} · Last ${formatDate(request.updated_at)}`}{" "}
+            · {history}
           </p>
           {request.status === "denied" && (
             <p className="mt-2 text-xs text-muted">

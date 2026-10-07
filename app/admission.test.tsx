@@ -235,6 +235,45 @@ it("shows pending Access Requests with a badge and approves one by creating a Pe
   ).not.toBeInTheDocument();
 });
 
+it("shows one timestamp for a request made once", async () => {
+  const request = {
+    id: "request-1",
+    kind: "join",
+    email: "stranger@example.test",
+    display_name: "Stranger",
+    person_id: "",
+    person_name: "",
+    album_id: "",
+    album_title: "",
+    status: "pending",
+    sign_in_count: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    resolved_at: null,
+    resolved_by: "",
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: curator,
+          sign_in_methods: ["fake"],
+        });
+      if (path === "/api/access-requests") return Response.json([request]);
+      if (path.startsWith("/api/people?")) return Response.json([]);
+      if (path === "/api/circles") return Response.json([]);
+      throw new Error(`Unexpected request: ${path}`);
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/requests");
+  render(<App />);
+  const date = new Date(request.created_at).toLocaleString();
+  expect(await screen.findByText(`${date} · 1 sign-in`)).toBeVisible();
+  expect(screen.queryByText(/First/)).not.toBeInTheDocument();
+});
+
 it("offers an explicit Request access action on an inaccessible Album", async () => {
   const person = { ...member, onboarding_completed_at: "2026-01-01T00:00:00Z" };
   let requested = 0;
