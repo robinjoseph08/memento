@@ -75,11 +75,30 @@ func firstAvailablePort(preferred int) (int, error) {
 	return 0, fmt.Errorf("no available port at or above %d", preferred)
 }
 
+// portAvailable reports whether nothing listens on the port on any loopback
+// or wildcard address. Probing only 127.0.0.1 misses another project's server
+// on 0.0.0.0 or ::, which Vite's dual-stack bind then collides with.
 func portAvailable(port int) bool {
-	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
-	if err != nil {
-		return false
+	probes := []struct{ network, host string }{
+		{"tcp4", "127.0.0.1"},
+		{"tcp4", "0.0.0.0"},
+		{"tcp6", "::1"},
+		{"tcp6", "::"},
 	}
-	_ = listener.Close()
+	for _, probe := range probes {
+		listener, err := net.Listen(probe.network, net.JoinHostPort(probe.host, strconv.Itoa(port)))
+		if err != nil {
+			// A machine without IPv6 can't refuse the port over it.
+			if probe.network == "tcp6" && isAddressUnavailable(err) {
+				continue
+			}
+			return false
+		}
+		_ = listener.Close()
+	}
 	return true
+}
+
+func isAddressUnavailable(err error) bool {
+	return errors.Is(err, syscall.EADDRNOTAVAIL) || errors.Is(err, syscall.EAFNOSUPPORT)
 }
