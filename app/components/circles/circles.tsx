@@ -15,6 +15,7 @@ import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type { Circle } from "../../types/generated/identity";
 import type { OfferedAlbum } from "../../types/generated/publishing";
+import { countLabel } from "../albums/moment-labels";
 import { PersonAvatar } from "../albums/person-avatar";
 import { ConfirmAction } from "../forms/confirm-action";
 import { ConfirmDialog } from "../forms/confirm-dialog";
@@ -81,9 +82,12 @@ export function CirclesPage() {
                 circle={circle}
                 key={circle.id}
                 offered={
-                  offers.data?.find((offer) => offer.circle_id === circle.id)
-                    ?.albums ?? []
+                  offers.data &&
+                  (offers.data.find((offer) => offer.circle_id === circle.id)
+                    ?.albums ??
+                    [])
                 }
+                offersPending={offers.isPending}
               />
             ))}
           </ul>
@@ -101,30 +105,33 @@ export function CirclesPage() {
 const namedAlbums = 3;
 
 // What deleting a Circle takes away. Its Offers go with it, so the warning
-// names the Albums its members could browse through it.
-function deleteDescription(offered: OfferedAlbum[]) {
+// names the Albums it is offered. Unknown Offers, when they failed to load,
+// get a warning that promises nothing either way.
+function deleteDescription(offered: OfferedAlbum[] | undefined) {
   const kept = "The people in it stay in Memento.";
+  if (!offered)
+    return `Deleting it also withdraws anything offered to it. ${kept}`;
   if (offered.length === 0)
     return `${kept} They're only taken out of this Circle.`;
   const titles = offered
     .slice(0, namedAlbums)
     .map((album) => `“${album.title}”`);
   const rest = offered.length - titles.length;
-  if (rest > 0)
-    titles.push(rest === 1 ? "1 more album" : `${rest} more albums`);
-  const list =
-    titles.length === 1
-      ? titles[0]
-      : `${titles.slice(0, -1).join(", ")}${titles.length > 2 ? "," : ""} and ${titles.at(-1)}`;
-  return `Deleting it withdraws its Offers of ${list}, so its members can't browse them anymore unless they have access another way. ${kept}`;
+  if (rest > 0) titles.push(countLabel(rest, "more album", "more albums"));
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(
+    titles,
+  );
+  return `Deleting it withdraws its Offers of ${list}, so its members can't browse them through this Circle. ${kept}`;
 }
 
 function CircleRow({
   circle,
   offered,
+  offersPending,
 }: {
   circle: Circle;
-  offered: OfferedAlbum[];
+  offered?: OfferedAlbum[];
+  offersPending: boolean;
 }) {
   const [editing, setEditing] = useState<"members" | "name" | null>(null);
   const remove = useDeleteCircle(circle.id);
@@ -173,6 +180,7 @@ function CircleRow({
             confirmLabel="Delete"
             description={deleteDescription(offered)}
             destructive="deletes"
+            disabled={offersPending}
             error={remove.error}
             icon={Trash2}
             label={`Delete ${circle.name}`}

@@ -22,7 +22,7 @@ func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, re
 	e.GET("/api/curator/albums/:id/preview/:personID/videos", h.videos, requireCurator)
 }
 
-// RegisterAccessRoutes keeps every access mutation behind the Curator guard.
+// RegisterAccessRoutes keeps every access operation behind the Curator guard.
 func RegisterAccessRoutes(e *echo.Echo, module AccessUseCases, requireCurator echo.MiddlewareFunc) {
 	h := &accessHandlers{module: module}
 	e.GET("/api/curator/circles/offers", h.circleOffers, requireCurator)

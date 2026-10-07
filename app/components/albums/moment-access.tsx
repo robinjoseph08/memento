@@ -186,7 +186,7 @@ export function MomentAccessStrip({
         <fieldset
           aria-describedby={errors.decisions ? errorId : undefined}
           aria-invalid={!!errors.decisions}
-          className="grid gap-x-8 gap-y-5 min-[1000px]:grid-cols-2"
+          className="grid min-w-0 gap-x-8 gap-y-5 min-[1000px]:grid-cols-2"
           disabled={save.isPending}
         >
           <AccessGroup

@@ -204,7 +204,7 @@ export function RulesDialog({
               );
             }}
           >
-            <fieldset disabled={save.isPending}>
+            <fieldset className="min-w-0" disabled={save.isPending}>
               {people.map((person) => (
                 <RuleRow
                   describedBy={errors.decisions ? errorId : undefined}

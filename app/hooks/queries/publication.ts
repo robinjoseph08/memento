@@ -67,6 +67,7 @@ export function useDeleteAlbum(albumID: string) {
         client.invalidateQueries({ queryKey: [...scope, "albums"] }),
         client.invalidateQueries({ queryKey: [...scope, "sources"] }),
         client.invalidateQueries({ queryKey: [...scope, "viewer"] }),
+        client.invalidateQueries({ queryKey: [...scope, "circles", "offers"] }),
       ]);
     },
   });

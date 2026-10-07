@@ -20,7 +20,7 @@ export function useCircles() {
 }
 
 // The Albums each Circle is offered. The key sits under "circles", so every
-// Circle change refreshes it too.
+// Circle change refreshes it, and Album saves and deletions refresh it too.
 export function useCircleOffers() {
   const scope = usePrivateScope();
   return useQuery({
