@@ -7,7 +7,6 @@ import (
 	"net"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -252,22 +251,35 @@ func TestStartUsesPortsSelectedAtRuntime(t *testing.T) {
 	assert.Equal(t, 5174, processes.webPort)
 }
 
-func TestPortAllocatorSkipsAnOccupiedPort(t *testing.T) {
+func TestPortAllocatorSkipsAPortHeldByAnotherProject(t *testing.T) {
 	t.Parallel()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, listener.Close()) })
-	_, portText, err := net.SplitHostPort(listener.Addr().String())
-	require.NoError(t, err)
-	occupiedPort, err := strconv.Atoi(portText)
-	require.NoError(t, err)
+	// Another project's dev server may hold the port on any of these. tcp4
+	// and tcp6 keep each holder to one address family, since "tcp" on
+	// 0.0.0.0 opens a dual-stack socket and would hide an IPv4-only holder.
+	// One bound to only ::1 matters too: the browser resolves localhost to
+	// ::1 first, so it would load that project instead of ours.
+	holders := []struct{ network, host string }{
+		{"tcp4", "127.0.0.1"},
+		{"tcp4", "0.0.0.0"},
+		{"tcp6", "::1"},
+		{"tcp6", "::"},
+	}
+	for _, holder := range holders {
+		listener, err := (&net.ListenConfig{}).Listen(t.Context(), holder.network, net.JoinHostPort(holder.host, "0"))
+		if err != nil {
+			t.Logf("skipping %s %s: %v", holder.network, holder.host, err)
+			continue
+		}
+		occupied := listener.Addr().(*net.TCPAddr).Port
 
-	allocator := &FilePortAllocator{LockRoot: t.TempDir()}
-	lease, err := allocator.Acquire(occupiedPort)
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, lease.Close()) })
-	assert.Greater(t, lease.Port(), occupiedPort)
+		lease, err := (&FilePortAllocator{LockRoot: t.TempDir()}).Acquire(occupied)
+		require.NoError(t, err)
+		assert.NotEqual(t, occupied, lease.Port(), "port held on %s %s", holder.network, holder.host)
+
+		require.NoError(t, lease.Close())
+		require.NoError(t, listener.Close())
+	}
 }
 
 func TestPostgresPortConflictsAreRecognized(t *testing.T) {
