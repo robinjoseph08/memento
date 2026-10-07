@@ -178,6 +178,9 @@ it("lists offered Albums under More albums and opens their preview", async () =>
   const user = userEvent.setup();
   render(<App />);
   const more = await screen.findByRole("region", { name: "More albums" });
+  expect(more).toHaveTextContent(
+    "You may not be in these albums, but you might enjoy looking through them.",
+  );
   const card = within(more).getByRole("link", { name: /Family reunion/ });
   expect(card).toHaveAttribute("href", "/albums/reunion/preview/photos");
   expect(card).toHaveTextContent("3 photos, 0 videos");

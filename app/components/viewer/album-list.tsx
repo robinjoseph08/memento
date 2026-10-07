@@ -84,7 +84,8 @@ export function ViewerAlbumList() {
             More albums
           </h2>
           <p className="mt-3 text-sm text-muted">
-            Albums you can browse beyond the ones shared with you.
+            You may not be in these albums, but you might enjoy looking through
+            them.
           </p>
           <AlbumGrid
             albums={more.data}
