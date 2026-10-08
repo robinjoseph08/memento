@@ -191,7 +191,7 @@ const completeAlbum: AlbumDetail = {
       end_date: "2026-07-01",
       cover_entry_id: "photo",
       cover_position: 0,
-      access: { people: [], faces: [] },
+      access: { people: [], faces: [], circles: [] },
       entries: [
         {
           id: "photo",
@@ -384,6 +384,8 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     person_id: "sam",
@@ -400,13 +402,15 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   let current: AlbumDetail = {
     ...completeAlbum,
     moments: [
       {
         ...completeAlbum.moments[0],
-        access: { people: [alex, sam], faces: [] },
+        access: { people: [alex, sam], faces: [], circles: [] },
       },
       {
         id: "day-2",
@@ -424,7 +428,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
             filename: "Cliffs.jpg",
           },
         ],
-        access: { people: [], faces: [] },
+        access: { people: [], faces: [], circles: [] },
       },
     ],
   };
@@ -514,7 +518,10 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
   await waitFor(() =>
     expect(requests.at(-1)).toEqual({
       path: "/api/curator/albums/album-1/moments/day-1/rules",
-      body: { decisions: [{ person_id: "sam", decision: "allow" }] },
+      body: {
+        decisions: [{ person_id: "sam", decision: "allow" }],
+        circles: [],
+      },
     }),
   );
   expect(
@@ -557,9 +564,12 @@ it.each([
                 moments_detected: 0,
                 deactivated: false,
                 joined: false,
+                offering_circles: [],
+                joined_count: 0,
               },
             ],
             faces: [],
+            circles: [],
           },
         },
       ],
@@ -590,6 +600,7 @@ it.each([
                   },
                 ],
                 faces: [],
+                circles: [],
               },
             },
           ],
@@ -610,7 +621,7 @@ it.each([
       expect(
         within(
           screen.getByRole("navigation", { name: "Album outline" }),
-        ).getByRole("img", { name: "Allowed: Alex" }),
+        ).getByRole("img", { name: "Can see: Alex" }),
       ).toBeVisible();
     expect(
       screen.getByText(
@@ -627,6 +638,7 @@ it.each([
     await waitFor(() =>
       expect(saved).toEqual({
         decisions: [{ person_id: "alex", decision: expected }],
+        circles: [],
       }),
     );
     const toggled = screen.getByRole("checkbox", {
@@ -652,6 +664,8 @@ it("asks before leaving Album access with an unsaved draft", async () => {
     moments_detected: 1,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -698,6 +712,8 @@ it("reviews visibility before saving Album access and removes only the Album all
     moments_detected: 1,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     ...alex,
@@ -712,6 +728,8 @@ it("reviews visibility before saving Album access and removes only the Album all
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex, sam] };
   const posts: Array<{ path: string; body: unknown }> = [];
@@ -949,6 +967,419 @@ it("points to the Circles page when there are no Circles to offer to", async () 
   ).toHaveAttribute("href", "/curator/circles");
 });
 
+it("offers and withholds a Moment for Circles and names the Offer where access shows", async () => {
+  desktopViewport();
+  const alex = {
+    person_id: "alex",
+    display_name: "Alex",
+    avatar_url: "",
+    decision: "",
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    inherited: false,
+    effective: false,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+    deactivated: false,
+    offering_circles: ["Extended family"],
+    joined_count: 0,
+    joined: false,
+  };
+  const current: AlbumDetail = {
+    ...completeAlbum,
+    moments: [
+      {
+        ...completeAlbum.moments[0],
+        access: {
+          people: [alex],
+          faces: [],
+          circles: [
+            {
+              circle_id: "college",
+              name: "College friends",
+              member_count: 1,
+              decision: "",
+              album_offered: false,
+              offered: false,
+            },
+            {
+              circle_id: "extended",
+              name: "Extended family",
+              member_count: 3,
+              decision: "",
+              album_offered: true,
+              offered: true,
+            },
+          ],
+        },
+      },
+    ],
+  };
+  const posts: unknown[] = [];
+  mockAPI((path, options) => {
+    if (path.endsWith("/moments/day-1/rules"))
+      posts.push(JSON.parse(String(options?.body)));
+    return Response.json(current);
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const outline = await screen.findByRole("navigation", {
+    name: "Album outline",
+  });
+  expect(within(outline).getByText("Offered to Extended family")).toBeVisible();
+  const strip = screen.getByRole("region", { name: "Moment access" });
+  expect(
+    within(strip).getByText(
+      "No one has this Moment directly. It's offered to Extended family.",
+    ),
+  ).toBeVisible();
+  const circles = within(strip).getByRole("region", {
+    name: "Offered to Circles 1",
+  });
+  expect(within(circles).getByText("Album Offer, 3 people")).toBeVisible();
+  await user.click(
+    within(circles).getByRole("checkbox", {
+      name: "Offer this Moment to Extended family",
+    }),
+  );
+  await user.click(
+    within(circles).getByRole("checkbox", {
+      name: "Offer this Moment to College friends",
+    }),
+  );
+  await user.click(
+    within(strip).getByRole("button", { name: "Save Moment access" }),
+  );
+  await waitFor(() =>
+    expect(posts).toEqual([
+      {
+        decisions: [],
+        circles: [
+          { circle_id: "college", decision: "offer" },
+          { circle_id: "extended", decision: "withhold" },
+        ],
+      },
+    ]),
+  );
+
+  await user.click(
+    within(strip).getByRole("button", { name: "Rules & exceptions" }),
+  );
+  const dialog = await screen.findByRole("dialog", {
+    name: "Rules & exceptions",
+  });
+  expect(
+    within(dialog).getByRole("combobox", { name: "Access for Alex" }),
+  ).toHaveTextContent("Inherit: offered to Extended family");
+  expect(
+    within(dialog).getByRole("combobox", { name: "Offer for College friends" }),
+  ).toHaveTextContent("Inherit: not offered");
+  const extended = within(dialog).getByRole("combobox", {
+    name: "Offer for Extended family",
+  });
+  expect(extended).toHaveTextContent("Inherit: Album Offer");
+  await user.click(extended);
+  await user.click(screen.getByRole("option", { name: "Withhold" }));
+  await user.click(within(dialog).getByRole("button", { name: "Save access" }));
+  await waitFor(() =>
+    expect(posts.at(-1)).toEqual({
+      decisions: [],
+      circles: [{ circle_id: "extended", decision: "withhold" }],
+    }),
+  );
+});
+
+it("shows joined People and the Circles a Moment is offered to and withheld from in the outline", async () => {
+  desktopViewport();
+  const circle = {
+    member_count: 2,
+    decision: "",
+    album_offered: false,
+    offered: false,
+  };
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          access: {
+            people: [
+              {
+                person_id: "alex",
+                display_name: "Alex",
+                avatar_url: "",
+                decision: "",
+                detected: false,
+                suggested: false,
+                supporting_entries: 0,
+                inherited: false,
+                effective: false,
+                accessible_count: 0,
+                exceptions: 0,
+                moments_detected: 0,
+                deactivated: false,
+                offering_circles: ["College friends"],
+                joined_count: 2,
+                joined: false,
+              },
+            ],
+            faces: [],
+            circles: [
+              {
+                ...circle,
+                circle_id: "college",
+                name: "College friends",
+                decision: "offer",
+                offered: true,
+              },
+              {
+                ...circle,
+                circle_id: "extended",
+                name: "Extended family",
+                decision: "withhold",
+                album_offered: true,
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  render(<App />);
+  const outline = await screen.findByRole("navigation", {
+    name: "Album outline",
+  });
+  expect(
+    within(outline).getByText(
+      "Offered to College friends, withheld from Extended family",
+    ),
+  ).toBeVisible();
+  expect(
+    within(outline).getByRole("img", { name: "Can see: Alex" }),
+  ).toBeVisible();
+  expect(within(outline).queryByText("No access yet")).not.toBeInTheDocument();
+});
+
+it("asks for a combined Offer when merging Moments offered differently, then shows the merged Moment", async () => {
+  desktopViewport();
+  let current: AlbumDetail = {
+    ...completeAlbum,
+    moments: [
+      completeAlbum.moments[0],
+      {
+        ...completeAlbum.moments[0],
+        id: "day-2",
+        title: "Second day",
+        label: "Second day",
+        cover_entry_id: "second-photo",
+        entries: [
+          { ...completeAlbum.moments[0].entries[0], id: "second-photo" },
+        ],
+      },
+    ],
+  };
+  const posts: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (options?.method !== "POST") return Response.json(current);
+    const body = JSON.parse(String(options.body)) as {
+      resolutions: unknown[];
+      circle_resolutions: unknown[];
+    };
+    posts.push({ path, body });
+    if (path.endsWith("/merge")) {
+      // The merged Moment is not the first one left, so the pane can only
+      // land on it by following the merge.
+      current = {
+        ...current,
+        moments: [
+          { ...current.moments[1], id: "day-0", label: "Arrival", title: "" },
+          current.moments[1],
+        ],
+      };
+      return Response.json(current);
+    }
+    const resolved =
+      body.resolutions.length > 0 && body.circle_resolutions.length > 0;
+    return Response.json({
+      ready: resolved,
+      review_token: resolved ? "token" : "",
+      removes_moment: false,
+      changes: [],
+      conflicts: [
+        {
+          person_id: "alex",
+          display_name: "Alex",
+          source: "allow",
+          target: "inherit",
+        },
+      ],
+      circle_conflicts: [
+        {
+          circle_id: "extended",
+          name: "Extended family",
+          source: "offer",
+          target: "inherit",
+        },
+      ],
+    });
+  });
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Merge" }));
+  const dialog = await screen.findByRole("dialog", { name: "Merge Moments" });
+  await user.click(
+    within(dialog).getByRole("button", { name: "Review merge" }),
+  );
+  expect(
+    await within(dialog).findByText(
+      "These Moments differ. Choose access for every listed Person and Circle.",
+    ),
+  ).toBeVisible();
+  expect(
+    within(dialog).getByRole("combobox", { name: "Extended family" }),
+  ).toHaveTextContent("Offered here, no Moment decision there");
+  await user.click(
+    within(dialog).getByRole("combobox", { name: "Extended family" }),
+  );
+  await user.click(screen.getByRole("option", { name: "Offer" }));
+  const alex = within(dialog).getByRole("combobox", { name: "Alex" });
+  expect(alex).toHaveTextContent("Allowed here, no Moment decision there");
+  await user.click(alex);
+  expect(screen.queryByRole("option", { name: "Exclude" })).toBeNull();
+  await user.click(screen.getByRole("option", { name: "Deny" }));
+  await user.click(
+    within(dialog).getByRole("button", { name: "Review merge" }),
+  );
+  await within(dialog).findByRole("button", { name: "Confirm merge" });
+  expect(posts.at(-1)).toEqual({
+    path: "/api/curator/albums/album-1/moments/day-1/merge/preview",
+    body: expect.objectContaining({
+      target_moment_id: "day-2",
+      resolutions: [{ person_id: "alex", decision: "deny" }],
+      circle_resolutions: [{ circle_id: "extended", decision: "offer" }],
+    }),
+  });
+  await user.click(
+    within(dialog).getByRole("button", { name: "Confirm merge" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("moment")).toBe(
+      "day-2",
+    ),
+  );
+  expect(
+    await screen.findByRole("region", { name: "Second day" }),
+  ).toBeVisible();
+});
+
+it("groups People who joined the Album apart from direct access in Moment access", async () => {
+  desktopViewport();
+  const person = {
+    avatar_url: "",
+    decision: "",
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    inherited: false,
+    effective: false,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+    deactivated: false,
+    offering_circles: ["Extended family"],
+    joined: false,
+  };
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      // The Album-level Join holds even where a Moment rule decides.
+      access: [
+        {
+          ...person,
+          person_id: "grandma",
+          display_name: "Grandma",
+          offering_circles: [],
+          joined: true,
+          joined_count: 0,
+        },
+      ],
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          access: {
+            people: [
+              {
+                ...person,
+                person_id: "grandma",
+                display_name: "Grandma",
+                joined_count: 2,
+              },
+              {
+                ...person,
+                person_id: "sam",
+                display_name: "Sam",
+                offering_circles: [],
+                joined: false,
+                joined_count: 0,
+              },
+            ],
+            faces: [],
+            circles: [],
+          },
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  render(<App />);
+  const strip = await screen.findByRole("region", { name: "Moment access" });
+  const joined = within(strip).getByRole("region", { name: "Joined 1" });
+  expect(
+    within(joined).getByRole("checkbox", {
+      name: "Allow Grandma for this Moment",
+    }),
+  ).not.toBeChecked();
+  expect(
+    within(joined).getByText("Joined the Album, not seen in this Moment"),
+  ).toBeVisible();
+  expect(
+    within(joined).queryByRole("checkbox", {
+      name: "Allow Sam for this Moment",
+    }),
+  ).not.toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(within(strip).getByRole("button", { name: "Rules & exceptions" }));
+  const rules = await screen.findByRole("dialog", {
+    name: "Rules & exceptions",
+  });
+  expect(
+    within(rules).getByRole("combobox", { name: "Access for Grandma" }),
+  ).toHaveTextContent("Inherit: joined, offered to Extended family");
+});
+
 it("keeps a Moment access draft after a failed save and shows the error", async () => {
   desktopViewport();
   const alex = {
@@ -964,6 +1395,8 @@ it("keeps a Moment access draft after a failed save and shows the error", async 
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
     accessible_count: 2,
     exceptions: 0,
   };
@@ -971,7 +1404,10 @@ it("keeps a Moment access draft after a failed save and shows the error", async 
     ...completeAlbum,
     access: [alex],
     moments: [
-      { ...completeAlbum.moments[0], access: { people: [alex], faces: [] } },
+      {
+        ...completeAlbum.moments[0],
+        access: { people: [alex], faces: [], circles: [] },
+      },
     ],
   };
   let resolveSave: ((response: Response) => void) | undefined;
@@ -1222,6 +1658,8 @@ it("reviews every scope before confirming removal of all a person's access", asy
     moments_detected: 1,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1256,6 +1694,8 @@ it("reviews every scope before confirming removal of all a person's access", asy
             moments_detected: 1,
             deactivated: false,
             joined: false,
+            offering_circles: [],
+            joined_count: 0,
           },
         ],
       };
@@ -1313,6 +1753,8 @@ it("lists a deactivated person's frozen rules and removes them without offering 
     exceptions: 1,
     deactivated: true,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1393,6 +1835,8 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     ...alex,
@@ -1417,7 +1861,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
           },
           completeAlbum.moments[0].entries[1],
         ],
-        access: { people: [alex, sam], faces: [] },
+        access: { people: [alex, sam], faces: [], circles: [] },
       },
     ],
   };
@@ -1461,6 +1905,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
           { person_id: "alex", decision: "deny" },
           { person_id: "sam", decision: "inherit" },
         ],
+        circles: [],
       },
     ]),
   );
@@ -1481,6 +1926,8 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -1488,7 +1935,10 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
     Response.json({
       ...completeAlbum,
       moments: [
-        { ...completeAlbum.moments[0], access: { people: [alex], faces: [] } },
+        {
+          ...completeAlbum.moments[0],
+          access: { people: [alex], faces: [], circles: [] },
+        },
       ],
     }),
   );
@@ -1557,6 +2007,8 @@ it("opens saved rules without granting detected people and saves only the edited
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   const alex = {
     ...sam,
@@ -1572,7 +2024,7 @@ it("opens saved rules without granting detected people and saves only the edited
     moments: [
       {
         ...completeAlbum.moments[0],
-        access: { people: [alex, sam], faces: [] },
+        access: { people: [alex, sam], faces: [], circles: [] },
       },
     ],
   };
@@ -1608,6 +2060,7 @@ it("opens saved rules without granting detected people and saves only the edited
   await waitFor(() =>
     expect(saved).toEqual({
       decisions: [{ person_id: "alex", decision: "deny" }],
+      circles: [],
     }),
   );
   await waitFor(() =>
@@ -1632,11 +2085,16 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
+    joined_count: 0,
   };
   let current = {
     ...completeAlbum,
     moments: [
-      { ...completeAlbum.moments[0], access: { people: [sam], faces: [] } },
+      {
+        ...completeAlbum.moments[0],
+        access: { people: [sam], faces: [], circles: [] },
+      },
     ],
   };
   mockAPI((path) =>
@@ -1666,7 +2124,11 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     moments: [
       {
         ...current.moments[0],
-        access: { people: [{ ...sam, decision: "deny" }], faces: [] },
+        access: {
+          people: [{ ...sam, decision: "deny" }],
+          faces: [],
+          circles: [],
+        },
       },
     ],
   };
@@ -1726,7 +2188,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     moments: [
       {
         ...completeAlbum.moments[0],
-        access: { people: [], faces: [face] },
+        access: { people: [], faces: [face], circles: [] },
       },
     ],
   };
@@ -1760,6 +2222,8 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
                   moments_detected: 0,
                   deactivated: false,
                   joined: false,
+                  offering_circles: [],
+                  joined_count: 0,
                 },
               ],
             },
@@ -1852,6 +2316,7 @@ it("keeps ignored faces reachable when no unlinked faces remain", async () => {
                 occurrences: 1,
               },
             ],
+            circles: [],
           },
         },
       ],

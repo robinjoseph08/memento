@@ -10,7 +10,7 @@ import {
   Rocket,
   type LucideIcon,
 } from "lucide-react";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
@@ -106,7 +106,7 @@ export function AlbumPage() {
 // On narrow screens the outline is the first screen and rows drill into the
 // pane with a back link.
 function AlbumContent({ album }: { album: AlbumDetail }) {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [publicationOpen, setPublicationOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   // Publishing and a sync check use saved state, so unsaved work in any
@@ -122,9 +122,29 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = sections.find((item) => item.key === params.get("section"));
   const section = requested?.key ?? "moments";
+  // A merge, or a move that empties a Moment, leaves the URL naming nothing,
+  // so the pane shows the Moment that took its media and the URL is corrected
+  // once the old pane and its unsaved work are gone. Elsewhere the first
+  // Moment stands in. Other sections keep the URL as it is, so a Moment
+  // removed from another tab never interrupts their drafts.
+  const [replacement, setReplacement] = useState<string | null>(null);
+  const requestedMoment = params.get("moment");
   const moment =
-    album.moments.find((item) => item.id === params.get("moment")) ??
+    album.moments.find((item) => item.id === requestedMoment) ??
+    album.moments.find((item) => item.id === replacement) ??
     album.moments[0];
+  const momentID = moment?.id;
+  useEffect(() => {
+    if (
+      section === "moments" &&
+      requestedMoment &&
+      momentID &&
+      momentID !== requestedMoment
+    )
+      setParams((current) => withParams(current, { moment: momentID }), {
+        replace: true,
+      });
+  }, [momentID, requestedMoment, section, setParams]);
   const drilled = params.get("pane") === "detail";
   const showOutline = desktop || !drilled;
   const showDetail = desktop || drilled;
@@ -310,10 +330,21 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             </span>
                             <span className="mt-1.5 block">
                               <Audience
+                                offeredTo={item.access.circles
+                                  .filter((circle) => circle.offered)
+                                  .map((circle) => circle.name)}
                                 people={item.access.people.filter(
-                                  (person) => person.accessible_count > 0,
+                                  (person) =>
+                                    person.accessible_count > 0 ||
+                                    person.joined_count > 0,
                                 )}
                                 suggestions={suggestions}
+                                withheldFrom={item.access.circles
+                                  .filter(
+                                    (circle) =>
+                                      circle.album_offered && !circle.offered,
+                                  )
+                                  .map((circle) => circle.name)}
                               />
                             </span>
                           </span>
@@ -354,7 +385,12 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             {showDetail &&
               section === "moments" &&
               (moment ? (
-                <MomentPane album={album} key={moment.id} moment={moment} />
+                <MomentPane
+                  album={album}
+                  key={moment.id}
+                  moment={moment}
+                  onRemoved={setReplacement}
+                />
               ) : (
                 <p className="text-sm text-muted">
                   This Album had no photos or videos to import.

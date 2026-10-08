@@ -17,6 +17,7 @@ import type {
   MergeMomentsRequest,
   Moment,
   MoveEntriesRequest,
+  OfferDecision,
   SplitMomentRequest,
   StructurePreview,
 } from "../../types/generated/publishing";
@@ -34,6 +35,22 @@ import { audienceSummary } from "./access-labels";
 import { AlbumImage } from "./album-image";
 
 export type StructureOperation = "move" | "split" | "merge";
+
+// How a merge conflict describes each Moment's decision for one Person or
+// one Circle, in the same words as Rules & exceptions.
+const decisionLabels: Record<Decision, string> = {
+  allow: "Allowed",
+  deny: "Denied",
+  inherit: "No Moment decision",
+};
+const offerLabels: Record<OfferDecision, string> = {
+  offer: "Offered",
+  withhold: "Withheld",
+  inherit: "No Moment decision",
+};
+
+const lowerFirst = (label: string) =>
+  label.charAt(0).toLowerCase() + label.slice(1);
 
 export function SelectField({
   label,
@@ -112,7 +129,9 @@ export function StructureEditor({
   selectedEntryIDs: string[];
   operation: StructureOperation;
   onClose: () => void;
-  onSaved: () => void;
+  // A merge, or a move of the last media, removes this Moment, so it names
+  // the Moment that took its media.
+  onSaved: (momentID?: string) => void;
 }) {
   const others = album.moments.filter((item) => item.id !== moment.id);
   const selected = moment.entries.filter((entry) =>
@@ -125,6 +144,9 @@ export function StructureEditor({
   const defaultCoverID = others[0]?.cover_entry_id ?? "";
   const [newCoverID, setNewCoverID] = useState(defaultCoverID);
   const [resolutions, setResolutions] = useState<Record<string, Decision>>({});
+  const [circleResolutions, setCircleResolutions] = useState<
+    Record<string, OfferDecision>
+  >({});
   const [preview, setPreview] = useState<StructurePreview | null>(null);
   const previewMove = usePreviewMove(album.id, moment.id);
   const move = useMoveEntries(album.id, moment.id);
@@ -160,7 +182,8 @@ export function StructureEditor({
     title !== "" ||
     targetID !== (others[0]?.id ?? "") ||
     newCoverID !== defaultCoverID ||
-    Object.keys(resolutions).length > 0;
+    Object.keys(resolutions).length > 0 ||
+    Object.keys(circleResolutions).length > 0;
   useUnsavedChanges(dirty, true);
   const [discardOpen, setDiscardOpen] = useState(false);
   function changeOpen(next: boolean) {
@@ -191,6 +214,9 @@ export function StructureEditor({
         person_id,
         decision,
       })),
+      circle_resolutions: Object.entries(circleResolutions).map(
+        ([circle_id, decision]) => ({ circle_id, decision }),
+      ),
       review_token: preview?.review_token ?? "",
     };
   }
@@ -228,17 +254,18 @@ export function StructureEditor({
     const onError = () => setPreview(null);
     if (operation === "move") {
       move.mutate(request as MoveEntriesRequest, {
-        onSuccess: onSaved,
+        onSuccess: () =>
+          onSaved(preview?.removes_moment ? targetID : undefined),
         onError,
       });
     } else if (operation === "split") {
       split.mutate(request as SplitMomentRequest, {
-        onSuccess: onSaved,
+        onSuccess: () => onSaved(),
         onError,
       });
     } else {
       merge.mutate(request as MergeMomentsRequest, {
-        onSuccess: onSaved,
+        onSuccess: () => onSaved(targetID),
         onError,
       });
     }
@@ -285,6 +312,9 @@ export function StructureEditor({
                   label="Destination Moment"
                   onChange={(value) => {
                     setTargetID(value);
+                    // Conflicts belong to one pair of Moments.
+                    setResolutions({});
+                    setCircleResolutions({});
                     if (operation === "merge")
                       setNewCoverID(
                         others.find((item) => item.id === value)
@@ -370,9 +400,9 @@ export function StructureEditor({
               <FieldError error={errors.entry_ids} id="entry-ids-error" />
               {operation === "split" && (
                 <p className="mb-5 text-xs leading-relaxed text-muted">
-                  Both Moments keep the existing access decisions, and the new
-                  Moment starts with its earliest item as its cover. Splitting
-                  alone changes no one's media access.
+                  Both Moments keep the existing access decisions and Circle
+                  Offers, and the new Moment starts with its earliest item as
+                  its cover. Splitting alone changes no one's media access.
                 </p>
               )}
               {coverLeaves && (
@@ -381,44 +411,75 @@ export function StructureEditor({
                   becomes the cover.
                 </p>
               )}
-              {preview && preview.conflicts.length > 0 && (
-                <fieldset className="mb-6 border-t border-border pt-5">
-                  <legend className="font-heading text-xl">
-                    Choose the combined audience
-                  </legend>
-                  <p className="mt-2 mb-4 text-xs text-muted">
-                    These Moments differ. Choose access for every listed Person.
-                  </p>
-                  <FieldError
-                    error={errors.resolutions}
-                    id="resolutions-error"
-                  />
-                  {preview.conflicts.map((conflict) => (
-                    <SelectField
-                      key={conflict.person_id}
-                      label={conflict.display_name}
-                      onChange={(decision) => {
-                        setResolutions((current) => ({
-                          ...current,
-                          [conflict.person_id]: decision,
-                        }));
-                        setPreview({
-                          ...preview,
-                          ready: false,
-                          review_token: "",
-                        });
-                      }}
-                      options={[
-                        { value: "inherit", label: "No Moment decision" },
-                        { value: "allow", label: "Allow" },
-                        { value: "deny", label: "Exclude" },
-                      ]}
-                      placeholder={`${conflict.source} here, ${conflict.target} there`}
-                      value={resolutions[conflict.person_id] ?? ""}
+              {preview &&
+                preview.conflicts.length + preview.circle_conflicts.length >
+                  0 && (
+                  <fieldset className="mb-6 border-t border-border pt-5">
+                    <legend className="font-heading text-xl">
+                      Choose the combined audience
+                    </legend>
+                    <p className="mt-2 mb-4 text-xs text-muted">
+                      These Moments differ. Choose access for every listed
+                      Person and Circle.
+                    </p>
+                    <FieldError
+                      error={errors.resolutions}
+                      id="resolutions-error"
                     />
-                  ))}
-                </fieldset>
-              )}
+                    <FieldError
+                      error={errors.circle_resolutions}
+                      id="circle-resolutions-error"
+                    />
+                    {preview.conflicts.map((conflict) => (
+                      <SelectField
+                        key={conflict.person_id}
+                        label={conflict.display_name}
+                        onChange={(decision) => {
+                          setResolutions((current) => ({
+                            ...current,
+                            [conflict.person_id]: decision,
+                          }));
+                          setPreview({
+                            ...preview,
+                            ready: false,
+                            review_token: "",
+                          });
+                        }}
+                        options={[
+                          { value: "inherit", label: "No Moment decision" },
+                          { value: "allow", label: "Allow" },
+                          { value: "deny", label: "Deny" },
+                        ]}
+                        placeholder={`${decisionLabels[conflict.source]} here, ${lowerFirst(decisionLabels[conflict.target])} there`}
+                        value={resolutions[conflict.person_id] ?? ""}
+                      />
+                    ))}
+                    {preview.circle_conflicts.map((conflict) => (
+                      <SelectField
+                        key={conflict.circle_id}
+                        label={conflict.name}
+                        onChange={(decision) => {
+                          setCircleResolutions((current) => ({
+                            ...current,
+                            [conflict.circle_id]: decision as OfferDecision,
+                          }));
+                          setPreview({
+                            ...preview,
+                            ready: false,
+                            review_token: "",
+                          });
+                        }}
+                        options={[
+                          { value: "inherit", label: "No Moment decision" },
+                          { value: "offer", label: "Offer" },
+                          { value: "withhold", label: "Withhold" },
+                        ]}
+                        placeholder={`${offerLabels[conflict.source]} here, ${lowerFirst(offerLabels[conflict.target])} there`}
+                        value={circleResolutions[conflict.circle_id] ?? ""}
+                      />
+                    ))}
+                  </fieldset>
+                )}
               {preview?.ready && <VisibilityReview preview={preview} />}
               <div className="flex flex-wrap gap-2">
                 <Button type="submit">

@@ -37,6 +37,8 @@ const people: AccessPerson[] = ["Jamie", "Alex"].map((name) => ({
   moments_detected: 0,
   deactivated: false,
   joined: false,
+  offering_circles: [],
+  joined_count: 0,
 }));
 const frozen: AccessPerson = {
   ...people[0],

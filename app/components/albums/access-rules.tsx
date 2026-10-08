@@ -15,6 +15,8 @@ import type {
   Decision,
   Entry,
   Moment,
+  MomentCircle,
+  OfferDecision,
 } from "../../types/generated/publishing";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { FieldError, Form } from "../people/form-fields";
@@ -28,11 +30,13 @@ import {
 } from "../ui/dialog";
 import { accessDetail, byPresence } from "./access-labels";
 import { AlbumImage } from "./album-image";
+import { countLabel } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
 import { VideoDetails } from "./video-details";
 
-// Detailed allow, deny, and inherit editing for one Moment or one item. It
-// opens on saved decisions only: detected people are listed, never preselected.
+// Detailed allow, deny, and inherit editing for one Moment or one item, and
+// for a Moment, offer, withhold, and inherit for each Circle. It opens on
+// saved decisions only: detected people are listed, never preselected.
 // A video item also carries its title and chapters above the access rules, so
 // one dialog manages everything about the item.
 export function RulesDialog({
@@ -60,10 +64,24 @@ export function RulesDialog({
   const value = (person: AccessPerson) =>
     draft[person.person_id] ?? saved(person);
   const changed = people.filter((person) => value(person) !== saved(person));
+  // Circles decide whole Moments only, never single items.
+  const circles = entry ? [] : moment.access.circles;
+  const [offers, setOffers] = useState<Record<string, OfferDecision>>({});
+  const savedOffer = (circle: MomentCircle): OfferDecision =>
+    circle.decision || "inherit";
+  const offerValue = (circle: MomentCircle) =>
+    offers[circle.circle_id] ?? savedOffer(circle);
+  const changedCircles = circles.filter(
+    (circle) => offerValue(circle) !== savedOffer(circle),
+  );
   const video = entry?.kind === "VIDEO";
   const entryLabel = entry ? mediaLabel(entry) : "";
   const [videoDirty, setVideoDirty] = useState(false);
-  const dirty = save.isPending || changed.length > 0 || videoDirty;
+  const dirty =
+    save.isPending ||
+    changed.length > 0 ||
+    changedCircles.length > 0 ||
+    videoDirty;
   useUnsavedChanges(dirty, true);
   // A save or a discard asks the dialog to close once nothing is unsaved: an
   // item dialog closes by clearing ?entry, which the unsaved-changes guard
@@ -101,21 +119,29 @@ export function RulesDialog({
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
   const errorId = useId();
+  const circlesErrorId = useId();
   const albumAllowed = (person: AccessPerson) =>
     album.access.some(
       (item) =>
         item.person_id === person.person_id && item.decision === "allow",
     );
+  // The Album-level Join, unlike the Moment's joined count, holds whatever
+  // rule the Person has here, so the label says what inheriting would give.
+  const albumJoined = (person: AccessPerson) =>
+    album.access.some(
+      (item) => item.person_id === person.person_id && item.joined,
+    );
+  // With no rule of their own, a Person still gets what their Circles are
+  // offered.
   const inheritedLabel = (person: AccessPerson) => {
-    if (!entry)
-      return albumAllowed(person)
-        ? "Inherit: allowed by Album access"
-        : "Inherit: no access";
-    if (person.decision === "allow") return "Inherit: allowed by this Moment";
-    if (person.decision === "deny") return "Inherit: excluded by this Moment";
-    return albumAllowed(person)
-      ? "Inherit: allowed by Album access"
-      : "Inherit: no access";
+    if (entry && person.decision === "allow")
+      return "Inherit: allowed by this Moment";
+    if (entry && person.decision === "deny")
+      return "Inherit: excluded by this Moment";
+    if (albumAllowed(person)) return "Inherit: allowed by Album access";
+    if (person.offering_circles.length > 0)
+      return `Inherit: ${albumJoined(person) ? "joined, " : ""}offered to ${person.offering_circles.join(", ")}`;
+    return "Inherit: no access";
   };
   function changeOpen(next: boolean) {
     if (next || save.isPending) return;
@@ -182,7 +208,7 @@ export function RulesDialog({
             onSubmit={(event) => {
               event.preventDefault();
               if (save.isPending) return;
-              if (changed.length === 0) {
+              if (changed.length + changedCircles.length === 0) {
                 changeOpen(false);
                 return;
               }
@@ -192,12 +218,17 @@ export function RulesDialog({
                     person_id: person.person_id,
                     decision: value(person),
                   })),
+                  circles: changedCircles.map((circle) => ({
+                    circle_id: circle.circle_id,
+                    decision: offerValue(circle),
+                  })),
                 },
                 // The saved choices are no longer a draft, whatever the
                 // refreshed Album says about them.
                 {
                   onSuccess: () => {
                     setDraft({});
+                    setOffers({});
                     setCloseWhenSettled(true);
                   },
                 },
@@ -229,6 +260,32 @@ export function RulesDialog({
                 </p>
               )}
               <FieldError error={errors.decisions} id={errorId} />
+              {circles.length > 0 && (
+                <>
+                  <h3 className="mt-6 text-xs font-medium">Circles</h3>
+                  <p className="mt-1 mb-2 text-xs text-muted">
+                    A decision for a person above comes first. Withholding keeps
+                    this Moment out of the Album Offer for that Circle only.
+                  </p>
+                  {circles.map((circle) => (
+                    <CircleRuleRow
+                      circle={circle}
+                      describedBy={errors.circles ? circlesErrorId : undefined}
+                      key={circle.circle_id}
+                      onChange={(decision) => {
+                        save.reset();
+                        setCloseWhenSettled(false);
+                        setOffers((current) => ({
+                          ...current,
+                          [circle.circle_id]: decision,
+                        }));
+                      }}
+                      value={offerValue(circle)}
+                    />
+                  ))}
+                  <FieldError error={errors.circles} id={circlesErrorId} />
+                </>
+              )}
               <div className="mt-6 flex flex-wrap gap-2">
                 <Button type="submit">
                   {save.isPending ? "Saving…" : "Save access"}
@@ -281,6 +338,7 @@ export function RulesDialog({
         }
         onConfirm={() => {
           setDraft({});
+          setOffers({});
           setDiscards((count) => count + 1);
           setCloseWhenSettled(true);
         }}
@@ -334,6 +392,48 @@ function RuleRow({
           value={value}
         />
       </div>
+    </div>
+  );
+}
+
+function CircleRuleRow({
+  circle,
+  value,
+  onChange,
+  describedBy,
+}: {
+  circle: MomentCircle;
+  value: OfferDecision;
+  onChange: (decision: OfferDecision) => void;
+  describedBy?: string;
+}) {
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] items-center gap-x-3 gap-y-1 border-t border-border py-3 min-[601px]:grid-cols-[minmax(0,1fr)_200px]">
+      <span className="min-w-0">
+        <strong className="block truncate text-sm font-medium">
+          {circle.name}
+        </strong>
+        <small className="block text-xs text-muted">
+          {countLabel(circle.member_count, "person", "people")}
+        </small>
+      </span>
+      <Combobox
+        aria-describedby={describedBy}
+        aria-invalid={!!describedBy}
+        aria-label={`Offer for ${circle.name}`}
+        onChange={(next) => onChange(next as OfferDecision)}
+        options={[
+          {
+            value: "inherit",
+            label: circle.album_offered
+              ? "Inherit: Album Offer"
+              : "Inherit: not offered",
+          },
+          { value: "offer", label: "Offer" },
+          { value: "withhold", label: "Withhold" },
+        ]}
+        value={value}
+      />
     </div>
   );
 }
