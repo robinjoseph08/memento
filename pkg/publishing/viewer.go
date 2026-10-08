@@ -663,10 +663,11 @@ func (m *Module) LeaveAlbum(ctx context.Context, actorID, albumID string) (Leave
 	return result, transactionError(ctx, err)
 }
 
-// joinedPeople counts the offered media each active Person who joined the
-// Album currently has in it, leaving out those with none, for the Curator's
-// "Joined" tag and accessible count.
-func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]int, error) {
+// joinedPeople counts, by Moment, the offered media each active Person who
+// joined the Album currently has in it, leaving out those with none, for the
+// Curator's "Joined" tag, accessible counts, and Moment audiences. It uses
+// the viewer's own query so the counts never drift from what they see.
+func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]map[string]int, error) {
 	var joins []models.AlbumJoin
 	err := db.NewSelect().Model(&joins).
 		Where("album_id = ? AND person_id IN (?)", albumID, db.NewSelect().Model((*models.Person)(nil)).Column("id").Where("deactivated_at IS NULL")).
@@ -674,15 +675,24 @@ func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]i
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
-	result := map[string]int{}
+	type momentCount struct {
+		MomentID string
+		Count    int
+	}
+	result := map[string]map[string]int{}
 	for _, join := range joins {
 		personID := join.PersonID.String()
-		count, err := viewerEntries(db, viewerContext{personID: personID, reach: reachJoined}).Where("entry.album_id = ?", albumID).Count(ctx)
+		var rows []momentCount
+		err := viewerEntries(db, viewerContext{personID: personID, reach: reachJoined}).Where("entry.album_id = ?", albumID).
+			ColumnExpr("entry.moment_id, count(*) AS count").Group("entry.moment_id").Scan(ctx, &rows)
 		if err != nil {
 			return nil, errorstack.CaptureContext(ctx, err)
 		}
-		if count > 0 {
-			result[personID] = count
+		for _, row := range rows {
+			if result[personID] == nil {
+				result[personID] = map[string]int{}
+			}
+			result[personID][row.MomentID] = row.Count
 		}
 	}
 	return result, nil

@@ -38,7 +38,7 @@ export type StructureOperation = "move" | "split" | "merge";
 
 // How a merge conflict describes each Moment's decision for one Person or
 // one Circle, in the same words as Rules & exceptions.
-const decisionLabels: Record<string, string> = {
+const decisionLabels: Record<Decision, string> = {
   allow: "Allowed",
   deny: "Denied",
   inherit: "No Moment decision",
@@ -129,7 +129,8 @@ export function StructureEditor({
   selectedEntryIDs: string[];
   operation: StructureOperation;
   onClose: () => void;
-  // A merge removes this Moment, so it names the merged Moment to show next.
+  // A merge, or a move of the last media, removes this Moment, so it names
+  // the Moment that took its media.
   onSaved: (momentID?: string) => void;
 }) {
   const others = album.moments.filter((item) => item.id !== moment.id);
@@ -253,7 +254,8 @@ export function StructureEditor({
     const onError = () => setPreview(null);
     if (operation === "move") {
       move.mutate(request as MoveEntriesRequest, {
-        onSuccess: () => onSaved(),
+        onSuccess: () =>
+          onSaved(preview?.removes_moment ? targetID : undefined),
         onError,
       });
     } else if (operation === "split") {

@@ -122,21 +122,29 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = sections.find((item) => item.key === params.get("section"));
   const section = requested?.key ?? "moments";
-  // A Moment merged or moved away leaves the URL naming nothing, so the pane
-  // shows the Moment that took its media, or the first one, and the URL is
-  // corrected once the old pane and its unsaved work are gone.
-  const [merged, setMerged] = useState<string | null>(null);
+  // A merge, or a move that empties a Moment, leaves the URL naming nothing,
+  // so the pane shows the Moment that took its media and the URL is corrected
+  // once the old pane and its unsaved work are gone. Elsewhere the first
+  // Moment stands in. Other sections keep the URL as it is, so a Moment
+  // removed from another tab never interrupts their drafts.
+  const [replacement, setReplacement] = useState<string | null>(null);
   const requestedMoment = params.get("moment");
   const moment =
     album.moments.find((item) => item.id === requestedMoment) ??
-    album.moments.find((item) => item.id === merged) ??
+    album.moments.find((item) => item.id === replacement) ??
     album.moments[0];
+  const momentID = moment?.id;
   useEffect(() => {
-    if (requestedMoment && moment && moment.id !== requestedMoment)
-      setParams((current) => withParams(current, { moment: moment.id }), {
+    if (
+      section === "moments" &&
+      requestedMoment &&
+      momentID &&
+      momentID !== requestedMoment
+    )
+      setParams((current) => withParams(current, { moment: momentID }), {
         replace: true,
       });
-  }, [moment, requestedMoment, setParams]);
+  }, [momentID, requestedMoment, section, setParams]);
   const drilled = params.get("pane") === "detail";
   const showOutline = desktop || !drilled;
   const showDetail = desktop || drilled;
@@ -381,7 +389,7 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                   album={album}
                   key={moment.id}
                   moment={moment}
-                  onMerged={setMerged}
+                  onRemoved={setReplacement}
                 />
               ) : (
                 <p className="text-sm text-muted">

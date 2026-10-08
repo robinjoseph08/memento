@@ -229,7 +229,11 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 	}
 	album.Access = []AccessPerson{}
 	for _, row := range people {
-		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()] > 0, OfferingCircles: []string{}}
+		joinedCount := 0
+		for _, count := range joined[row.ID.String()] {
+			joinedCount += count
+		}
+		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joinedCount > 0, OfferingCircles: []string{}}
 		if row.AvatarFaceID != nil {
 			person.AvatarURL = media.AvatarURL(row.ID.String(), *row.AvatarFaceID, row.AvatarVersion)
 		}
@@ -242,14 +246,11 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 				p.AccessibleCount = 0
 				// Media the Person joined here is already theirs, so suggesting
 				// an allow would only turn it into a direct grant that outlives
-				// Leave. A Join covers only what a Circle of theirs is offered.
-				p.JoinedCount = 0
+				// Leave.
+				p.JoinedCount = joined[person.PersonID][moment.ID]
 				for _, entry := range moment.Entries {
 					if entryAllowed(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
 						p.AccessibleCount++
-					}
-					if joined[person.PersonID] > 0 && len(p.OfferingCircles) > 0 && undecided(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
-						p.JoinedCount++
 					}
 					if entry.Decisions[person.PersonID] != "" {
 						person.Exceptions++
@@ -267,7 +268,7 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 			}
 		}
 		// Joined media is the Person's own, so it counts as accessible too.
-		person.AccessibleCount += joined[person.PersonID]
+		person.AccessibleCount += joinedCount
 		person.Effective = person.AccessibleCount > 0
 		person.Detected = person.SupportingEntries > 0
 		person.Suggested = person.Detected && person.Decision == "" && !person.Effective

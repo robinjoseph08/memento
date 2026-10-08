@@ -44,12 +44,13 @@ const initialMediaCount = 24;
 export function MomentPane({
   album,
   moment,
-  onMerged,
+  onRemoved,
 }: {
   album: AlbumDetail;
   moment: Moment;
-  // A merge removes this Moment and names the one that took its media.
-  onMerged?: (momentID: string) => void;
+  // A merge, or a move of its last media, removes this Moment and names the
+  // one that took its media.
+  onRemoved?: (momentID: string) => void;
 }) {
   const [params, setParams] = useSearchParams();
   const heading = momentHeading(moment);
@@ -391,7 +392,7 @@ export function MomentPane({
           onSaved={(next) => {
             setStructure(null);
             setSelection(null);
-            if (next) onMerged?.(next);
+            if (next) onRemoved?.(next);
           }}
           operation={structure.operation}
           selectedEntryIDs={structure.selectedEntryIDs}

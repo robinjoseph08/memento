@@ -198,7 +198,7 @@ it("previews each Viewing Group's cover for the draft order, guards publishing, 
   expect(rows[0]).toHaveTextContent("2 people see the cover of First day");
   expect(rows[0]).toHaveTextContent("Can see First day, Second day");
   expect(
-    within(rows[0]!).getByRole("img", { name: "Allowed: Alex, Sam" }),
+    within(rows[0]!).getByRole("img", { name: "Can see: Alex, Sam" }),
   ).toBeVisible();
   expect(rows[1]).toHaveTextContent("1 person sees the cover of Second day");
   expect(rows[2]).toHaveTextContent("1 person sees a placeholder");

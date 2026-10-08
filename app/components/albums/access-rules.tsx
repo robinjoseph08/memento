@@ -125,6 +125,12 @@ export function RulesDialog({
       (item) =>
         item.person_id === person.person_id && item.decision === "allow",
     );
+  // The Album-level Join, unlike the Moment's joined count, holds whatever
+  // rule the Person has here, so the label says what inheriting would give.
+  const albumJoined = (person: AccessPerson) =>
+    album.access.some(
+      (item) => item.person_id === person.person_id && item.joined,
+    );
   // With no rule of their own, a Person still gets what their Circles are
   // offered.
   const inheritedLabel = (person: AccessPerson) => {
@@ -134,7 +140,7 @@ export function RulesDialog({
       return "Inherit: excluded by this Moment";
     if (albumAllowed(person)) return "Inherit: allowed by Album access";
     if (person.offering_circles.length > 0)
-      return `Inherit: ${person.joined_count > 0 ? "joined, " : ""}offered to ${person.offering_circles.join(", ")}`;
+      return `Inherit: ${albumJoined(person) ? "joined, " : ""}offered to ${person.offering_circles.join(", ")}`;
     return "Inherit: no access";
   };
   function changeOpen(next: boolean) {

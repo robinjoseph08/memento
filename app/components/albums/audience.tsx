@@ -54,7 +54,7 @@ export function Audience({
           <Tooltip>
             <TooltipTrigger asChild>
               <span
-                aria-label={`Allowed: ${names}`}
+                aria-label={`Can see: ${names}`}
                 className="flex cursor-default items-center -space-x-1.5 rounded-full"
                 role="img"
               >

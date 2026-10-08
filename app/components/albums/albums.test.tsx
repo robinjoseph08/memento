@@ -621,7 +621,7 @@ it.each([
       expect(
         within(
           screen.getByRole("navigation", { name: "Album outline" }),
-        ).getByRole("img", { name: "Allowed: Alex" }),
+        ).getByRole("img", { name: "Can see: Alex" }),
       ).toBeVisible();
     expect(
       screen.getByText(
@@ -1168,7 +1168,7 @@ it("shows joined People and the Circles a Moment is offered to and withheld from
     ),
   ).toBeVisible();
   expect(
-    within(outline).getByRole("img", { name: "Allowed: Alex" }),
+    within(outline).getByRole("img", { name: "Can see: Alex" }),
   ).toBeVisible();
   expect(within(outline).queryByText("No access yet")).not.toBeInTheDocument();
 });
@@ -1195,6 +1195,7 @@ it("asks for a combined Offer when merging Moments offered differently, then sho
   mockAPI((path, options) => {
     if (options?.method !== "POST") return Response.json(current);
     const body = JSON.parse(String(options.body)) as {
+      resolutions: unknown[];
       circle_resolutions: unknown[];
     };
     posts.push({ path, body });
@@ -1210,13 +1211,21 @@ it("asks for a combined Offer when merging Moments offered differently, then sho
       };
       return Response.json(current);
     }
-    const resolved = body.circle_resolutions.length > 0;
+    const resolved =
+      body.resolutions.length > 0 && body.circle_resolutions.length > 0;
     return Response.json({
       ready: resolved,
       review_token: resolved ? "token" : "",
       removes_moment: false,
       changes: [],
-      conflicts: [],
+      conflicts: [
+        {
+          person_id: "alex",
+          display_name: "Alex",
+          source: "allow",
+          target: "inherit",
+        },
+      ],
       circle_conflicts: [
         {
           circle_id: "extended",
@@ -1251,6 +1260,11 @@ it("asks for a combined Offer when merging Moments offered differently, then sho
     within(dialog).getByRole("combobox", { name: "Extended family" }),
   );
   await user.click(screen.getByRole("option", { name: "Offer" }));
+  const alex = within(dialog).getByRole("combobox", { name: "Alex" });
+  expect(alex).toHaveTextContent("Allowed here, no Moment decision there");
+  await user.click(alex);
+  expect(screen.queryByRole("option", { name: "Exclude" })).toBeNull();
+  await user.click(screen.getByRole("option", { name: "Deny" }));
   await user.click(
     within(dialog).getByRole("button", { name: "Review merge" }),
   );
@@ -1259,6 +1273,7 @@ it("asks for a combined Offer when merging Moments offered differently, then sho
     path: "/api/curator/albums/album-1/moments/day-1/merge/preview",
     body: expect.objectContaining({
       target_moment_id: "day-2",
+      resolutions: [{ person_id: "alex", decision: "deny" }],
       circle_resolutions: [{ circle_id: "extended", decision: "offer" }],
     }),
   });
@@ -1290,11 +1305,22 @@ it("groups People who joined the Album apart from direct access in Moment access
     moments_detected: 0,
     deactivated: false,
     offering_circles: ["Extended family"],
-    joined: true,
+    joined: false,
   };
   mockAPI(() =>
     Response.json({
       ...completeAlbum,
+      // The Album-level Join holds even where a Moment rule decides.
+      access: [
+        {
+          ...person,
+          person_id: "grandma",
+          display_name: "Grandma",
+          offering_circles: [],
+          joined: true,
+          joined_count: 0,
+        },
+      ],
       moments: [
         {
           ...completeAlbum.moments[0],
@@ -1343,6 +1369,15 @@ it("groups People who joined the Album apart from direct access in Moment access
       name: "Allow Sam for this Moment",
     }),
   ).not.toBeInTheDocument();
+  await userEvent
+    .setup()
+    .click(within(strip).getByRole("button", { name: "Rules & exceptions" }));
+  const rules = await screen.findByRole("dialog", {
+    name: "Rules & exceptions",
+  });
+  expect(
+    within(rules).getByRole("combobox", { name: "Access for Grandma" }),
+  ).toHaveTextContent("Inherit: joined, offered to Extended family");
 });
 
 it("keeps a Moment access draft after a failed save and shows the error", async () => {
