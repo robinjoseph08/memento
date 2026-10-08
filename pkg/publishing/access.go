@@ -185,9 +185,13 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 			momentPeople[i][album.Moments[i].Access.People[j].PersonID] = &album.Moments[i].Access.People[j]
 		}
 	}
+	joined, err := joinedPeople(ctx, db, album.ID)
+	if err != nil {
+		return err
+	}
 	album.Access = []AccessPerson{}
 	for _, row := range people {
-		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()]}
+		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()] > 0}
 		if row.AvatarFaceID != nil {
 			person.AvatarURL = media.AvatarURL(row.ID.String(), *row.AvatarFaceID, row.AvatarVersion)
 		}
@@ -197,16 +201,23 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 			if p != nil {
 				p.Inherited = person.Decision == DecisionAllow
 				p.Effective = entryAllowed(person.Decision, p.Decision, "")
-				p.Suggested = p.Detected && p.Decision == "" && !p.Effective
 				p.AccessibleCount = 0
+				// Media the Person joined here is already theirs, so suggesting
+				// an allow would only turn it into a direct grant that outlives
+				// Leave.
+				joinedHere := false
 				for _, entry := range moment.Entries {
 					if entryAllowed(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
 						p.AccessibleCount++
+					}
+					if joined[person.PersonID] > 0 && undecided(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
+						joinedHere = true
 					}
 					if entry.Decisions[person.PersonID] != "" {
 						person.Exceptions++
 					}
 				}
+				p.Suggested = p.Detected && p.Decision == "" && !p.Effective && !joinedHere
 				if p.Decision != "" {
 					person.Exceptions++
 				}
@@ -217,6 +228,8 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 				}
 			}
 		}
+		// Joined media is the Person's own, so it counts as accessible too.
+		person.AccessibleCount += joined[person.PersonID]
 		person.Effective = person.AccessibleCount > 0
 		person.Detected = person.SupportingEntries > 0
 		person.Suggested = person.Detected && person.Decision == "" && !person.Effective

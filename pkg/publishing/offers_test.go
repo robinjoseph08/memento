@@ -45,19 +45,19 @@ func (f offerFixture) circle(t *testing.T, name string, people ...string) string
 	_, err := f.db.NewInsert().Model(&circle).Exec(t.Context())
 	require.NoError(t, err)
 	for _, person := range people {
-		f.join(t, circle.ID.String(), person)
+		f.addMember(t, circle.ID.String(), person)
 	}
 	return circle.ID.String()
 }
 
-func (f offerFixture) join(t *testing.T, circleID, personID string) {
+func (f offerFixture) addMember(t *testing.T, circleID, personID string) {
 	t.Helper()
 	member := models.CircleMember{CircleID: models.UUID(uuid.MustParse(circleID)), PersonID: models.UUID(uuid.MustParse(personID))}
 	_, err := f.db.NewInsert().Model(&member).Exec(t.Context())
 	require.NoError(t, err)
 }
 
-func (f offerFixture) leave(t *testing.T, circleID, personID string) {
+func (f offerFixture) removeMember(t *testing.T, circleID, personID string) {
 	t.Helper()
 	_, err := f.db.NewDelete().Model((*models.CircleMember)(nil)).Where("circle_id = ? AND person_id = ?", circleID, personID).Exec(t.Context())
 	require.NoError(t, err)
@@ -219,7 +219,7 @@ func TestAlbumOffersFillOnlyTheGapsPersonDecisionsLeave(t *testing.T) {
 	require.Nil(t, f.offeredEntries(t, outsider))
 	require.False(t, f.authorized(t, outsider, all[0]))
 	require.Empty(t, f.moreAlbums(t, f.curator.ID.String()))
-	f.join(t, extended, f.curator.ID.String())
+	f.addMember(t, extended, f.curator.ID.String())
 	require.Empty(t, f.moreAlbums(t, f.curator.ID.String()), "a Curator sees everything as their own")
 	require.Nil(t, f.offeredEntries(t, f.curator.ID.String()))
 	// A Curator's preview as a Person shows only that Person's own media.
@@ -235,9 +235,9 @@ func TestAlbumOffersFillOnlyTheGapsPersonDecisionsLeave(t *testing.T) {
 	require.NoError(t, err)
 
 	// Membership is read live.
-	f.join(t, extended, outsider)
+	f.addMember(t, extended, outsider)
 	require.Equal(t, map[string]int{f.album.ID: 3}, f.moreAlbums(t, outsider))
-	f.leave(t, extended, outsider)
+	f.removeMember(t, extended, outsider)
 	require.Empty(t, f.moreAlbums(t, outsider))
 	require.False(t, f.authorized(t, outsider, all[0]))
 

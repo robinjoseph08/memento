@@ -55,9 +55,10 @@ func (m *Module) SaveCoverOrder(ctx context.Context, albumID string, request Sav
 	return m.GetAlbum(ctx, albumID)
 }
 
-// ViewingGroups derives who will see which cover from the same saved rules
-// the viewer uses. Publication state is ignored: the Curator is preparing
-// the Album, and the groups describe the view after publication.
+// ViewingGroups derives who will see which cover from the same saved
+// rules, Offers, and Joins the viewer uses. Publication state is ignored:
+// the Curator is preparing the Album, and the groups describe the view after
+// publication.
 func (m *Module) ViewingGroups(ctx context.Context, albumID string) (ViewingGroups, error) {
 	var result ViewingGroups
 	err := m.db.RunInTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
@@ -108,8 +109,15 @@ func viewingGroups(ctx context.Context, db bun.IDB, m *Module, albumID string) (
 	groups := map[string]*ViewingGroup{}
 	order := []string{}
 	for _, person := range people {
+		// A Person sees their own Album's covers, with offered media once they
+		// join. Someone with nothing of their own sees the offered covers on
+		// "More albums" and in the preview.
+		seen := ownEntries(facts, person.ID.String())
+		if len(seen) == 0 {
+			seen = browsableEntries(facts, person.ID.String())
+		}
 		visible := map[string]bool{}
-		for _, entryID := range visibleEntries(facts, person.ID.String()) {
+		for _, entryID := range seen {
 			visible[entryID] = true
 		}
 		momentIDs := []string{}

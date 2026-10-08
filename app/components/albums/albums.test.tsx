@@ -383,6 +383,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   const sam = {
     person_id: "sam",
@@ -398,6 +399,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   let current: AlbumDetail = {
     ...completeAlbum,
@@ -554,6 +556,7 @@ it.each([
                 exceptions: 1,
                 moments_detected: 0,
                 deactivated: false,
+                joined: false,
               },
             ],
             faces: [],
@@ -648,6 +651,7 @@ it("asks before leaving Album access with an unsaved draft", async () => {
     supporting_entries: 1,
     moments_detected: 1,
     deactivated: false,
+    joined: false,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -693,6 +697,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     exceptions: 1,
     moments_detected: 1,
     deactivated: false,
+    joined: false,
   };
   const sam = {
     ...alex,
@@ -706,6 +711,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   let current = { ...completeAlbum, access: [alex, sam] };
   const posts: Array<{ path: string; body: unknown }> = [];
@@ -877,6 +883,57 @@ it("offers the Album to a Circle and previews what its members are offered", asy
   ).toBeEnabled();
 });
 
+it("tags People who joined the Album and lists them first among those not seen", async () => {
+  desktopViewport();
+  const person = {
+    avatar_url: "",
+    decision: "",
+    inherited: false,
+    effective: false,
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    moments_detected: 0,
+    deactivated: false,
+    accessible_count: 0,
+    exceptions: 0,
+  };
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      access: [
+        { ...person, person_id: "sam", display_name: "Sam", joined: false },
+        {
+          ...person,
+          person_id: "zoe",
+          display_name: "Zoe",
+          joined: true,
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=access&pane=detail",
+  );
+  render(<App />);
+  const zoe = await screen.findByRole("checkbox", {
+    name: "Album access for Zoe, joined",
+  });
+  expect(zoe.closest("label")).toHaveTextContent("ZoeJoined");
+  expect(
+    screen
+      .getAllByRole("checkbox", { name: /^Album access for / })
+      .map((box) => box.getAttribute("aria-label")),
+  ).toEqual(["Album access for Zoe, joined", "Album access for Sam"]);
+  expect(
+    screen
+      .getByRole("checkbox", { name: "Album access for Sam" })
+      .closest("label"),
+  ).not.toHaveTextContent("Joined");
+});
+
 it("points to the Circles page when there are no Circles to offer to", async () => {
   desktopViewport();
   mockAPI(() => Response.json(completeAlbum));
@@ -906,6 +963,7 @@ it("keeps a Moment access draft after a failed save and shows the error", async 
     supporting_entries: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
     accessible_count: 2,
     exceptions: 0,
   };
@@ -1163,6 +1221,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
     exceptions: 1,
     moments_detected: 1,
     deactivated: false,
+    joined: false,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1196,6 +1255,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
             exceptions: 0,
             moments_detected: 1,
             deactivated: false,
+            joined: false,
           },
         ],
       };
@@ -1252,6 +1312,7 @@ it("lists a deactivated person's frozen rules and removes them without offering 
     accessible_count: 1,
     exceptions: 1,
     deactivated: true,
+    joined: false,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1331,6 +1392,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   const sam = {
     ...alex,
@@ -1418,6 +1480,7 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
     supporting_entries: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -1493,6 +1556,7 @@ it("opens saved rules without granting detected people and saves only the edited
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   const alex = {
     ...sam,
@@ -1567,6 +1631,7 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     exceptions: 0,
     moments_detected: 0,
     deactivated: false,
+    joined: false,
   };
   let current = {
     ...completeAlbum,
@@ -1694,6 +1759,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
                   exceptions: 0,
                   moments_detected: 0,
                   deactivated: false,
+                  joined: false,
                 },
               ],
             },

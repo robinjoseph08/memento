@@ -3,7 +3,8 @@ package publishing
 import "github.com/labstack/echo/v5"
 
 // RegisterViewerRoutes keeps selected-Person preview behind the Curator guard.
-// A viewer's own preview of an offered Album lives under /api/albums.
+// A viewer's own preview of an offered Album, and Join and Leave, live
+// under /api/albums.
 func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, requireCurator echo.MiddlewareFunc) {
 	h := &viewerHandlers{module: module}
 	e.GET("/api/library", h.library, requirePerson)
@@ -17,6 +18,8 @@ func RegisterViewerRoutes(e *echo.Echo, module ViewerUseCases, requirePerson, re
 	e.GET("/api/albums/:id/preview", h.offeredAlbum, requirePerson)
 	e.GET("/api/albums/:id/preview/photos", h.offeredPhotos, requirePerson)
 	e.GET("/api/albums/:id/preview/videos", h.offeredVideos, requirePerson)
+	e.POST("/api/albums/:id/join", h.join, requirePerson)
+	e.POST("/api/albums/:id/leave", h.leave, requirePerson)
 	e.GET("/api/curator/albums/:id/preview/:personID", h.album, requireCurator)
 	e.GET("/api/curator/albums/:id/preview/:personID/photos", h.photos, requireCurator)
 	e.GET("/api/curator/albums/:id/preview/:personID/videos", h.videos, requireCurator)

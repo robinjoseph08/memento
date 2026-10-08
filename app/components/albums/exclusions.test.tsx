@@ -118,7 +118,12 @@ function desktopViewport() {
   }));
 }
 
-function mockAPI(handler: (path: string, options?: RequestInit) => Response) {
+function mockAPI(
+  handler: (
+    path: string,
+    options?: RequestInit,
+  ) => Response | Promise<Response>,
+) {
   vi.stubGlobal(
     "fetch",
     vi.fn((path: string, options?: RequestInit) => {
@@ -154,8 +159,11 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   desktopViewport();
   let current = album;
   let excluded: ExcludeEntriesRequest | undefined;
-  mockAPI((path, options) => {
-    if (path.endsWith("/exclude/preview"))
+  let release = () => {};
+  const reviewed = new Promise<void>((resolve) => (release = resolve));
+  mockAPI(async (path, options) => {
+    if (path.endsWith("/exclude/preview")) {
+      await reviewed;
       return Response.json({
         ready: true,
         review_token: "reviewed-exclusion",
@@ -172,6 +180,7 @@ it("keeps selected media out after a visibility review and lists it as excluded"
         ],
         conflicts: [],
       });
+    }
     if (path.endsWith("/exclude")) {
       excluded = JSON.parse(String(options?.body)) as ExcludeEntriesRequest;
       current = excludedAlbum;
@@ -202,6 +211,16 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   const visibility = within(dialog).getByRole("region", {
     name: "Visibility review",
   });
+  // Nothing above the review in this dialog changes access, so while it
+  // loads it only says so.
+  expect(within(visibility).getByRole("status")).toHaveTextContent(
+    "Reviewing visibility…",
+  );
+  expect(dialog).not.toHaveTextContent("Change access above");
+  expect(
+    within(dialog).getByRole("button", { name: "Keep out" }),
+  ).toBeDisabled();
+  release();
   expect(await within(visibility).findByText(/loses 1/)).toBeVisible();
   await user.click(within(dialog).getByRole("button", { name: "Keep out" }));
   await waitFor(() =>
@@ -223,6 +242,45 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   expect(
     within(list).getByText("Photo taken July 1, 2026 at 12:00 PM"),
   ).toBeVisible();
+});
+
+it("leaves no empty review section when the Keep out review fails", async () => {
+  desktopViewport();
+  mockAPI((path) =>
+    path.endsWith("/exclude/preview")
+      ? Response.json(
+          { error: { code: "internal", message: "Something went wrong." } },
+          { status: 500 },
+        )
+      : Response.json(album),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?moment=day-1&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const momentPane = await screen.findByRole("region", { name: "First day" });
+  await user.click(within(momentPane).getByRole("button", { name: "Select" }));
+  await user.click(
+    within(momentPane).getByRole("checkbox", {
+      name: "Select Photo taken July 1, 2026 at 12:00 PM",
+    }),
+  );
+  await user.click(
+    within(momentPane).getByRole("button", { name: "Keep out" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    await within(dialog).findByRole("button", { name: "Try again" }),
+  ).toBeVisible();
+  expect(
+    within(dialog).queryByRole("region", { name: "Visibility review" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).getByRole("button", { name: "Keep out" }),
+  ).toBeDisabled();
 });
 
 it("adds excluded media back into a chosen Moment after a review", async () => {

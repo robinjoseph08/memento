@@ -36,12 +36,14 @@ const people: AccessPerson[] = ["Jamie", "Alex"].map((name) => ({
   exceptions: 0,
   moments_detected: 0,
   deactivated: false,
+  joined: false,
 }));
 const frozen: AccessPerson = {
   ...people[0],
   person_id: "lee",
   display_name: "Lee",
   deactivated: true,
+  joined: false,
 };
 const curatorAlbum: AlbumDetail = {
   id: "lake",
@@ -74,6 +76,10 @@ const album: ViewerAlbum = {
   end_date: "2025-06-14",
   cover_url: "/preview/jamie/cover/thumb",
   cover_preview_url: "/preview/jamie/cover",
+  has_own_media: false,
+  more_photo_count: 0,
+  more_video_count: 0,
+  joined: false,
   days: [
     {
       date: "2025-06-14",

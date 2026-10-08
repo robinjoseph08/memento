@@ -26,6 +26,10 @@ const album: ViewerAlbum = {
   end_date: "2025-06-14",
   cover_url: "/media/lake/cover/thumb?person=jamie",
   cover_preview_url: "/media/lake/cover?person=jamie",
+  has_own_media: false,
+  more_photo_count: 0,
+  more_video_count: 0,
+  joined: false,
   days: [
     {
       date: "2025-06-14",
@@ -69,10 +73,10 @@ const dock: ViewerEntry = {
   thumbnail_url: "/media/lake/photo-3/thumb?person=jamie",
   download_url: "/media/lake/photo-3/original?person=jamie",
 };
-function mockViewer(handler: (path: string) => Response) {
+function mockViewer(handler: (path: string, init?: RequestInit) => Response) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (path: string) => {
+    vi.fn(async (path: string, init?: RequestInit) => {
       if (path.endsWith("/status"))
         return Response.json({
           claimed: true,
@@ -84,7 +88,7 @@ function mockViewer(handler: (path: string) => Response) {
           },
           sign_in_methods: ["fake"],
         });
-      return handler(path);
+      return handler(path, init);
     }),
   );
 }
@@ -247,6 +251,181 @@ it("opens a viewer's own Album from a preview link when nothing is offered to th
     await screen.findByRole("heading", { name: "Family reunion" }),
   ).toBeVisible();
   expect(window.location.pathname).toBe("/albums/reunion/photos");
+});
+
+const notFound = () =>
+  Response.json(
+    { error: { code: "not_found", message: "Album not found." } },
+    { status: 404 },
+  );
+
+it("joins an offered Album from its preview and opens it among the viewer's own", async () => {
+  let joined = false;
+  mockViewer((path, init) => {
+    if (path === "/api/albums/reunion/join" && init?.method === "POST") {
+      joined = true;
+      return Response.json({});
+    }
+    if (path === "/api/albums/reunion/preview")
+      return joined ? notFound() : Response.json(reunion);
+    if (path === "/api/albums/reunion")
+      return joined ? Response.json({ ...reunion, joined: true }) : notFound();
+    if (path.endsWith("/photos"))
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/preview/photos");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Join album" }));
+  await waitFor(() =>
+    expect(window.location.pathname).toBe("/albums/reunion/photos"),
+  );
+  expect(joined).toBe(true);
+  expect(
+    await screen.findByRole("button", { name: "Leave album" }),
+  ).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "Join album" }),
+  ).not.toBeInTheDocument();
+});
+
+it("leaves a joined Album after confirming and returns to the Album list", async () => {
+  let left = false;
+  mockViewer((path, init) => {
+    if (path === "/api/albums/reunion/leave" && init?.method === "POST") {
+      left = true;
+      return Response.json({ kept: false });
+    }
+    if (path === "/api/albums/reunion")
+      return Response.json({ ...reunion, joined: true });
+    if (path === "/api/albums/reunion/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    if (path === "/api/albums") return Response.json([]);
+    if (path === "/api/albums/more") return Response.json([reunion]);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/photos");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Leave album" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent(
+    "It goes back to More albums, where you can join it again.",
+  );
+  expect(dialog).not.toHaveTextContent("shared with you directly");
+  await user.click(within(dialog).getByRole("button", { name: "Leave album" }));
+  await waitFor(() => expect(window.location.pathname).toBe("/albums"));
+  expect(left).toBe(true);
+  expect(
+    await screen.findByRole("region", { name: "More albums" }),
+  ).toBeVisible();
+});
+
+it("ends an Album the viewer has part of with a link to the rest, labeled on More albums", async () => {
+  const partial = {
+    ...reunion,
+    has_own_media: true,
+    photo_count: 3,
+    video_count: 1,
+  };
+  mockViewer((path) => {
+    if (path === "/api/albums")
+      return Response.json([
+        { ...reunion, photo_count: 1, has_own_media: true },
+      ]);
+    if (path === "/api/albums/more") return Response.json([partial]);
+    if (path === "/api/albums/reunion")
+      return Response.json({
+        ...reunion,
+        more_photo_count: 2,
+        more_video_count: 1,
+      });
+    if (path === "/api/albums/reunion/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums");
+  const user = userEvent.setup();
+  render(<App />);
+  const more = await screen.findByRole("region", { name: "More albums" });
+  expect(
+    within(more).getByRole("link", { name: /Family reunion/ }),
+  ).toHaveTextContent("3 more photos and 1 more video");
+  const own = screen
+    .getAllByRole("link", { name: /Family reunion/ })
+    .find((link) => !more.contains(link))!;
+  expect(own).toHaveTextContent("1 photo, 0 videos");
+  expect(own).not.toHaveTextContent("more");
+  await user.click(
+    screen
+      .getAllByRole("link", { name: /Family reunion/ })
+      .find((link) => !more.contains(link))!,
+  );
+  expect(
+    await screen.findByText(
+      /More photos and videos are available in this album\./,
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "See the full album" }),
+  ).toHaveAttribute("href", "/albums/reunion/preview/photos");
+  expect(
+    screen.queryByRole("button", { name: "Leave album" }),
+  ).not.toBeInTheDocument();
+});
+
+it("names only videos when only videos are offered and links to that tab", async () => {
+  mockViewer((path) => {
+    if (path === "/api/albums/reunion")
+      return Response.json({ ...reunion, more_video_count: 2 });
+    if (path === "/api/albums/reunion/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/photos");
+  render(<App />);
+  expect(
+    await screen.findByText(/More videos are available in this album\./),
+  ).toBeVisible();
+  expect(
+    screen.getByRole("link", { name: "See the full album" }),
+  ).toHaveAttribute("href", "/albums/reunion/preview/videos");
+});
+
+it("stays on an Album after leaving when part of it was shared directly", async () => {
+  let left = false;
+  mockViewer((path, init) => {
+    if (path === "/api/albums/reunion/leave" && init?.method === "POST") {
+      left = true;
+      return Response.json({ kept: true });
+    }
+    if (path === "/api/albums/reunion")
+      return Response.json(
+        left
+          ? { ...reunion, photo_count: 1, more_photo_count: 2 }
+          : { ...reunion, joined: true, has_own_media: true },
+      );
+    if (path === "/api/albums/reunion/photos")
+      return Response.json({ entries: [photo], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/reunion/photos");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Leave album" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent(
+    "Photos and videos shared with you directly stay. The rest goes back to More albums.",
+  );
+  await user.click(within(dialog).getByRole("button", { name: "Leave album" }));
+  expect(
+    await screen.findByText(/More photos are available in this album\./),
+  ).toBeVisible();
+  expect(window.location.pathname).toBe("/albums/reunion/photos");
+  expect(
+    screen.queryByRole("button", { name: "Leave album" }),
+  ).not.toBeInTheDocument();
 });
 
 it("keeps the empty state for a viewer with no Albums of any kind", async () => {

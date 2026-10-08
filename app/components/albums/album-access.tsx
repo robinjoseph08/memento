@@ -29,17 +29,25 @@ import { audienceSummary } from "./access-labels";
 import { countLabel } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
 
-// Who gains or loses media if the pending change is saved. Album access and
-// Remove all access both show it before their explicit action.
+// Who gains or loses media if the pending change is saved, shown before each
+// explicit action. While the review loads it says so; with no review yet,
+// placeholder explains how to get one, where the form has a way to. With
+// neither, such as after a failed review, the section stays out of the way
+// of the caller's error.
 export function VisibilityReview({
   changes,
   album,
   className,
+  pending = false,
+  placeholder,
 }: {
   changes: AudienceChange[] | null | undefined;
   album: AlbumDetail;
   className?: string;
+  pending?: boolean;
+  placeholder?: string;
 }) {
+  if (!changes && !pending && !placeholder) return null;
   return (
     <section
       aria-label="Visibility review"
@@ -47,9 +55,13 @@ export function VisibilityReview({
     >
       <h3 className="font-heading text-xl">Visibility after saving</h3>
       {!changes ? (
-        <p className="mt-3 text-sm text-muted">
-          Change access above to review it.
-        </p>
+        pending ? (
+          <p className="mt-3 text-sm text-muted" role="status">
+            Reviewing visibility…
+          </p>
+        ) : (
+          <p className="mt-3 text-sm text-muted">{placeholder}</p>
+        )
       ) : changes.length === 0 ? (
         <p className="mt-3 text-sm text-muted">No one gains or loses media.</p>
       ) : (
@@ -115,7 +127,11 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     (person) =>
       person.moments_detected > 0 && person.moments_detected < totalMoments,
   );
-  const nowhere = active.filter((person) => person.moments_detected === 0);
+  // People who joined come first among those not seen, so the Curator finds
+  // them without scanning the whole list.
+  const nowhere = active
+    .filter((person) => person.moments_detected === 0)
+    .sort((a, b) => Number(b.joined) - Number(a.joined));
   function change(
     next: Record<string, boolean>,
     nextOffers: Record<string, boolean> = offers,
@@ -166,7 +182,7 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     >
       <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-sm">
         <input
-          aria-label={`Album access for ${person.display_name}`}
+          aria-label={`Album access for ${person.display_name}${person.joined ? ", joined" : ""}`}
           checked={allowed(person.person_id)}
           className="size-4 cursor-pointer accent-primary"
           onChange={(event) =>
@@ -176,9 +192,16 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
         />
         <PersonAvatar person={person} />
         <span className="min-w-0">
-          <strong className="block truncate font-medium">
-            {person.display_name}
-          </strong>
+          <span className="flex min-w-0 items-center gap-2">
+            <strong className="truncate font-medium">
+              {person.display_name}
+            </strong>
+            {person.joined && (
+              <span className="shrink-0 rounded-full bg-accent px-2 text-xs/5 font-medium text-muted">
+                Joined
+              </span>
+            )}
+          </span>
           <small className="block text-xs text-muted">
             {person.moments_detected > 0
               ? `Seen in ${person.moments_detected} of ${countLabel(totalMoments, "Moment", "Moments")}`
@@ -401,12 +424,11 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
             album={album}
             changes={dirty ? review.data?.changes : undefined}
             className="my-6"
+            pending={dirty && review.isPending}
+            placeholder={
+              review.isError ? undefined : "Change access above to review it."
+            }
           />
-          {review.isPending && (
-            <p className="mb-4 text-xs text-muted" role="status">
-              Reviewing visibility…
-            </p>
-          )}
           {review.isError && (
             <p className="mb-4 text-xs text-destructive" role="alert">
               Could not review visibility. You can still save.
@@ -508,12 +530,8 @@ function RemoveAllAccessDialog({
           album={album}
           changes={review.data?.changes}
           className="my-6"
+          pending={review.isPending || review.isIdle}
         />
-        {review.isPending && (
-          <p className="mb-4 text-xs text-muted" role="status">
-            Reviewing visibility…
-          </p>
-        )}
         {review.isError && (
           <p className="mb-4 text-sm text-destructive" role="alert">
             Could not review this person's access. Close and try again.

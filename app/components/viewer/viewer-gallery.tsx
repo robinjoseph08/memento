@@ -14,6 +14,7 @@ import { HTTPError } from "../../lib/http";
 import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import { cn } from "../../lib/utils";
 import type {
+  ViewerAlbum,
   ViewerEntry,
   ViewerLibrary,
 } from "../../types/generated/publishing";
@@ -34,7 +35,8 @@ import { Timeline } from "./timeline";
 // lightbox on the current tab; entryLink builds each item's stable URL in
 // whatever form the surrounding route uses. fallback is the other way the
 // viewer may see the same Album, their own copy or its offered preview, and
-// where to go when the gallery is not found but the fallback is.
+// where to go when the gallery is not found but the fallback is. actions
+// renders under an Album's header; footer renders after its media.
 export function ViewerGallery({
   context,
   tab,
@@ -43,6 +45,8 @@ export function ViewerGallery({
   entryID,
   entryLink,
   fallback,
+  actions,
+  footer,
 }: {
   context: ViewerContext;
   tab: ViewerTab;
@@ -51,6 +55,8 @@ export function ViewerGallery({
   entryID?: string;
   entryLink: (id: string) => To;
   fallback?: { context: ViewerContext; to: To };
+  actions?: (album: ViewerAlbum) => ReactNode;
+  footer?: (album: ViewerAlbum) => ReactNode;
 }) {
   const query = useViewerGallery(context);
   const library = context.albumID === undefined;
@@ -92,12 +98,17 @@ export function ViewerGallery({
       ) : (
         <>
           {"title" in query.data ? (
-            <AlbumHeader
-              album={query.data}
-              coverFallback={
-                personName ? `No cover is visible to ${personName}` : "No cover"
-              }
-            />
+            <>
+              <AlbumHeader
+                album={query.data}
+                coverFallback={
+                  personName
+                    ? `No cover is visible to ${personName}`
+                    : "No cover"
+                }
+              />
+              {actions?.(query.data)}
+            </>
           ) : (
             <header>
               <h1 className="font-heading text-[clamp(34px,4vw,48px)] leading-[1.2] tracking-[-1px]">
@@ -155,6 +166,7 @@ export function ViewerGallery({
             tabLinks={tabLinks}
             title={title}
           />
+          {"title" in query.data && footer?.(query.data)}
         </>
       )}
     </>

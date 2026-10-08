@@ -44,6 +44,24 @@ type ViewerAlbum struct {
 	// Album header; list cards keep the small thumbnail.
 	CoverPreviewURL string      `json:"cover_preview_url"`
 	Days            []ViewerDay `json:"days"`
+	// HasOwnMedia marks an Album with media shared with the viewer directly.
+	// A "More albums" entry then counts how many more are available, and
+	// their own Album uses it to say what Leave keeps. A Curator's preview
+	// leaves it unset.
+	HasOwnMedia bool `json:"has_own_media"`
+	// MorePhotoCount and MoreVideoCount count what more of the viewer's own
+	// Album is offered to them in its preview.
+	MorePhotoCount int `json:"more_photo_count"`
+	MoreVideoCount int `json:"more_video_count"`
+	// Joined marks the viewer's own Album when they joined it and offered
+	// media is still in it, so they can Leave it.
+	Joined bool `json:"joined"`
+}
+
+// LeaveResult says whether the Album stays among the viewer's own after
+// Leave, because something in it was granted to them directly.
+type LeaveResult struct {
+	Kept bool `json:"kept"`
 }
 
 // ViewerDay counts one local capture day. PhotoRatios and VideoRatios list
@@ -342,6 +360,9 @@ type AccessPerson struct {
 	// Deactivated people appear at Album scope only while they still hold
 	// rules here, so a Curator can see and remove frozen access.
 	Deactivated bool `json:"deactivated"`
+	// Joined marks a Person who joined the Album and currently has offered
+	// media in it.
+	Joined bool `json:"joined"`
 }
 
 type MomentAccess struct {
