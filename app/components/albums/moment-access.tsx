@@ -52,8 +52,8 @@ function AccessGroup({
 }
 
 // The access strip above a Moment's media: Allowed and Suggested side by
-// side, Excluded, Circles, and Add someone else beneath, unlinked faces
-// collapsed to a count, and the faces-checked line along the bottom.
+// side, Excluded, Joined, Circles, and Add someone else beneath, unlinked
+// faces collapsed to a count, and the faces-checked line along the bottom.
 // Checkboxes edit a draft that an explicit Save writes, like Album details
 // and Album access.
 export function MomentAccessStrip({
@@ -96,8 +96,18 @@ export function MomentAccessStrip({
   const allowed = people.filter((person) => person.effective);
   const suggested = people.filter((person) => person.suggested);
   const excluded = people.filter((person) => person.decision === "deny");
+  // Joined People see the Moment as their own without a decision here, so
+  // their boxes stay unticked; ticking one would add a direct allow.
+  const joined = people.filter(
+    (person) =>
+      !person.effective && !person.decision && person.joined_count > 0,
+  );
   const others = people.filter(
-    (person) => !person.effective && !person.decision && !person.suggested,
+    (person) =>
+      !person.effective &&
+      !person.decision &&
+      !person.suggested &&
+      person.joined_count === 0,
   );
   const unlinked = moment.access.faces.filter(
     (face) => !face.person_id && !face.ignored,
@@ -303,6 +313,15 @@ export function MomentAccessStrip({
               title="Excluded"
             >
               {excluded.map(personRow)}
+            </AccessGroup>
+          )}
+          {joined.length > 0 && (
+            <AccessGroup
+              count={joined.length}
+              id="joined-access"
+              title="Joined"
+            >
+              {joined.map(personRow)}
             </AccessGroup>
           )}
           {circles.length > 0 && (

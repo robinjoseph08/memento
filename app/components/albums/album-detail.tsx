@@ -10,7 +10,7 @@ import {
   Rocket,
   type LucideIcon,
 } from "lucide-react";
-import { use, useState } from "react";
+import { use, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { useAlbum, useUpdateAlbum } from "../../hooks/queries/albums";
@@ -106,7 +106,7 @@ export function AlbumPage() {
 // On narrow screens the outline is the first screen and rows drill into the
 // pane with a back link.
 function AlbumContent({ album }: { album: AlbumDetail }) {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const [publicationOpen, setPublicationOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   // Publishing and a sync check use saved state, so unsaved work in any
@@ -122,9 +122,21 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
   const desktop = useMediaQuery("(min-width: 761px)");
   const requested = sections.find((item) => item.key === params.get("section"));
   const section = requested?.key ?? "moments";
+  // A Moment merged or moved away leaves the URL naming nothing, so the pane
+  // shows the Moment that took its media, or the first one, and the URL is
+  // corrected once the old pane and its unsaved work are gone.
+  const [merged, setMerged] = useState<string | null>(null);
+  const requestedMoment = params.get("moment");
   const moment =
-    album.moments.find((item) => item.id === params.get("moment")) ??
+    album.moments.find((item) => item.id === requestedMoment) ??
+    album.moments.find((item) => item.id === merged) ??
     album.moments[0];
+  useEffect(() => {
+    if (requestedMoment && moment && moment.id !== requestedMoment)
+      setParams((current) => withParams(current, { moment: moment.id }), {
+        replace: true,
+      });
+  }, [moment, requestedMoment, setParams]);
   const drilled = params.get("pane") === "detail";
   const showOutline = desktop || !drilled;
   const showDetail = desktop || drilled;
@@ -365,7 +377,12 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
             {showDetail &&
               section === "moments" &&
               (moment ? (
-                <MomentPane album={album} key={moment.id} moment={moment} />
+                <MomentPane
+                  album={album}
+                  key={moment.id}
+                  moment={moment}
+                  onMerged={setMerged}
+                />
               ) : (
                 <p className="text-sm text-muted">
                   This Album had no photos or videos to import.

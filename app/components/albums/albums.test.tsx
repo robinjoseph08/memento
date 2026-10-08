@@ -1173,9 +1173,9 @@ it("shows joined People and the Circles a Moment is offered to and withheld from
   expect(within(outline).queryByText("No access yet")).not.toBeInTheDocument();
 });
 
-it("asks for a combined Offer when merging Moments offered differently", async () => {
+it("asks for a combined Offer when merging Moments offered differently, then shows the merged Moment", async () => {
   desktopViewport();
-  const current: AlbumDetail = {
+  let current: AlbumDetail = {
     ...completeAlbum,
     moments: [
       completeAlbum.moments[0],
@@ -1198,6 +1198,18 @@ it("asks for a combined Offer when merging Moments offered differently", async (
       circle_resolutions: unknown[];
     };
     posts.push({ path, body });
+    if (path.endsWith("/merge")) {
+      // The merged Moment is not the first one left, so the pane can only
+      // land on it by following the merge.
+      current = {
+        ...current,
+        moments: [
+          { ...current.moments[1], id: "day-0", label: "Arrival", title: "" },
+          current.moments[1],
+        ],
+      };
+      return Response.json(current);
+    }
     const resolved = body.circle_resolutions.length > 0;
     return Response.json({
       ready: resolved,
@@ -1250,6 +1262,87 @@ it("asks for a combined Offer when merging Moments offered differently", async (
       circle_resolutions: [{ circle_id: "extended", decision: "offer" }],
     }),
   });
+  await user.click(
+    within(dialog).getByRole("button", { name: "Confirm merge" }),
+  );
+  await waitFor(() =>
+    expect(new URLSearchParams(window.location.search).get("moment")).toBe(
+      "day-2",
+    ),
+  );
+  expect(
+    await screen.findByRole("region", { name: "Second day" }),
+  ).toBeVisible();
+});
+
+it("groups People who joined the Album apart from direct access in Moment access", async () => {
+  desktopViewport();
+  const person = {
+    avatar_url: "",
+    decision: "",
+    detected: false,
+    suggested: false,
+    supporting_entries: 0,
+    inherited: false,
+    effective: false,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+    deactivated: false,
+    offering_circles: ["Extended family"],
+    joined: true,
+  };
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          access: {
+            people: [
+              {
+                ...person,
+                person_id: "grandma",
+                display_name: "Grandma",
+                joined_count: 2,
+              },
+              {
+                ...person,
+                person_id: "sam",
+                display_name: "Sam",
+                offering_circles: [],
+                joined: false,
+                joined_count: 0,
+              },
+            ],
+            faces: [],
+            circles: [],
+          },
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  render(<App />);
+  const strip = await screen.findByRole("region", { name: "Moment access" });
+  const joined = within(strip).getByRole("region", { name: "Joined 1" });
+  expect(
+    within(joined).getByRole("checkbox", {
+      name: "Allow Grandma for this Moment",
+    }),
+  ).not.toBeChecked();
+  expect(
+    within(joined).getByText("Joined the Album, not seen in this Moment"),
+  ).toBeVisible();
+  expect(
+    within(joined).queryByRole("checkbox", {
+      name: "Allow Sam for this Moment",
+    }),
+  ).not.toBeInTheDocument();
 });
 
 it("keeps a Moment access draft after a failed save and shows the error", async () => {

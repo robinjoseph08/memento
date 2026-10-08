@@ -36,7 +36,13 @@ import { AlbumImage } from "./album-image";
 
 export type StructureOperation = "move" | "split" | "merge";
 
-// How a merge conflict describes each Moment's Offer for one Circle.
+// How a merge conflict describes each Moment's decision for one Person or
+// one Circle, in the same words as Rules & exceptions.
+const decisionLabels: Record<string, string> = {
+  allow: "Allowed",
+  deny: "Denied",
+  inherit: "No Moment decision",
+};
 const offerLabels: Record<OfferDecision, string> = {
   offer: "Offered",
   withhold: "Withheld",
@@ -123,7 +129,8 @@ export function StructureEditor({
   selectedEntryIDs: string[];
   operation: StructureOperation;
   onClose: () => void;
-  onSaved: () => void;
+  // A merge removes this Moment, so it names the merged Moment to show next.
+  onSaved: (momentID?: string) => void;
 }) {
   const others = album.moments.filter((item) => item.id !== moment.id);
   const selected = moment.entries.filter((entry) =>
@@ -246,17 +253,17 @@ export function StructureEditor({
     const onError = () => setPreview(null);
     if (operation === "move") {
       move.mutate(request as MoveEntriesRequest, {
-        onSuccess: onSaved,
+        onSuccess: () => onSaved(),
         onError,
       });
     } else if (operation === "split") {
       split.mutate(request as SplitMomentRequest, {
-        onSuccess: onSaved,
+        onSuccess: () => onSaved(),
         onError,
       });
     } else {
       merge.mutate(request as MergeMomentsRequest, {
-        onSuccess: onSaved,
+        onSuccess: () => onSaved(targetID),
         onError,
       });
     }
@@ -439,9 +446,9 @@ export function StructureEditor({
                         options={[
                           { value: "inherit", label: "No Moment decision" },
                           { value: "allow", label: "Allow" },
-                          { value: "deny", label: "Exclude" },
+                          { value: "deny", label: "Deny" },
                         ]}
-                        placeholder={`${conflict.source} here, ${conflict.target} there`}
+                        placeholder={`${decisionLabels[conflict.source]} here, ${lowerFirst(decisionLabels[conflict.target])} there`}
                         value={resolutions[conflict.person_id] ?? ""}
                       />
                     ))}
