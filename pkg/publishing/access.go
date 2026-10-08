@@ -122,8 +122,40 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 		access.RefreshedAt = &refreshedAt
 		result[row.MomentID] = access
 	}
+	circles, err := albumCircles(ctx, db, albumID)
+	if err != nil {
+		return nil, err
+	}
+	var offerRows []models.MomentOffer
+	if err := db.NewSelect().Model(&offerRows).Where("moment_offer.album_id = ?", albumID).Scan(ctx); err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	momentOffers := map[models.UUID]map[string]OfferDecision{}
+	for _, row := range offerRows {
+		if momentOffers[row.MomentID] == nil {
+			momentOffers[row.MomentID] = map[string]OfferDecision{}
+		}
+		momentOffers[row.MomentID][row.CircleID.String()] = OfferDecision(row.Decision)
+	}
+	var members []models.CircleMember
+	if err := db.NewSelect().Model(&members).Scan(ctx); err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	memberOf := map[models.UUID]map[string]bool{}
+	for _, member := range members {
+		if memberOf[member.PersonID] == nil {
+			memberOf[member.PersonID] = map[string]bool{}
+		}
+		memberOf[member.PersonID][member.CircleID.String()] = true
+	}
 	for _, moment := range moments {
 		access := result[moment.ID]
+		access.Circles = make([]MomentCircle, 0, len(circles))
+		for _, circle := range circles {
+			decision := momentOffers[moment.ID][circle.CircleID]
+			access.Circles = append(access.Circles, MomentCircle{CircleID: circle.CircleID, Name: circle.Name, MemberCount: circle.MemberCount,
+				Decision: decision, AlbumOffered: circle.Offered, Offered: offerResolved(decision, circle.Offered)})
+		}
 		for _, person := range people {
 			avatarURL := ""
 			if person.AvatarFaceID != nil {
@@ -131,8 +163,14 @@ func accessByMoment(ctx context.Context, db bun.IDB, albumID string, moments []m
 			}
 			supporting := detected[moment.ID][person.ID]
 			decision := byMomentPerson[moment.ID][person.ID]
+			offering := []string{}
+			for _, circle := range access.Circles {
+				if circle.Offered && memberOf[person.ID][circle.CircleID] {
+					offering = append(offering, circle.Name)
+				}
+			}
 			access.People = append(access.People, AccessPerson{PersonID: person.ID.String(), DisplayName: person.DisplayName,
-				AvatarURL: avatarURL, Decision: decision, Detected: supporting > 0, SupportingEntries: supporting})
+				AvatarURL: avatarURL, Decision: decision, Detected: supporting > 0, SupportingEntries: supporting, OfferingCircles: offering})
 		}
 		result[moment.ID] = access
 	}
@@ -191,7 +229,7 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 	}
 	album.Access = []AccessPerson{}
 	for _, row := range people {
-		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()] > 0}
+		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()] > 0, OfferingCircles: []string{}}
 		if row.AvatarFaceID != nil {
 			person.AvatarURL = media.AvatarURL(row.ID.String(), *row.AvatarFaceID, row.AvatarVersion)
 		}
@@ -265,7 +303,7 @@ func attachFrozenAccess(ctx context.Context, db bun.IDB, album *AlbumDetail, all
 	}
 	for _, row := range frozen {
 		id := row.ID.String()
-		person := AccessPerson{PersonID: id, DisplayName: row.DisplayName, Decision: allows[id], Deactivated: true}
+		person := AccessPerson{PersonID: id, DisplayName: row.DisplayName, Decision: allows[id], Deactivated: true, OfferingCircles: []string{}}
 		for _, moment := range album.Moments {
 			momentDecision := momentDecisions[id][moment.ID]
 			if momentDecision != "" {
@@ -342,7 +380,7 @@ func albumCircles(ctx context.Context, db bun.IDB, albumID string) ([]AlbumCircl
 }
 
 // ListCircleOffers lists every Circle with an Offer and the Albums it is
-// offered, by title. Circles without Offers are left out.
+// offered, whole or in part, by title. Circles without Offers are left out.
 func (m *Module) ListCircleOffers(ctx context.Context) ([]CircleOffers, error) {
 	type row struct {
 		CircleID string
@@ -350,7 +388,9 @@ func (m *Module) ListCircleOffers(ctx context.Context) ([]CircleOffers, error) {
 		Title    string
 	}
 	var rows []row
-	err := m.db.NewSelect().Model((*models.AlbumOffer)(nil)).
+	offers := m.db.NewSelect().Model((*models.AlbumOffer)(nil)).Column("circle_id", "album_id").
+		Union(m.db.NewSelect().Model((*models.MomentOffer)(nil)).Column("circle_id", "album_id").Where("decision = ?", OfferDecisionOffer))
+	err := m.db.NewSelect().TableExpr("(?) AS offer", offers).
 		ColumnExpr("offer.circle_id, album.id AS album_id, album.title").
 		Join("JOIN albums AS album ON album.id = offer.album_id").
 		OrderExpr("offer.circle_id, lower(album.title), album.id").Scan(ctx, &rows)
@@ -483,6 +523,19 @@ func writeAlbumOffer(ctx context.Context, db bun.IDB, albumID string, choice Alb
 	return errorstack.CaptureContext(ctx, err)
 }
 
+// writeMomentOffer saves one Circle's offer or withhold for a Moment or, for
+// inherit, leaves the Moment to the Album Offer.
+func writeMomentOffer(ctx context.Context, db bun.IDB, target accessTarget, circleID string, decision OfferDecision, now time.Time) error {
+	if decision == OfferDecisionInherit {
+		_, err := db.NewDelete().Model((*models.MomentOffer)(nil)).Where("moment_id = ? AND circle_id = ?", target.momentID, circleID).Exec(ctx)
+		return errorstack.CaptureContext(ctx, err)
+	}
+	row := models.MomentOffer{MomentID: models.UUID(uuid.MustParse(target.momentID)), AlbumID: models.UUID(uuid.MustParse(target.albumID)),
+		CircleID: models.UUID(uuid.MustParse(circleID)), Decision: string(decision), UpdatedAt: now}
+	_, err := db.NewInsert().Model(&row).On("CONFLICT (moment_id, circle_id) DO UPDATE").Set("decision = EXCLUDED.decision").Set("updated_at = EXCLUDED.updated_at").Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
+}
+
 // removalPreview describes losing every rule for one Person, active or
 // deactivated. Removal takes away direct access, and an Offer to the Person's
 // Circles then reaches what no rule decides any more.
@@ -595,6 +648,28 @@ func (m *Module) saveRules(ctx context.Context, target accessTarget, request Sav
 				return err
 			}
 			if err := writeAccessDecision(ctx, tx, target, person.String(), resolution.Decision, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+				return err
+			}
+		}
+		if len(request.Circles) > 0 && target.momentID == "" {
+			return structureField("circles", "Offer Moments to Circles, not single items.")
+		}
+		seen = map[string]bool{}
+		for _, resolution := range request.Circles {
+			circle, err := uuid.Parse(resolution.CircleID)
+			if err != nil || seen[circle.String()] || !validOfferDecision(resolution.Decision) {
+				return structureField("circles", "Choose one Offer for each Circle.")
+			}
+			seen[circle.String()] = true
+			// Key share keeps the Circle from being deleted before the write.
+			exists, err := tx.NewSelect().Model((*models.Circle)(nil)).Where("circle.id = ?", circle.String()).For("KEY SHARE").Exists(ctx)
+			if err != nil {
+				return errorstack.CaptureContext(ctx, err)
+			}
+			if !exists {
+				return structureField("circles", "Choose existing Circles.")
+			}
+			if err := writeMomentOffer(ctx, tx, target, circle.String(), resolution.Decision, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
 				return err
 			}
 		}

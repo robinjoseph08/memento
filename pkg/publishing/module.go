@@ -101,8 +101,10 @@ func albumSummaries(db bun.IDB) *bun.SelectQuery {
 		OrderExpr("moment.album_id, moment.cover_position ASC NULLS LAST, " + momentCaptureOrder)
 	// An Album is ready to publish once at least one allowing decision or
 	// Offer exists at any scope; until then publishing would show it to
-	// nobody. Membership is live, so an Offer counts before its Circle fills.
+	// nobody. A withhold offers nothing. Membership is live, so an Offer
+	// counts before its Circle fills.
 	audience := db.NewSelect().TableExpr("album_offers AS offer").ColumnExpr("1").Where("offer.album_id = album.id").
+		UnionAll(db.NewSelect().TableExpr("moment_offers AS offer").ColumnExpr("1").Where("offer.album_id = album.id AND offer.decision = 'offer'")).
 		UnionAll(db.NewSelect().TableExpr("album_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'")).
 		UnionAll(db.NewSelect().TableExpr("moment_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'")).
 		UnionAll(db.NewSelect().TableExpr("entry_access_decisions AS decision").ColumnExpr("1").Where("decision.album_id = album.id AND decision.decision = 'allow'"))

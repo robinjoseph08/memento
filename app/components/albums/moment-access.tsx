@@ -8,6 +8,7 @@ import type {
   AccessPerson,
   AlbumDetail,
   Moment,
+  MomentCircle,
 } from "../../types/generated/publishing";
 import { FieldError, Form } from "../people/form-fields";
 import { Button } from "../ui/button";
@@ -17,7 +18,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "../ui/tooltip";
-import { accessDetail, byPresence } from "./access-labels";
+import { accessDetail, byPresence, offerDetail } from "./access-labels";
 import { RulesDialog } from "./access-rules";
 import { UnlinkedFaces } from "./face-management";
 import { countLabel } from "./moment-labels";
@@ -51,9 +52,10 @@ function AccessGroup({
 }
 
 // The access strip above a Moment's media: Allowed and Suggested side by
-// side, Excluded and Add someone else beneath, unlinked faces collapsed to a
-// count, and the faces-checked line along the bottom. Checkboxes edit a draft
-// that an explicit Save writes, like Album details and Album access.
+// side, Excluded, Circles, and Add someone else beneath, unlinked faces
+// collapsed to a count, and the faces-checked line along the bottom.
+// Checkboxes edit a draft that an explicit Save writes, like Album details
+// and Album access.
 export function MomentAccessStrip({
   album,
   moment,
@@ -76,7 +78,18 @@ export function MomentAccessStrip({
   const changed = people.filter(
     (person) => checked(person) !== person.effective,
   );
-  const dirty = save.isPending || changed.length > 0;
+  const [offers, setOffers] = useState<Record<string, boolean>>({});
+  const circles = moment.access.circles;
+  const offered = (circle: MomentCircle) =>
+    offers[circle.circle_id] ?? circle.offered;
+  const changedCircles = circles.filter(
+    (circle) => offered(circle) !== circle.offered,
+  );
+  const offeredNames = circles
+    .filter((circle) => circle.offered)
+    .map((circle) => circle.name);
+  const dirty =
+    save.isPending || changed.length > 0 || changedCircles.length > 0;
   useUnsavedChanges(dirty, true);
   const errors = fieldErrors(save.error);
   const errorId = useId();
@@ -101,6 +114,35 @@ export function MomentAccessStrip({
   function toggle(person: AccessPerson, next: boolean) {
     save.reset();
     setDraft((current) => ({ ...current, [person.person_id]: next }));
+  }
+
+  function circleRow(circle: MomentCircle) {
+    return (
+      <label
+        className="flex cursor-pointer items-center gap-3 border-t border-border py-3 text-sm"
+        key={circle.circle_id}
+      >
+        <input
+          aria-label={`Offer this Moment to ${circle.name}`}
+          checked={offered(circle)}
+          className="size-4 cursor-pointer accent-primary"
+          onChange={(event) => {
+            save.reset();
+            setOffers((current) => ({
+              ...current,
+              [circle.circle_id]: event.target.checked,
+            }));
+          }}
+          type="checkbox"
+        />
+        <span className="min-w-0">
+          <strong className="block truncate font-medium">{circle.name}</strong>
+          <small className="block text-xs text-muted">
+            {offerDetail(circle)}
+          </small>
+        </span>
+      </label>
+    );
   }
 
   function personRow(person: AccessPerson) {
@@ -162,7 +204,7 @@ export function MomentAccessStrip({
         error={save.error}
         onSubmit={(event) => {
           event.preventDefault();
-          if (save.isPending || changed.length === 0) return;
+          if (save.isPending || !dirty) return;
           // Someone with Album access needs an explicit exclusion to lose
           // this Moment and only inherits again to regain it; everyone else
           // gets or loses a Moment allow.
@@ -178,8 +220,25 @@ export function MomentAccessStrip({
                     ? "deny"
                     : "inherit",
               })),
+              // The same rule for Circles: an Album Offer needs a withhold
+              // to leave this Moment out, and only inherits to bring it back.
+              circles: changedCircles.map((circle) => ({
+                circle_id: circle.circle_id,
+                decision: offered(circle)
+                  ? circle.album_offered
+                    ? "inherit"
+                    : "offer"
+                  : circle.album_offered
+                    ? "withhold"
+                    : "inherit",
+              })),
             },
-            { onSuccess: () => setDraft({}) },
+            {
+              onSuccess: () => {
+                setDraft({});
+                setOffers({});
+              },
+            },
           );
         }}
       >
@@ -198,7 +257,9 @@ export function MomentAccessStrip({
               allowed.map(personRow)
             ) : (
               <p className="border-t border-border py-3 text-xs text-muted">
-                No one can see this Moment yet.
+                {offeredNames.length > 0
+                  ? `No one has this Moment directly. It's offered to ${offeredNames.join(", ")}.`
+                  : "No one can see this Moment yet."}
               </p>
             )}
           </AccessGroup>
@@ -242,6 +303,15 @@ export function MomentAccessStrip({
               title="Excluded"
             >
               {excluded.map(personRow)}
+            </AccessGroup>
+          )}
+          {circles.length > 0 && (
+            <AccessGroup
+              count={circles.filter(offered).length}
+              id="circle-offers"
+              title="Offered to Circles"
+            >
+              {circles.map(circleRow)}
             </AccessGroup>
           )}
           {others.length > 0 && (
@@ -331,8 +401,11 @@ export function MomentAccessStrip({
           </summary>
           <p className="mt-2 leading-relaxed">
             Checking a person allows this Moment. Unchecking excludes them, even
-            when they have Album access. Item exceptions still win. Faces Immich
-            recognized only suggest access; nothing changes until you save.
+            when they have Album access. Item exceptions still win. Offering
+            this Moment to a Circle lets its members browse it under More
+            albums, unless a decision for that person says otherwise. Faces
+            Immich recognized only suggest access; nothing changes until you
+            save.
           </p>
         </details>
       </div>

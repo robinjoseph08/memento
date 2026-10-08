@@ -617,6 +617,7 @@ func planCovers(state syncState, request SyncRequest, removed map[string]bool, r
 		if len(after.remainingEntries(momentID, nil)) == 0 {
 			delete(after.Moments, momentID)
 			delete(after.Decisions, momentID)
+			delete(after.MomentOffers, momentID)
 			plan.removedMoments = append(plan.removedMoments, momentID)
 		}
 	}

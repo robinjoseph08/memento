@@ -1,7 +1,10 @@
 import { expect, it } from "vitest";
 
-import type { AudienceChange } from "../../types/generated/publishing";
-import { audienceSummary } from "./access-labels";
+import type {
+  AudienceChange,
+  MomentCircle,
+} from "../../types/generated/publishing";
+import { audienceSummary, offerDetail } from "./access-labels";
 
 function change(lists: Partial<AudienceChange>): AudienceChange {
   return {
@@ -51,4 +54,25 @@ it("describes media moving between an Offer and a Person's own access as a move"
       change({ lost_entry_ids: ["a", "b"], offered_gained_entry_ids: ["b"] }),
     ),
   ).toBe("can still browse 1 item through an Offer, loses 1 item");
+});
+
+it("says how an Album Offer applies to a Moment's Circle", () => {
+  const circle = (fields: Partial<MomentCircle>): MomentCircle => ({
+    circle_id: "extended",
+    name: "Extended family",
+    member_count: 3,
+    decision: "",
+    album_offered: false,
+    offered: false,
+    ...fields,
+  });
+  expect(offerDetail(circle({ album_offered: true, offered: true }))).toBe(
+    "Album Offer, 3 people",
+  );
+  expect(
+    offerDetail(circle({ album_offered: true, decision: "withhold" })),
+  ).toBe("Withheld from the Album Offer, 3 people");
+  expect(offerDetail(circle({ decision: "offer", member_count: 1 }))).toBe(
+    "1 person",
+  );
 });

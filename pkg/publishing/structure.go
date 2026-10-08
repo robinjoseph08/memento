@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 	"uuid"
 
@@ -37,10 +38,13 @@ type structureState struct {
 	AlbumDecisions map[string]Decision
 	EntryDecisions map[string]map[string]Decision
 	AlbumOffers    map[string]bool
+	MomentOffers   map[string]map[string]OfferDecision
 	Circles        map[string][]string
 	Joins          map[string]bool
-	People         map[string]string
-	PersonOrder    []string
+	// CircleNames names every Circle, for merge conflicts.
+	CircleNames map[string]string
+	People      map[string]string
+	PersonOrder []string
 }
 
 // firstEntry is the chronologically first of the given entries.
@@ -67,7 +71,7 @@ func (s structureState) remainingEntries(momentID string, exclude map[string]boo
 }
 
 func (s structureState) facts() accessFacts {
-	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: s.Circles, Joins: s.Joins}
+	return accessFacts{EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, MomentOffers: s.MomentOffers, Circles: s.Circles, Joins: s.Joins}
 }
 
 func (s structureState) clone() structureState {
@@ -79,8 +83,10 @@ func (s structureState) clone() structureState {
 		AlbumDecisions: maps.Clone(s.AlbumDecisions),
 		EntryDecisions: make(map[string]map[string]Decision, len(s.EntryDecisions)),
 		AlbumOffers:    maps.Clone(s.AlbumOffers),
+		MomentOffers:   make(map[string]map[string]OfferDecision, len(s.MomentOffers)),
 		Circles:        maps.Clone(s.Circles),
 		Joins:          maps.Clone(s.Joins),
+		CircleNames:    s.CircleNames,
 		People:         make(map[string]string, len(s.People)),
 		PersonOrder:    append([]string(nil), s.PersonOrder...),
 	}
@@ -94,12 +100,15 @@ func (s structureState) clone() structureState {
 	for entryID, decisions := range s.EntryDecisions {
 		result.EntryDecisions[entryID] = maps.Clone(decisions)
 	}
+	for momentID, offers := range s.MomentOffers {
+		result.MomentOffers[momentID] = maps.Clone(offers)
+	}
 	maps.Copy(result.People, s.People)
 	return result
 }
 
 func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, lock bool) (structureState, error) {
-	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, AlbumOffers: map[string]bool{}, Circles: map[string][]string{}, Joins: map[string]bool{}, People: map[string]string{}}
+	state := structureState{Moments: map[string]structureMoment{}, EntryMoments: map[string]string{}, EntryOrder: map[string]int{}, Decisions: map[string]map[string]Decision{}, AlbumDecisions: map[string]Decision{}, EntryDecisions: map[string]map[string]Decision{}, AlbumOffers: map[string]bool{}, MomentOffers: map[string]map[string]OfferDecision{}, Circles: map[string][]string{}, Joins: map[string]bool{}, CircleNames: map[string]string{}, People: map[string]string{}}
 	var moments []models.Moment
 	momentQuery := db.NewSelect().Model(&moments).Where("moment.album_id = ?", albumID).Order("moment.sort_order", "moment.id")
 	if lock {
@@ -194,6 +203,28 @@ func (m *Module) loadStructure(ctx context.Context, db bun.IDB, albumID string, 
 	for _, offer := range offers {
 		state.AlbumOffers[offer.CircleID.String()] = true
 	}
+	var momentOffers []models.MomentOffer
+	momentOfferQuery := db.NewSelect().Model(&momentOffers).Where("moment_offer.album_id = ?", albumID)
+	if lock {
+		momentOfferQuery = momentOfferQuery.For("UPDATE")
+	}
+	if err := momentOfferQuery.Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, offer := range momentOffers {
+		momentID := offer.MomentID.String()
+		if state.MomentOffers[momentID] == nil {
+			state.MomentOffers[momentID] = map[string]OfferDecision{}
+		}
+		state.MomentOffers[momentID][offer.CircleID.String()] = OfferDecision(offer.Decision)
+	}
+	var circles []models.Circle
+	if err := db.NewSelect().Model(&circles).Scan(ctx); err != nil {
+		return state, errorstack.CaptureContext(ctx, err)
+	}
+	for _, circle := range circles {
+		state.CircleNames[circle.ID.String()] = circle.Name
+	}
 	var members []models.CircleMember
 	if err := db.NewSelect().Model(&members).Order("member.person_id", "member.circle_id").Scan(ctx); err != nil {
 		return state, errorstack.CaptureContext(ctx, err)
@@ -231,31 +262,41 @@ func reviewedChanges(before, after structureState) []AudienceChange {
 // reviewed effect: membership, decisions, and covers. Person names and other
 // Moments' titles may change between preview and commit without a new review.
 type reviewedFacts struct {
-	Covers         map[string]string              `json:"covers"`
-	EntryMoments   map[string]string              `json:"entry_moments"`
-	Decisions      map[string]map[string]Decision `json:"decisions"`
-	AlbumDecisions map[string]Decision            `json:"album_decisions"`
-	EntryDecisions map[string]map[string]Decision `json:"entry_decisions"`
-	AlbumOffers    map[string]bool                `json:"album_offers"`
-	Circles        map[string][]string            `json:"circles"`
+	Covers         map[string]string                   `json:"covers"`
+	EntryMoments   map[string]string                   `json:"entry_moments"`
+	Decisions      map[string]map[string]Decision      `json:"decisions"`
+	AlbumDecisions map[string]Decision                 `json:"album_decisions"`
+	EntryDecisions map[string]map[string]Decision      `json:"entry_decisions"`
+	AlbumOffers    map[string]bool                     `json:"album_offers"`
+	MomentOffers   map[string]map[string]OfferDecision `json:"moment_offers"`
+	Circles        map[string][]string                 `json:"circles"`
 }
 
-// reviewed keeps only memberships of Circles the Album is offered to, so
-// editing an unrelated Circle never makes an open review stale.
+// reviewed keeps only memberships of Circles the Album or one of its Moments
+// is offered to, so editing an unrelated Circle never makes an open review
+// stale.
 func (s structureState) reviewed() reviewedFacts {
 	covers := make(map[string]string, len(s.Moments))
 	for id, moment := range s.Moments {
 		covers[id] = moment.CoverID
 	}
+	relevant := maps.Clone(s.AlbumOffers)
+	for _, offers := range s.MomentOffers {
+		for circleID, decision := range offers {
+			if decision == OfferDecisionOffer {
+				relevant[circleID] = true
+			}
+		}
+	}
 	circles := map[string][]string{}
 	for personID, circleIDs := range s.Circles {
 		for _, circleID := range circleIDs {
-			if s.AlbumOffers[circleID] {
+			if relevant[circleID] {
 				circles[personID] = append(circles[personID], circleID)
 			}
 		}
 	}
-	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, Circles: circles}
+	return reviewedFacts{Covers: covers, EntryMoments: s.EntryMoments, Decisions: s.Decisions, AlbumDecisions: s.AlbumDecisions, EntryDecisions: s.EntryDecisions, AlbumOffers: s.AlbumOffers, MomentOffers: s.MomentOffers, Circles: circles}
 }
 
 func reviewToken(operation string, before structureState, request any, after structureState) (string, error) {
@@ -326,7 +367,7 @@ func previewMove(state structureState, sourceMomentID string, request MoveEntrie
 	canonical := request
 	canonical.EntryIDs = canonicalEntries(request.EntryIDs)
 	canonical.ReviewToken = ""
-	preview := StructurePreview{Ready: true, RemovesMoment: removes, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}}
+	preview := StructurePreview{Ready: true, RemovesMoment: removes, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}, CircleConflicts: []CircleConflict{}}
 	preview.ReviewToken, err = reviewToken("move", state, canonical, after)
 	return preview, after, err
 }
@@ -344,6 +385,7 @@ func detachEntries(state structureState, momentID string, selected map[string]bo
 	if removes {
 		delete(after.Moments, momentID)
 		delete(after.Decisions, momentID)
+		delete(after.MomentOffers, momentID)
 	} else if selected[source.CoverID] {
 		updated := after.Moments[momentID]
 		updated.CoverID = state.firstEntry(state.remainingEntries(momentID, selected))
@@ -441,6 +483,9 @@ func previewSplit(state structureState, sourceMomentID string, request SplitMome
 	after.Moments[previewMomentID] = structureMoment{ID: previewMomentID, CaptureDate: source.CaptureDate, Title: title, SortOrder: maxOrder + 1, CoverID: state.firstEntry(selected)}
 	after.Decisions[previewMomentID] = map[string]Decision{}
 	maps.Copy(after.Decisions[previewMomentID], state.Decisions[sourceMomentID])
+	if offers := state.MomentOffers[sourceMomentID]; len(offers) > 0 {
+		after.MomentOffers[previewMomentID] = maps.Clone(offers)
+	}
 	for entryID := range selected {
 		after.EntryMoments[entryID] = previewMomentID
 	}
@@ -448,7 +493,7 @@ func previewSplit(state structureState, sourceMomentID string, request SplitMome
 	canonical.EntryIDs = canonicalEntries(request.EntryIDs)
 	canonical.NewTitle = title
 	canonical.ReviewToken = ""
-	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}}
+	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}, CircleConflicts: []CircleConflict{}}
 	preview.ReviewToken, err = reviewToken("split", state, canonical, after)
 	return preview, after, err
 }
@@ -518,12 +563,28 @@ func (m *Module) SplitMoment(ctx context.Context, albumID, sourceMomentID string
 				return errorstack.CaptureContext(ctx, err)
 			}
 		}
-		return nil
+		return insertMomentOffers(ctx, tx, albumID, newID.String(), after.MomentOffers[previewMomentID])
 	})
 	if err != nil {
 		return AlbumDetail{}, transactionError(ctx, err)
 	}
 	return m.GetAlbum(ctx, albumID)
+}
+
+// insertMomentOffers writes a Moment's offers and withholds after a split or
+// merge has cleared any it had.
+func insertMomentOffers(ctx context.Context, db bun.IDB, albumID, momentID string, offers map[string]OfferDecision) error {
+	if len(offers) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	rows := make([]models.MomentOffer, 0, len(offers))
+	for circleID, decision := range offers {
+		rows = append(rows, models.MomentOffer{MomentID: models.UUID(uuid.MustParse(momentID)), AlbumID: models.UUID(uuid.MustParse(albumID)),
+			CircleID: models.UUID(uuid.MustParse(circleID)), Decision: string(decision), UpdatedAt: now})
+	}
+	_, err := db.NewInsert().Model(&rows).Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
 }
 
 func normalizedResolutionMap(resolutions []AccessResolution) (map[string]Decision, error) {
@@ -535,6 +596,52 @@ func normalizedResolutionMap(resolutions []AccessResolution) (map[string]Decisio
 		result[resolution.PersonID] = resolution.Decision
 	}
 	return result, nil
+}
+
+func normalizedCircleResolutions(resolutions []CircleResolution) (map[string]OfferDecision, error) {
+	result := map[string]OfferDecision{}
+	for _, resolution := range resolutions {
+		if _, err := uuid.Parse(resolution.CircleID); err != nil || result[resolution.CircleID] != "" || !validOfferDecision(resolution.Decision) {
+			return nil, structureField("circle_resolutions", "Choose one combined Offer for each Circle.")
+		}
+		result[resolution.CircleID] = resolution.Decision
+	}
+	return result, nil
+}
+
+// offerConflicts lists the Circles whose Moment Offers differ between two
+// Moments, by Circle name.
+func offerConflicts(state structureState, sourceMomentID, targetMomentID string) []CircleConflict {
+	result := []CircleConflict{}
+	source, target := state.MomentOffers[sourceMomentID], state.MomentOffers[targetMomentID]
+	circleIDs := map[string]bool{}
+	for circleID := range source {
+		circleIDs[circleID] = true
+	}
+	for circleID := range target {
+		circleIDs[circleID] = true
+	}
+	for circleID := range circleIDs {
+		if source[circleID] == target[circleID] {
+			continue
+		}
+		conflict := CircleConflict{CircleID: circleID, Name: state.CircleNames[circleID], Source: source[circleID], Target: target[circleID]}
+		if conflict.Source == "" {
+			conflict.Source = OfferDecisionInherit
+		}
+		if conflict.Target == "" {
+			conflict.Target = OfferDecisionInherit
+		}
+		result = append(result, conflict)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		left, right := strings.ToLower(result[i].Name), strings.ToLower(result[j].Name)
+		if left != right {
+			return left < right
+		}
+		return result[i].CircleID < result[j].CircleID
+	})
+	return result
 }
 
 func previewMerge(state structureState, sourceMomentID string, request MergeMomentsRequest) (StructurePreview, structureState, error) {
@@ -579,9 +686,35 @@ func previewMerge(state structureState, sourceMomentID string, request MergeMome
 			return StructurePreview{}, state, structureField("resolutions", "Choose access only for the listed conflicts.")
 		}
 	}
+	circleResolutions, err := normalizedCircleResolutions(request.CircleResolutions)
+	if err != nil {
+		return StructurePreview{}, state, err
+	}
+	circleConflicts := offerConflicts(state, sourceMomentID, request.TargetMomentID)
+	circleConflictSet := map[string]bool{}
+	for _, conflict := range circleConflicts {
+		circleConflictSet[conflict.CircleID] = true
+	}
+	for circleID := range circleResolutions {
+		// A Circle deleted since the review has no Offers left to combine,
+		// and the changed state makes the review token stale instead.
+		if _, exists := state.CircleNames[circleID]; !exists {
+			delete(circleResolutions, circleID)
+			continue
+		}
+		if !circleConflictSet[circleID] {
+			return StructurePreview{}, state, structureField("circle_resolutions", "Choose Offers only for the listed Circles.")
+		}
+	}
+	unresolved := StructurePreview{Ready: false, Changes: []AudienceChange{}, Conflicts: conflicts, CircleConflicts: circleConflicts}
 	for personID := range conflictSet {
 		if resolutions[personID] == "" {
-			return StructurePreview{Ready: false, Changes: []AudienceChange{}, Conflicts: conflicts}, state, nil
+			return unresolved, state, nil
+		}
+	}
+	for circleID := range circleConflictSet {
+		if circleResolutions[circleID] == "" {
+			return unresolved, state, nil
 		}
 	}
 	after := state.clone()
@@ -616,12 +749,29 @@ func previewMerge(state structureState, sourceMomentID string, request MergeMome
 	}
 	after.Decisions[request.TargetMomentID] = mergedDecisions
 	delete(after.Decisions, sourceMomentID)
+	mergedOffers := maps.Clone(state.MomentOffers[request.TargetMomentID])
+	if mergedOffers == nil {
+		mergedOffers = map[string]OfferDecision{}
+	}
+	for circleID, decision := range circleResolutions {
+		if decision == OfferDecisionInherit {
+			delete(mergedOffers, circleID)
+		} else {
+			mergedOffers[circleID] = decision
+		}
+	}
+	after.MomentOffers[request.TargetMomentID] = mergedOffers
+	delete(after.MomentOffers, sourceMomentID)
 	canonical := request
 	canonical.Title = title
 	canonical.ReviewToken = ""
 	canonical.Resolutions = append([]AccessResolution(nil), request.Resolutions...)
 	sort.Slice(canonical.Resolutions, func(i, j int) bool { return canonical.Resolutions[i].PersonID < canonical.Resolutions[j].PersonID })
-	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: conflicts}
+	canonical.CircleResolutions = append([]CircleResolution(nil), request.CircleResolutions...)
+	sort.Slice(canonical.CircleResolutions, func(i, j int) bool {
+		return canonical.CircleResolutions[i].CircleID < canonical.CircleResolutions[j].CircleID
+	})
+	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: conflicts, CircleConflicts: circleConflicts}
 	preview.ReviewToken, err = reviewToken("merge", state, canonical, after)
 	return preview, after, err
 }
@@ -686,6 +836,12 @@ func (m *Module) MergeMoments(ctx context.Context, albumID, sourceMomentID strin
 			if _, err := tx.NewInsert().Model(&rows).Exec(ctx); err != nil {
 				return errorstack.CaptureContext(ctx, err)
 			}
+		}
+		if _, err := tx.NewDelete().Model((*models.MomentOffer)(nil)).Where("moment_id = ?", request.TargetMomentID).Exec(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		if err := insertMomentOffers(ctx, tx, albumID, request.TargetMomentID, after.MomentOffers[request.TargetMomentID]); err != nil {
+			return err
 		}
 		if _, err := tx.NewDelete().Model((*models.Moment)(nil)).Where("id = ? AND album_id = ?", sourceMomentID, albumID).Exec(ctx); err != nil {
 			return errorstack.CaptureContext(ctx, err)

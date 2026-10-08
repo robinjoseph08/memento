@@ -310,6 +310,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                             </span>
                             <span className="mt-1.5 block">
                               <Audience
+                                offeredTo={item.access.circles
+                                  .filter((circle) => circle.offered)
+                                  .map((circle) => circle.name)}
                                 people={item.access.people.filter(
                                   (person) => person.accessible_count > 0,
                                 )}

@@ -137,9 +137,13 @@ func viewerEntries(db bun.IDB, viewer viewerContext) *bun.SelectQuery {
 	const decision = "coalesce(entry_access.decision, moment_access.decision, album_access.decision)"
 	const direct = decision + " = 'allow'"
 	const offered = "(" + decision + " IS NULL AND album.published_at IS NOT NULL AND EXISTS (?))"
-	circles := db.NewSelect().TableExpr("album_offers AS offer").ColumnExpr("1").
-		Join("JOIN circle_members AS member ON member.circle_id = offer.circle_id").
-		Where("offer.album_id = entry.album_id AND member.person_id = ?", viewer.personID)
+	// For each of the Person's Circles, the Moment's offer or withhold comes
+	// first and the Album Offer fills in when there is none.
+	circles := db.NewSelect().TableExpr("circle_members AS member").ColumnExpr("1").
+		Join("LEFT JOIN moment_offers AS moment_offer ON moment_offer.moment_id = entry.moment_id AND moment_offer.circle_id = member.circle_id").
+		Join("LEFT JOIN album_offers AS offer ON offer.album_id = entry.album_id AND offer.circle_id = member.circle_id").
+		Where("member.person_id = ?", viewer.personID).
+		Where("coalesce(moment_offer.decision = 'offer', offer.album_id IS NOT NULL)")
 	switch viewer.reach {
 	case reachOwn:
 		q = q.Where("("+direct+" OR ("+offered+" AND album_join.person_id IS NOT NULL))", circles)

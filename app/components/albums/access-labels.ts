@@ -1,6 +1,7 @@
 import type {
   AccessPerson,
   AudienceChange,
+  MomentCircle,
 } from "../../types/generated/publishing";
 import { countLabel } from "./moment-labels";
 
@@ -20,6 +21,16 @@ export function accessDetail(person: AccessPerson) {
   if (person.inherited) return `Album access, ${seen}`;
   if (person.suggested) return "Detected here, not shared yet";
   return seen.charAt(0).toUpperCase() + seen.slice(1);
+}
+
+// One line under a Circle's name: its size and how the Album Offer applies
+// to this Moment.
+export function offerDetail(circle: MomentCircle) {
+  const people = countLabel(circle.member_count, "person", "people");
+  if (circle.album_offered && circle.decision === "withhold")
+    return `Withheld from the Album Offer, ${people}`;
+  if (circle.album_offered && !circle.decision) return `Album Offer, ${people}`;
+  return people;
 }
 
 const items = (ids: string[]) => countLabel(ids.length, "item", "items");

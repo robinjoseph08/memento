@@ -47,3 +47,19 @@ func TestAlbumOffersReachOnlyEntriesNoPersonRuleDecides(t *testing.T) {
 		{PersonID: "granted", GainedEntryIDs: []string{}, LostEntryIDs: []string{}, OfferedGainedEntryIDs: []string{}, OfferedLostEntryIDs: []string{"one"}},
 	}, audienceChanges(facts, withdrawn, []string{"granted", "outside"}))
 }
+
+func TestMomentOffersResolvePerCircleBeforeTheAlbumOffer(t *testing.T) {
+	t.Parallel()
+	facts := accessFacts{
+		EntryMoments: map[string]string{"ceremony": "first", "party": "second", "brunch": "third"},
+		AlbumOffers:  map[string]bool{"family": true},
+		MomentOffers: map[string]map[string]OfferDecision{
+			"first":  {"friends": OfferDecisionOffer},
+			"second": {"family": OfferDecisionWithhold, "friends": OfferDecisionOffer},
+		},
+		Circles: map[string][]string{"grandma": {"family"}, "cousin": {"family", "friends"}, "friend": {"friends"}},
+	}
+	assert.Equal(t, []string{"brunch", "ceremony"}, offeredEntries(facts, "grandma"), "a withhold leaves the Album Offer for other Moments")
+	assert.Equal(t, []string{"brunch", "ceremony", "party"}, offeredEntries(facts, "cousin"), "another Circle's Offer still counts")
+	assert.Equal(t, []string{"ceremony", "party"}, offeredEntries(facts, "friend"), "a Moment Offer needs no Album Offer")
+}

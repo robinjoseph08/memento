@@ -61,7 +61,7 @@ const album: AlbumDetail = {
       end_date: "2026-07-01",
       cover_entry_id: "beach",
       cover_position: 0,
-      access: { people: [], faces: [] },
+      access: { people: [], faces: [], circles: [] },
       entries: [
         {
           ...entry,
@@ -81,7 +81,7 @@ const album: AlbumDetail = {
       end_date: "2026-07-02",
       cover_entry_id: "dunes",
       cover_position: 0,
-      access: { people: [], faces: [] },
+      access: { people: [], faces: [], circles: [] },
       entries: [
         {
           ...entry,

@@ -146,6 +146,17 @@ type AlbumJoin struct {
 	CreatedAt     time.Time
 }
 
+// MomentOffer offers one Moment to a Circle or withholds it from the Album
+// Offer. A missing row inherits the Album Offer.
+type MomentOffer struct {
+	bun.BaseModel `bun:"table:moment_offers,alias:moment_offer"`
+	MomentID      UUID `bun:"moment_id,pk,type:uuid"`
+	AlbumID       UUID `bun:"type:uuid"`
+	CircleID      UUID `bun:"circle_id,pk,type:uuid"`
+	Decision      string
+	UpdatedAt     time.Time
+}
+
 type MediaFaceAssociation struct {
 	bun.BaseModel `bun:"table:media_face_associations,alias:face"`
 	MediaItemID   UUID   `bun:"media_item_id,pk,type:uuid"`

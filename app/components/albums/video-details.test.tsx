@@ -60,7 +60,7 @@ const album: AlbumDetail = {
       end_date: "2026-07-01",
       cover_entry_id: "video",
       cover_position: 0,
-      access: { people: [], faces: [] },
+      access: { people: [], faces: [], circles: [] },
       entries: [video],
     },
   ],
@@ -337,11 +337,17 @@ it("keeps the dialog open after saving access while a title edit is unsaved", as
     moments_detected: 0,
     deactivated: false,
     joined: false,
+    offering_circles: [],
   };
   const state = {
     album: {
       ...album,
-      moments: [{ ...album.moments[0], access: { people: [alex], faces: [] } }],
+      moments: [
+        {
+          ...album.moments[0],
+          access: { people: [alex], faces: [], circles: [] },
+        },
+      ],
     },
     posts: [] as [string, unknown][],
   };

@@ -39,6 +39,11 @@ func validDecision(decision Decision) bool {
 	return decision == DecisionAllow || decision == DecisionDeny
 }
 
+// validOfferDecision admits a Circle's offer, withhold, or inherit.
+func validOfferDecision(decision OfferDecision) bool {
+	return decision == OfferDecisionOffer || decision == OfferDecisionWithhold || decision == OfferDecisionInherit
+}
+
 func structureField(field, message string) error {
 	return errcodes.ValidationFields("Check the highlighted fields.", map[string]string{field: message})
 }
@@ -71,8 +76,10 @@ func (SaveRulesRequest) ValidationMessage(field, _ string) string {
 		return "Choose one rule for each Person."
 	case "person_id":
 		return "Choose a Person."
+	case "circles", "circle_id":
+		return "Choose one Offer for each Circle."
 	case "decision":
-		return "Choose allow, deny, or inherit."
+		return "Choose one rule for each Person and Circle."
 	}
 	return ""
 }
@@ -106,8 +113,10 @@ func (MergeMomentsRequest) ValidationMessage(field, rule string) string {
 		return "Choose another Moment in this Album."
 	case "cover_entry_id":
 		return "Choose a cover from the merged media."
-	case "resolutions":
+	case "resolutions", "person_id", "decision":
 		return "Choose one combined access decision for each conflict."
+	case "circle_resolutions", "circle_id":
+		return "Choose one combined Offer for each Circle."
 	}
 	return ""
 }

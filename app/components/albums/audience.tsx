@@ -19,13 +19,15 @@ export type AudiencePerson = Pick<
 // a count and any pending suggestions beside it. Hovering the stack lists
 // everyone; the names are also its accessible label, so the outline link
 // that contains it needs no second tab stop. Callers pass only the People
-// who belong in the stack.
+// who belong in the stack, and the names of any Circles it is offered to.
 export function Audience({
   people: allowed,
+  offeredTo = [],
   suggestions = 0,
   emptyLabel = "No access yet",
 }: {
   people: AudiencePerson[];
+  offeredTo?: string[];
   suggestions?: number;
   emptyLabel?: string;
 }) {
@@ -34,9 +36,10 @@ export function Audience({
   const names = allowed.map((person) => person.display_name).join(", ");
   return (
     <span className="flex items-center gap-2 text-xs">
-      {allowed.length === 0 ? (
+      {allowed.length === 0 && offeredTo.length === 0 && (
         <span className="text-muted">{emptyLabel}</span>
-      ) : (
+      )}
+      {allowed.length > 0 && (
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -68,6 +71,11 @@ export function Audience({
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
+      )}
+      {offeredTo.length > 0 && (
+        <span className="min-w-0 truncate text-muted">
+          Offered to {offeredTo.join(", ")}
+        </span>
       )}
       {suggestions > 0 && (
         <span className="text-accent-foreground">{suggestions} suggested</span>

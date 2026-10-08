@@ -11,6 +11,16 @@ const (
 	DecisionInherit Decision = "inherit"
 )
 
+// OfferDecision is a Circle's explicit choice for one Moment. Missing
+// decisions inherit the Album Offer.
+type OfferDecision string
+
+const (
+	OfferDecisionOffer    OfferDecision = "offer"
+	OfferDecisionWithhold OfferDecision = "withhold"
+	OfferDecisionInherit  OfferDecision = "inherit"
+)
+
 // AudienceChange describes the Album Entries whose effective access changes.
 // Gained and lost entries are granted directly; the offered lists are what
 // the Person's Circles are offered beyond that.
@@ -213,6 +223,18 @@ type AlbumCircle struct {
 	MemberCount int    `json:"member_count"`
 }
 
+// MomentCircle is one Circle's Offer for one Moment. Decision is the
+// Moment's own offer or withhold, empty when it inherits AlbumOffered, and
+// Offered is the result. Circles are Curator-only.
+type MomentCircle struct {
+	CircleID     string        `json:"circle_id"`
+	Name         string        `json:"name"`
+	MemberCount  int           `json:"member_count"`
+	Decision     OfferDecision `json:"decision"`
+	AlbumOffered bool          `json:"album_offered"`
+	Offered      bool          `json:"offered"`
+}
+
 // ExcludedEntry is media the Curator keeps out of this Album while it stays
 // in the Immich album. It keeps its Album Entry identity for Add back.
 type ExcludedEntry struct {
@@ -363,10 +385,15 @@ type AccessPerson struct {
 	// Joined marks a Person who joined the Album and currently has offered
 	// media in it.
 	Joined bool `json:"joined"`
+	// OfferingCircles names, at Moment scope, the Person's Circles that are
+	// offered this Moment. The Offer reaches them only where no rule of their
+	// own applies.
+	OfferingCircles []string `json:"offering_circles"`
 }
 
 type MomentAccess struct {
 	People      []AccessPerson `json:"people"`
+	Circles     []MomentCircle `json:"circles"`
 	Faces       []FaceRecord   `json:"faces"`
 	RefreshedAt *time.Time     `json:"refreshed_at"`
 }
@@ -415,8 +442,18 @@ type AlbumAccessPreview struct {
 	Changes []AudienceChange `json:"changes"`
 }
 
+// SaveRulesRequest changes the named People's rules and, for a Moment only,
+// the named Circles' Offers.
 type SaveRulesRequest struct {
 	Decisions []AccessResolution `json:"decisions" validate:"required,dive"`
+	Circles   []CircleResolution `json:"circles" validate:"dive"`
+}
+
+// CircleResolution offers a Moment to a Circle, withholds it, or leaves it to
+// the Album Offer.
+type CircleResolution struct {
+	CircleID string        `json:"circle_id" validate:"required,uuid"`
+	Decision OfferDecision `json:"decision" validate:"required,oneof=offer withhold inherit"`
 }
 
 type RemoveAccessPreviewRequest struct {
@@ -442,6 +479,14 @@ type AccessConflict struct {
 	Target      Decision `json:"target"`
 }
 
+// CircleConflict is a Circle whose Offer differs between merged Moments.
+type CircleConflict struct {
+	CircleID string        `json:"circle_id"`
+	Name     string        `json:"name"`
+	Source   OfferDecision `json:"source"`
+	Target   OfferDecision `json:"target"`
+}
+
 type AccessResolution struct {
 	PersonID string   `json:"person_id" validate:"required,uuid"`
 	Decision Decision `json:"decision" validate:"required,oneof=allow deny inherit"`
@@ -453,6 +498,8 @@ type StructurePreview struct {
 	RemovesMoment bool             `json:"removes_moment"`
 	Changes       []AudienceChange `json:"changes"`
 	Conflicts     []AccessConflict `json:"conflicts"`
+	// CircleConflicts lists the Circles a merge needs a combined Offer for.
+	CircleConflicts []CircleConflict `json:"circle_conflicts"`
 }
 
 // Moves and splits pick covers themselves: a Moment that loses its cover, or a
@@ -475,7 +522,9 @@ type MergeMomentsRequest struct {
 	Title          string             `json:"title" mod:"trim" validate:"max=200"`
 	CoverEntryID   string             `json:"cover_entry_id" validate:"required,uuid"`
 	Resolutions    []AccessResolution `json:"resolutions" validate:"dive"`
-	ReviewToken    string             `json:"review_token"`
+	// CircleResolutions combines the Offers listed in CircleConflicts.
+	CircleResolutions []CircleResolution `json:"circle_resolutions" validate:"dive"`
+	ReviewToken       string             `json:"review_token"`
 }
 
 // SyncPlacement chooses where one source asset joins the Album. MomentID is an

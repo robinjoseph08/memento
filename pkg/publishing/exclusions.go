@@ -31,7 +31,7 @@ func previewExclude(state structureState, momentID string, request ExcludeEntrie
 	canonical := request
 	canonical.EntryIDs = canonicalEntries(request.EntryIDs)
 	canonical.ReviewToken = ""
-	preview := StructurePreview{Ready: true, RemovesMoment: removes, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}}
+	preview := StructurePreview{Ready: true, RemovesMoment: removes, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}, CircleConflicts: []CircleConflict{}}
 	preview.ReviewToken, err = reviewToken("exclude", state, canonical, after)
 	return preview, after, err
 }
@@ -139,7 +139,7 @@ func previewInclude(state structureState, entryID, date string, request IncludeE
 	after.EntryMoments[entryID] = key
 	canonical := request
 	canonical.ReviewToken = ""
-	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}}
+	preview := StructurePreview{Ready: true, Changes: reviewedChanges(state, after), Conflicts: []AccessConflict{}, CircleConflicts: []CircleConflict{}}
 	var err error
 	preview.ReviewToken, err = reviewToken("include:"+entryID, state, canonical, after)
 	return preview, after, err
