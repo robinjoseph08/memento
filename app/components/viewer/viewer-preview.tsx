@@ -73,7 +73,7 @@ export function ViewerPreview({ album }: { album: AlbumDetail }) {
         </p>
       </div>
       {person ? (
-        <div className="mt-8">
+        <div className="mt-8 overflow-x-clip">
           <ViewerGallery
             context={{ albumID: album.id, personID: person.person_id }}
             entryID={entry}
