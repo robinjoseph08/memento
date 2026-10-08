@@ -115,7 +115,11 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
     (person) =>
       person.moments_detected > 0 && person.moments_detected < totalMoments,
   );
-  const nowhere = active.filter((person) => person.moments_detected === 0);
+  // People who joined come first among those not seen, so the Curator finds
+  // them without scanning the whole list.
+  const nowhere = active
+    .filter((person) => person.moments_detected === 0)
+    .sort((a, b) => Number(b.joined) - Number(a.joined));
   function change(
     next: Record<string, boolean>,
     nextOffers: Record<string, boolean> = offers,

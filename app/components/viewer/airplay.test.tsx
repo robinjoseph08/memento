@@ -26,7 +26,8 @@ const album: ViewerAlbum = {
   cover_url: "",
   cover_preview_url: "",
   has_own_media: false,
-  more_available: false,
+  more_photo_count: 0,
+  more_video_count: 0,
   joined: false,
   days: [
     {

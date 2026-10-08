@@ -47,12 +47,19 @@ type ViewerAlbum struct {
 	// HasOwnMedia marks a "More albums" entry for an Album the viewer already
 	// has part of, so its counts read as how many more are available.
 	HasOwnMedia bool `json:"has_own_media"`
-	// MoreAvailable marks the viewer's own Album when more of it is offered
-	// to them in its preview.
-	MoreAvailable bool `json:"more_available"`
+	// MorePhotoCount and MoreVideoCount count what more of the viewer's own
+	// Album is offered to them in its preview.
+	MorePhotoCount int `json:"more_photo_count"`
+	MoreVideoCount int `json:"more_video_count"`
 	// Joined marks the viewer's own Album when they joined it and offered
 	// media is still in it, so they can Leave it.
 	Joined bool `json:"joined"`
+}
+
+// LeaveResult says whether the Album stays among the viewer's own after
+// Leave, because something in it was granted to them directly.
+type LeaveResult struct {
+	Kept bool `json:"kept"`
 }
 
 // ViewerDay counts one local capture day. PhotoRatios and VideoRatios list

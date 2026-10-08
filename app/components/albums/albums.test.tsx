@@ -883,7 +883,7 @@ it("offers the Album to a Circle and previews what its members are offered", asy
   ).toBeEnabled();
 });
 
-it("tags People who joined the Album", async () => {
+it("tags People who joined the Album and lists them first among those not seen", async () => {
   desktopViewport();
   const person = {
     avatar_url: "",
@@ -902,13 +902,13 @@ it("tags People who joined the Album", async () => {
     Response.json({
       ...completeAlbum,
       access: [
+        { ...person, person_id: "sam", display_name: "Sam", joined: false },
         {
           ...person,
-          person_id: "grandma",
-          display_name: "Grandma",
+          person_id: "zoe",
+          display_name: "Zoe",
           joined: true,
         },
-        { ...person, person_id: "sam", display_name: "Sam", joined: false },
       ],
     }),
   );
@@ -918,10 +918,15 @@ it("tags People who joined the Album", async () => {
     "/curator/albums/album-1?section=access&pane=detail",
   );
   render(<App />);
-  const grandma = await screen.findByRole("checkbox", {
-    name: "Album access for Grandma, joined",
+  const zoe = await screen.findByRole("checkbox", {
+    name: "Album access for Zoe, joined",
   });
-  expect(grandma.closest("label")).toHaveTextContent("GrandmaJoined");
+  expect(zoe.closest("label")).toHaveTextContent("ZoeJoined");
+  expect(
+    screen
+      .getAllByRole("checkbox", { name: /^Album access for / })
+      .map((box) => box.getAttribute("aria-label")),
+  ).toEqual(["Album access for Zoe, joined", "Album access for Sam"]);
   expect(
     screen
       .getByRole("checkbox", { name: "Album access for Sam" })

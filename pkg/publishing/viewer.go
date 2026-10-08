@@ -593,8 +593,11 @@ func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumI
 		if viewer.preview {
 			return nil
 		}
-		if result.MoreAvailable, err = reaches(ctx, tx, viewer, reachOffered, albumID); err != nil {
-			return err
+		err = viewerEntries(tx, viewer.reaching(reachOffered)).Where("entry.album_id = ?", albumID).
+			ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS more_photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS more_video_count").
+			Scan(ctx, &result.MorePhotoCount, &result.MoreVideoCount)
+		if err != nil {
+			return errorstack.CaptureContext(ctx, err)
 		}
 		result.Joined, err = reaches(ctx, tx, viewer, reachJoined, albumID)
 		return err
@@ -633,18 +636,26 @@ func (m *Module) JoinAlbum(ctx context.Context, actorID, albumID string) error {
 }
 
 // LeaveAlbum takes the offered media in an Album out of the viewer's own,
-// keeping what they were granted directly. Leaving an Album they never
-// joined changes nothing, so one delete needs no transaction or checks.
-func (m *Module) LeaveAlbum(ctx context.Context, actorID, albumID string) error {
+// keeping what they were granted directly, and says whether that keeps the
+// Album theirs. Leaving an Album they never joined changes nothing.
+func (m *Module) LeaveAlbum(ctx context.Context, actorID, albumID string) (LeaveResult, error) {
+	var result LeaveResult
 	if _, err := uuid.Parse(albumID); err != nil {
-		return errcodes.NotFound("Album")
+		return result, errcodes.NotFound("Album")
 	}
-	viewer, err := resolveViewer(ctx, m.db, actorID, "")
-	if err != nil {
+	err := m.db.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		viewer, err := resolveViewer(ctx, tx, actorID, "")
+		if err != nil {
+			return err
+		}
+		_, err = tx.NewDelete().Model((*models.AlbumJoin)(nil)).Where("album_id = ? AND person_id = ?", albumID, viewer.personID).Exec(ctx)
+		if err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		result.Kept, err = reaches(ctx, tx, viewer, reachOwn, albumID)
 		return err
-	}
-	_, err = m.db.NewDelete().Model((*models.AlbumJoin)(nil)).Where("album_id = ? AND person_id = ?", albumID, viewer.personID).Exec(ctx)
-	return errorstack.CaptureContext(ctx, err)
+	})
+	return result, transactionError(ctx, err)
 }
 
 // joinedPeople lists the People who joined the Album and currently have

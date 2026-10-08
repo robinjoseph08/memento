@@ -8,6 +8,7 @@ import { useMemo } from "react";
 
 import { request } from "../../lib/http";
 import type {
+  LeaveResult,
   ViewerAlbum,
   ViewerDay,
   ViewerEntry,
@@ -71,13 +72,14 @@ export function useMoreAlbums() {
 
 // Join places an offered Album among the viewer's own, and Leave takes the
 // offered media back out. Either moves media between the viewer's Albums,
-// More albums, and Library, so every viewer query is refreshed.
-function useMembership(albumID: string, action: "join" | "leave") {
+// More albums, and Library, so every viewer query is refreshed. Leave says
+// whether the Album stays the viewer's own.
+function useMembership<T>(albumID: string, action: "join" | "leave") {
   const scope = usePrivateScope();
   const client = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      request(`/api/albums/${encodeURIComponent(albumID)}/${action}`, {
+      request<T>(`/api/albums/${encodeURIComponent(albumID)}/${action}`, {
         body: {},
       }),
     onSuccess: () =>
@@ -86,11 +88,11 @@ function useMembership(albumID: string, action: "join" | "leave") {
 }
 
 export function useJoinAlbum(albumID: string) {
-  return useMembership(albumID, "join");
+  return useMembership<unknown>(albumID, "join");
 }
 
 export function useLeaveAlbum(albumID: string) {
-  return useMembership(albumID, "leave");
+  return useMembership<LeaveResult>(albumID, "leave");
 }
 
 export function useViewerGallery(context: ViewerContext) {

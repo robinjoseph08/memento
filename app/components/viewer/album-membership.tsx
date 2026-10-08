@@ -6,6 +6,7 @@ import {
   type ViewerTab,
 } from "../../hooks/queries/viewer";
 import { errorMessage } from "../../lib/http";
+import type { ViewerAlbum } from "../../types/generated/publishing";
 import { ConfirmAction } from "../forms/confirm-action";
 import { Button } from "../ui/button";
 
@@ -49,7 +50,8 @@ export function JoinAlbum({
 }
 
 // Leave on an Album the viewer joined. Whatever was shared with them directly
-// stays; the rest goes back to More albums.
+// stays, and they stay on the Album to see it; with nothing left of their
+// own, the Album goes back to More albums and so do they.
 export function LeaveAlbum({ albumID }: { albumID: string }) {
   const leave = useLeaveAlbum(albumID);
   const navigate = useNavigate();
@@ -60,9 +62,9 @@ export function LeaveAlbum({ albumID }: { albumID: string }) {
         error={leave.error}
         label="Leave album"
         onConfirm={() =>
-          leave
-            .mutateAsync()
-            .then(() => void navigate("/albums", { replace: true }))
+          leave.mutateAsync().then(({ kept }) => {
+            if (!kept) void navigate("/albums", { replace: true });
+          })
         }
         pending={leave.isPending}
       />
@@ -71,20 +73,31 @@ export function LeaveAlbum({ albumID }: { albumID: string }) {
 }
 
 // The line at the end of the viewer's own Album when more of it is offered
-// to them.
+// to them, naming what kind of media. The link opens the preview on a tab
+// that has more to see.
 export function MoreAvailable({
-  albumID,
+  album,
   tab,
 }: {
-  albumID: string;
+  album: ViewerAlbum;
   tab: ViewerTab;
 }) {
+  const photos = album.more_photo_count > 0;
+  const videos = album.more_video_count > 0;
+  if (!photos && !videos) return null;
+  const target = !photos ? "videos" : !videos ? "photos" : tab;
   return (
     <p className="mt-14 border-t border-border pt-8 text-sm text-muted">
-      More of this album is available to you.{" "}
+      More{" "}
+      {photos && videos
+        ? "photos and videos are"
+        : photos
+          ? "photos are"
+          : "videos are"}{" "}
+      available in this album.{" "}
       <Link
         className="-mx-2 rounded-sm px-2 py-1 text-foreground underline underline-offset-4 hover:bg-surface"
-        to={`/albums/${encodeURIComponent(albumID)}/preview/${tab}`}
+        to={`/albums/${encodeURIComponent(album.id)}/preview/${target}`}
       >
         See the full album
       </Link>

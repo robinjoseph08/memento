@@ -77,7 +77,8 @@ const album: ViewerAlbum = {
   cover_url: "/preview/jamie/cover/thumb",
   cover_preview_url: "/preview/jamie/cover",
   has_own_media: false,
-  more_available: false,
+  more_photo_count: 0,
+  more_video_count: 0,
   joined: false,
   days: [
     {

@@ -62,9 +62,7 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
           context: { albumID: id, offered: true },
           to: `${base}/preview/${tab}${opened}`,
         }}
-        footer={(album) =>
-          album.more_available && <MoreAvailable albumID={id} tab={tab} />
-        }
+        footer={(album) => <MoreAvailable album={album} tab={tab} />}
         tab={tab}
         tabLinks={{ photos: `${base}/photos`, videos: `${base}/videos` }}
       />

@@ -175,9 +175,9 @@ func (f *offeredUseCases) JoinAlbum(_ context.Context, actor, album string) erro
 	return nil
 }
 
-func (f *offeredUseCases) LeaveAlbum(_ context.Context, actor, album string) error {
+func (f *offeredUseCases) LeaveAlbum(_ context.Context, actor, album string) (publishing.LeaveResult, error) {
 	f.actor, f.album, f.joined = actor, album, false
-	return nil
+	return publishing.LeaveResult{Kept: true}, nil
 }
 
 func (f *offeredUseCases) ViewMoreAlbums(_ context.Context, actor string) ([]publishing.ViewerAlbum, error) {
@@ -253,7 +253,9 @@ func TestOfferedAlbumHTTPUsesOnlyTheSignedInViewer(t *testing.T) {
 	require.Equal(t, 200, post("/api/albums/album/join?person=forged").Code)
 	require.True(t, module.joined)
 	require.Equal(t, "signed-in", module.actor)
-	require.Equal(t, 200, post("/api/albums/album/leave").Code)
+	response = post("/api/albums/album/leave")
+	require.Equal(t, 200, response.Code)
+	require.JSONEq(t, `{"kept":true}`, response.Body.String())
 	require.False(t, module.joined)
 	require.Equal(t, "album", module.album)
 }
