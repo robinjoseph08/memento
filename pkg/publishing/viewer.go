@@ -658,9 +658,10 @@ func (m *Module) LeaveAlbum(ctx context.Context, actorID, albumID string) (Leave
 	return result, transactionError(ctx, err)
 }
 
-// joinedPeople lists the People who joined the Album and currently have
-// offered media in it, for the Curator's "Joined" tag.
-func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]bool, error) {
+// joinedPeople counts the offered media each active Person who joined the
+// Album currently has in it, leaving out those with none, for the Curator's
+// "Joined" tag and accessible count.
+func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]int, error) {
 	var joins []models.AlbumJoin
 	err := db.NewSelect().Model(&joins).
 		Where("album_id = ? AND person_id IN (?)", albumID, db.NewSelect().Model((*models.Person)(nil)).Column("id").Where("deactivated_at IS NULL")).
@@ -668,14 +669,16 @@ func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]b
 	if err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
-	result := map[string]bool{}
+	result := map[string]int{}
 	for _, join := range joins {
 		personID := join.PersonID.String()
-		joined, err := reaches(ctx, db, viewerContext{personID: personID}, reachJoined, albumID)
+		count, err := viewerEntries(db, viewerContext{personID: personID, reach: reachJoined}).Where("entry.album_id = ?", albumID).Count(ctx)
 		if err != nil {
-			return nil, err
+			return nil, errorstack.CaptureContext(ctx, err)
 		}
-		result[personID] = joined
+		if count > 0 {
+			result[personID] = count
+		}
 	}
 	return result, nil
 }

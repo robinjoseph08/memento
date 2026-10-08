@@ -31,14 +31,16 @@ func (f offerFixture) libraryPhotos(t *testing.T, personID string) int {
 	return library.PhotoCount
 }
 
-func (f offerFixture) joined(t *testing.T) map[string]bool {
+// joined lists how many items each Person tagged "Joined" on the access
+// page can see in the Album.
+func (f offerFixture) joined(t *testing.T) map[string]int {
 	t.Helper()
 	album, err := f.module.GetAlbum(t.Context(), f.album.ID)
 	require.NoError(t, err)
-	result := map[string]bool{}
+	result := map[string]int{}
 	for _, person := range album.Access {
 		if person.Joined {
-			result[person.DisplayName] = true
+			result[person.DisplayName] = person.AccessibleCount
 		}
 	}
 	return result
@@ -71,7 +73,7 @@ func TestJoiningAnOfferedAlbumMakesItTheViewersOwn(t *testing.T) {
 	require.Equal(t, 3, f.libraryPhotos(t, grandma))
 	require.Empty(t, f.moreAlbums(t, grandma))
 	require.Nil(t, f.offeredEntries(t, grandma), "a joined Album has no preview")
-	require.Equal(t, map[string]bool{"Grandma": true}, f.joined(t))
+	require.Equal(t, map[string]int{"Grandma": 3}, f.joined(t))
 	// A deny for the Person still beats the Offer they joined.
 	f.rule(t, grandma, "", f.album.Moments[1].Entries[0].ID, publishing.DecisionDeny)
 	own, _ = f.ownAlbum(t, grandma)
@@ -119,6 +121,7 @@ func TestJoiningAnAlbumWithDirectAccessMergesTheOfferedMedia(t *testing.T) {
 	require.False(t, own.Joined)
 
 	require.NoError(t, f.module.JoinAlbum(t.Context(), granted, f.album.ID))
+	require.Equal(t, map[string]int{"Granted": 3}, f.joined(t), "direct and joined media both count")
 	own, ok = f.ownAlbum(t, granted)
 	require.True(t, ok)
 	require.Equal(t, 3, own.PhotoCount)
@@ -194,7 +197,7 @@ func TestAJoinOutlivesTheOffersBehindIt(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 3, own.PhotoCount)
 	require.Empty(t, f.moreAlbums(t, grandma))
-	require.Equal(t, map[string]bool{"Grandma": true}, f.joined(t))
+	require.Equal(t, map[string]int{"Grandma": 3}, f.joined(t))
 
 	// Leaving the Circle works the same way.
 	f.removeMember(t, extended, grandma)

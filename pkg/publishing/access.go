@@ -191,7 +191,7 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 	}
 	album.Access = []AccessPerson{}
 	for _, row := range people {
-		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()]}
+		person := AccessPerson{PersonID: row.ID.String(), DisplayName: row.DisplayName, Decision: allows[row.ID.String()], Joined: joined[row.ID.String()] > 0}
 		if row.AvatarFaceID != nil {
 			person.AvatarURL = media.AvatarURL(row.ID.String(), *row.AvatarFaceID, row.AvatarVersion)
 		}
@@ -221,6 +221,8 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 				}
 			}
 		}
+		// Joined media is the Person's own, so it counts as accessible too.
+		person.AccessibleCount += joined[person.PersonID]
 		person.Effective = person.AccessibleCount > 0
 		person.Detected = person.SupportingEntries > 0
 		person.Suggested = person.Detected && person.Decision == "" && !person.Effective

@@ -29,16 +29,21 @@ import { audienceSummary } from "./access-labels";
 import { countLabel } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
 
-// Who gains or loses media if the pending change is saved. Album access and
-// Remove all access both show it before their explicit action.
+// Who gains or loses media if the pending change is saved, shown before each
+// explicit action. While the review loads it says so; with no review yet,
+// placeholder explains how to get one, where the form has a way to.
 export function VisibilityReview({
   changes,
   album,
   className,
+  pending = false,
+  placeholder,
 }: {
   changes: AudienceChange[] | null | undefined;
   album: AlbumDetail;
   className?: string;
+  pending?: boolean;
+  placeholder?: string;
 }) {
   return (
     <section
@@ -47,9 +52,15 @@ export function VisibilityReview({
     >
       <h3 className="font-heading text-xl">Visibility after saving</h3>
       {!changes ? (
-        <p className="mt-3 text-sm text-muted">
-          Change access above to review it.
-        </p>
+        pending ? (
+          <p className="mt-3 text-sm text-muted" role="status">
+            Reviewing visibility…
+          </p>
+        ) : (
+          placeholder && (
+            <p className="mt-3 text-sm text-muted">{placeholder}</p>
+          )
+        )
       ) : changes.length === 0 ? (
         <p className="mt-3 text-sm text-muted">No one gains or loses media.</p>
       ) : (
@@ -412,12 +423,9 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
             album={album}
             changes={dirty ? review.data?.changes : undefined}
             className="my-6"
+            pending={dirty && review.isPending}
+            placeholder="Change access above to review it."
           />
-          {review.isPending && (
-            <p className="mb-4 text-xs text-muted" role="status">
-              Reviewing visibility…
-            </p>
-          )}
           {review.isError && (
             <p className="mb-4 text-xs text-destructive" role="alert">
               Could not review visibility. You can still save.
@@ -519,12 +527,8 @@ function RemoveAllAccessDialog({
           album={album}
           changes={review.data?.changes}
           className="my-6"
+          pending={review.isPending}
         />
-        {review.isPending && (
-          <p className="mb-4 text-xs text-muted" role="status">
-            Reviewing visibility…
-          </p>
-        )}
         {review.isError && (
           <p className="mb-4 text-sm text-destructive" role="alert">
             Could not review this person's access. Close and try again.
