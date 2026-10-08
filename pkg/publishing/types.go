@@ -389,6 +389,10 @@ type AccessPerson struct {
 	// offered this Moment. The Offer reaches them only where no rule of their
 	// own applies.
 	OfferingCircles []string `json:"offering_circles"`
+	// JoinedCount counts, at Moment scope, the media the Person sees as their
+	// own because they joined the Album. It is kept apart from Effective,
+	// which stands for a direct decision.
+	JoinedCount int `json:"joined_count"`
 }
 
 type MomentAccess struct {

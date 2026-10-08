@@ -314,7 +314,9 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                                   .filter((circle) => circle.offered)
                                   .map((circle) => circle.name)}
                                 people={item.access.people.filter(
-                                  (person) => person.accessible_count > 0,
+                                  (person) =>
+                                    person.accessible_count > 0 ||
+                                    person.joined_count > 0,
                                 )}
                                 suggestions={suggestions}
                                 withheldFrom={item.access.circles

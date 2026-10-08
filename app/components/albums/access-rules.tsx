@@ -134,7 +134,7 @@ export function RulesDialog({
       return "Inherit: excluded by this Moment";
     if (albumAllowed(person)) return "Inherit: allowed by Album access";
     if (person.offering_circles.length > 0)
-      return `Inherit: offered to ${person.offering_circles.join(", ")}`;
+      return `Inherit: ${person.joined_count > 0 ? "joined, " : ""}offered to ${person.offering_circles.join(", ")}`;
     return "Inherit: no access";
   };
   function changeOpen(next: boolean) {

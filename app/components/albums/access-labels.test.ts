@@ -1,10 +1,11 @@
 import { expect, it } from "vitest";
 
 import type {
+  AccessPerson,
   AudienceChange,
   MomentCircle,
 } from "../../types/generated/publishing";
-import { audienceSummary, offerDetail } from "./access-labels";
+import { accessDetail, audienceSummary, offerDetail } from "./access-labels";
 
 function change(lists: Partial<AudienceChange>): AudienceChange {
   return {
@@ -75,4 +76,27 @@ it("says how an Album Offer applies to a Moment's Circle", () => {
   expect(offerDetail(circle({ decision: "offer", member_count: 1 }))).toBe(
     "1 person",
   );
+});
+
+it("says when a Person sees a Moment because they joined the Album", () => {
+  const person: AccessPerson = {
+    person_id: "sam",
+    display_name: "Sam",
+    avatar_url: "",
+    decision: "",
+    detected: true,
+    suggested: false,
+    supporting_entries: 2,
+    inherited: false,
+    effective: false,
+    accessible_count: 0,
+    exceptions: 0,
+    moments_detected: 0,
+    deactivated: false,
+    offering_circles: ["Extended family"],
+    joined_count: 3,
+    joined: true,
+  };
+  expect(accessDetail(person)).toBe("Joined the Album, seen in 2 items");
+  expect(accessDetail({ ...person, joined_count: 0 })).toBe("Seen in 2 items");
 });

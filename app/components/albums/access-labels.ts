@@ -13,12 +13,13 @@ export function byPresence(left: AccessPerson, right: AccessPerson) {
 }
 
 // One line under a name: where the person was seen and whether their access
-// comes from the Album rather than this Moment.
+// comes from the Album or a Join rather than this Moment.
 export function accessDetail(person: AccessPerson) {
   const seen = person.detected
     ? `seen in ${countLabel(person.supporting_entries, "item", "items")}`
     : "not seen in this Moment";
   if (person.inherited) return `Album access, ${seen}`;
+  if (person.joined_count > 0) return `Joined the Album, ${seen}`;
   if (person.suggested) return "Detected here, not shared yet";
   return seen.charAt(0).toUpperCase() + seen.slice(1);
 }

@@ -385,6 +385,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     person_id: "sam",
@@ -402,6 +403,7 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   let current: AlbumDetail = {
     ...completeAlbum,
@@ -563,6 +565,7 @@ it.each([
                 deactivated: false,
                 joined: false,
                 offering_circles: [],
+                joined_count: 0,
               },
             ],
             faces: [],
@@ -662,6 +665,7 @@ it("asks before leaving Album access with an unsaved draft", async () => {
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -709,6 +713,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     ...alex,
@@ -724,6 +729,7 @@ it("reviews visibility before saving Album access and removes only the Album all
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex, sam] };
   const posts: Array<{ path: string; body: unknown }> = [];
@@ -978,6 +984,8 @@ it("offers and withholds a Moment for Circles and names the Offer where access s
     moments_detected: 0,
     deactivated: false,
     offering_circles: ["Extended family"],
+    joined_count: 0,
+    joined: false,
   };
   const current: AlbumDetail = {
     ...completeAlbum,
@@ -1088,7 +1096,7 @@ it("offers and withholds a Moment for Circles and names the Offer where access s
   );
 });
 
-it("names the Circles a Moment is offered to and withheld from in the outline", async () => {
+it("shows joined People and the Circles a Moment is offered to and withheld from in the outline", async () => {
   desktopViewport();
   const circle = {
     member_count: 2,
@@ -1103,7 +1111,26 @@ it("names the Circles a Moment is offered to and withheld from in the outline", 
         {
           ...completeAlbum.moments[0],
           access: {
-            people: [],
+            people: [
+              {
+                person_id: "alex",
+                display_name: "Alex",
+                avatar_url: "",
+                decision: "",
+                detected: false,
+                suggested: false,
+                supporting_entries: 0,
+                inherited: false,
+                effective: false,
+                accessible_count: 0,
+                exceptions: 0,
+                moments_detected: 0,
+                deactivated: false,
+                offering_circles: ["College friends"],
+                joined_count: 2,
+                joined: false,
+              },
+            ],
             faces: [],
             circles: [
               {
@@ -1139,6 +1166,9 @@ it("names the Circles a Moment is offered to and withheld from in the outline", 
     within(outline).getByText(
       "Offered to College friends, withheld from Extended family",
     ),
+  ).toBeVisible();
+  expect(
+    within(outline).getByRole("img", { name: "Allowed: Alex" }),
   ).toBeVisible();
   expect(within(outline).queryByText("No access yet")).not.toBeInTheDocument();
 });
@@ -1238,6 +1268,7 @@ it("keeps a Moment access draft after a failed save and shows the error", async 
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
     accessible_count: 2,
     exceptions: 0,
   };
@@ -1500,6 +1531,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1535,6 +1567,7 @@ it("reviews every scope before confirming removal of all a person's access", asy
             deactivated: false,
             joined: false,
             offering_circles: [],
+            joined_count: 0,
           },
         ],
       };
@@ -1593,6 +1626,7 @@ it("lists a deactivated person's frozen rules and removes them without offering 
     deactivated: true,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   let current = { ...completeAlbum, access: [alex] };
   let removed: unknown;
@@ -1674,6 +1708,7 @@ it("edits item rules with inherit labels that name the Moment or Album source", 
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   const sam = {
     ...alex,
@@ -1764,6 +1799,7 @@ it("discards item rule edits with one prompt and clears the entry from the URL",
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
     accessible_count: 0,
     exceptions: 0,
   };
@@ -1844,6 +1880,7 @@ it("opens saved rules without granting detected people and saves only the edited
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   const alex = {
     ...sam,
@@ -1921,6 +1958,7 @@ it("keeps a rules draft through refresh and failed save, and asks before discard
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   let current = {
     ...completeAlbum,
@@ -2057,6 +2095,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
                   deactivated: false,
                   joined: false,
                   offering_circles: [],
+                  joined_count: 0,
                 },
               ],
             },

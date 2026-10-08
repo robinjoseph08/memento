@@ -3,6 +3,7 @@ package publishing_test
 import (
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/publishing"
@@ -284,4 +285,46 @@ func TestAMergeReviewGoesStaleWhenAResolvedCircleIsDeleted(t *testing.T) {
 	require.NoError(t, err)
 	_, err = f.module.MergeMoments(t.Context(), f.album.ID, first.ID, merge)
 	requireCode(t, err, "audience_changed")
+}
+
+func TestAJoinedPersonCountsOnlyTowardMomentsOfferedToThem(t *testing.T) {
+	t.Parallel()
+	f := newOfferFixture(t)
+	grandma := f.person(t, "Grandma")
+	grandmaID := models.UUID(uuid.MustParse(grandma))
+	// Grandma's face is recognized in the later Moment, which is not offered.
+	for _, entry := range f.album.Moments[1].Entries {
+		face := models.MediaFaceAssociation{MediaItemID: models.UUID(uuid.MustParse(entry.MediaID)), SourceFaceID: "grandma-face", SourceName: "Grandma", SourceVersion: "1"}
+		_, err := f.db.NewInsert().Model(&face).Exec(t.Context())
+		require.NoError(t, err)
+	}
+	_, err := f.db.NewInsert().Model(&models.ImmichFaceLink{SourceID: "grandma-face", PersonID: &grandmaID, UpdatedAt: time.Now().UTC()}).Exec(t.Context())
+	require.NoError(t, err)
+	extended := f.circle(t, "Extended family", grandma)
+	first := f.album.Moments[0]
+	f.momentOffer(t, first.ID, extended, publishing.OfferDecisionOffer)
+	f.publish(t)
+	require.NoError(t, f.module.JoinAlbum(t.Context(), grandma, f.album.ID))
+
+	album, err := f.module.GetAlbum(t.Context(), f.album.ID)
+	require.NoError(t, err)
+	joined := momentPerson(album.Moments[0], grandma)
+	require.Equal(t, 1, joined.JoinedCount, "the joined Moment counts toward its audience")
+	require.False(t, joined.Effective, "a Join is not a direct decision")
+	require.Zero(t, joined.AccessibleCount)
+	notOffered := momentPerson(album.Moments[1], grandma)
+	require.Zero(t, notOffered.JoinedCount)
+	require.True(t, notOffered.Suggested, "a Join covers only Moments offered to the Person")
+
+	// A Person-level deny keeps the joined Person out of the Moment.
+	f.rule(t, grandma, first.ID, "", publishing.DecisionDeny)
+	album, err = f.module.GetAlbum(t.Context(), f.album.ID)
+	require.NoError(t, err)
+	require.Zero(t, momentPerson(album.Moments[0], grandma).JoinedCount)
+	f.rule(t, grandma, first.ID, "", publishing.DecisionInherit)
+
+	// Withdrawing the Offer leaves the Join with nothing to cover.
+	album = f.momentOffer(t, first.ID, extended, publishing.OfferDecisionInherit)
+	require.Zero(t, momentPerson(album.Moments[0], grandma).JoinedCount)
+	require.False(t, momentCircle(album.Moments[0], "Extended family").Offered)
 }

@@ -338,6 +338,7 @@ it("keeps the dialog open after saving access while a title edit is unsaved", as
     deactivated: false,
     joined: false,
     offering_circles: [],
+    joined_count: 0,
   };
   const state = {
     album: {

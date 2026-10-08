@@ -242,20 +242,20 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 				p.AccessibleCount = 0
 				// Media the Person joined here is already theirs, so suggesting
 				// an allow would only turn it into a direct grant that outlives
-				// Leave.
-				joinedHere := false
+				// Leave. A Join covers only what a Circle of theirs is offered.
+				p.JoinedCount = 0
 				for _, entry := range moment.Entries {
 					if entryAllowed(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
 						p.AccessibleCount++
 					}
-					if joined[person.PersonID] > 0 && undecided(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
-						joinedHere = true
+					if joined[person.PersonID] > 0 && len(p.OfferingCircles) > 0 && undecided(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
+						p.JoinedCount++
 					}
 					if entry.Decisions[person.PersonID] != "" {
 						person.Exceptions++
 					}
 				}
-				p.Suggested = p.Detected && p.Decision == "" && !p.Effective && !joinedHere
+				p.Suggested = p.Detected && p.Decision == "" && !p.Effective && p.JoinedCount == 0
 				if p.Decision != "" {
 					person.Exceptions++
 				}
