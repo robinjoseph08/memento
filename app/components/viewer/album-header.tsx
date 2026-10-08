@@ -9,6 +9,8 @@ import { captureRange } from "./labels";
 
 // The shared Album header: large plain title, uncropped cover beside it on
 // desktop and next to the title on phones, then description, range and counts.
+// The cover wash bleeds into the viewer page padding, so it reaches the screen
+// edges on phones and fades out behind the content above and below.
 export function AlbumHeader({
   album,
   coverFallback = "No cover",
@@ -26,8 +28,11 @@ export function AlbumHeader({
     />
   );
   return (
-    <header className="relative isolate overflow-hidden min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
-      <CoverWash src={album.cover_url} />
+    <header className="relative min-[761px]:grid min-[761px]:grid-cols-[minmax(0,1fr)_minmax(0,390px)] min-[761px]:items-center min-[761px]:gap-12">
+      <CoverWash
+        className="-inset-x-5 -top-24 h-[calc(100%+12rem)] w-[calc(100%+2.5rem)] min-[761px]:-inset-x-12 min-[761px]:w-[calc(100%+6rem)]"
+        src={album.cover_url}
+      />
       <div className="min-w-0">
         <div className="flex items-start gap-5">
           <h1 className="min-w-0 flex-1 font-heading text-[clamp(36px,5vw,64px)] leading-[1.1] tracking-[-1.5px] text-balance">
