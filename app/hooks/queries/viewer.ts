@@ -74,7 +74,7 @@ export function useMoreAlbums() {
 // offered media back out. Either moves media between the viewer's Albums,
 // More albums, and Library, so every viewer query is refreshed. Leave says
 // whether the Album stays the viewer's own.
-function useMembership<T>(albumID: string, action: "join" | "leave") {
+function useMembership<T = unknown>(albumID: string, action: "join" | "leave") {
   const scope = usePrivateScope();
   const client = useQueryClient();
   return useMutation({
@@ -88,7 +88,7 @@ function useMembership<T>(albumID: string, action: "join" | "leave") {
 }
 
 export function useJoinAlbum(albumID: string) {
-  return useMembership<unknown>(albumID, "join");
+  return useMembership(albumID, "join");
 }
 
 export function useLeaveAlbum(albumID: string) {

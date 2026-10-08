@@ -44,9 +44,10 @@ type ViewerAlbum struct {
 	// Album header; list cards keep the small thumbnail.
 	CoverPreviewURL string      `json:"cover_preview_url"`
 	Days            []ViewerDay `json:"days"`
-	// HasOwnMedia marks an Album the viewer has part of directly. A "More
-	// albums" entry then counts how many more are available, and their own
-	// Album uses it to say what Leave keeps.
+	// HasOwnMedia marks an Album with media shared with the viewer directly.
+	// A "More albums" entry then counts how many more are available, and
+	// their own Album uses it to say what Leave keeps. A Curator's preview
+	// leaves it unset.
 	HasOwnMedia bool `json:"has_own_media"`
 	// MorePhotoCount and MoreVideoCount count what more of the viewer's own
 	// Album is offered to them in its preview.

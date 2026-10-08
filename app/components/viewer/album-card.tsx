@@ -8,10 +8,16 @@ import { PrintStack } from "../albums/print-stack";
 import { captureRange } from "./labels";
 
 // The viewer's Album tile: square cover, title, counts, and capture range.
-// The Album list wraps it in a link; Onboarding shows it as a preview. A
-// More albums tile for an Album the viewer already has part of says how many
-// more photos and videos it holds.
-export function AlbumCard({ album }: { album: ViewerAlbum }) {
+// The Album list wraps it in a link; Onboarding shows it as a preview. An
+// offered tile, in More albums, for an Album the viewer already has part of
+// says how many more photos and videos it holds.
+export function AlbumCard({
+  album,
+  offered = false,
+}: {
+  album: ViewerAlbum;
+  offered?: boolean;
+}) {
   return (
     <>
       <PrintStack>
@@ -33,7 +39,7 @@ export function AlbumCard({ album }: { album: ViewerAlbum }) {
         />
         {captureRange(album)}
       </span>
-      {album.has_own_media ? (
+      {offered && album.has_own_media ? (
         <span className="block text-xs/5 text-muted">{moreLabel(album)}</span>
       ) : (
         <MediaCounts

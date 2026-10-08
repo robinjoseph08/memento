@@ -90,15 +90,11 @@ export function MoreAvailable({
   const videos = album.more_video_count > 0;
   if (!photos && !videos) return null;
   const target = !photos ? "videos" : !videos ? "photos" : tab;
+  const what =
+    photos && videos ? "photos and videos" : photos ? "photos" : "videos";
   return (
     <p className="mt-14 border-t border-border pt-8 text-sm text-muted">
-      More{" "}
-      {photos && videos
-        ? "photos and videos are"
-        : photos
-          ? "photos are"
-          : "videos are"}{" "}
-      available in this album.{" "}
+      More {what} are available in this album.{" "}
       <Link
         className="-mx-2 rounded-sm px-2 py-1 text-foreground underline underline-offset-4 hover:bg-surface"
         to={`/albums/${encodeURIComponent(album.id)}/preview/${target}`}

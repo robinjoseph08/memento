@@ -201,16 +201,23 @@ func attachAccess(ctx context.Context, db bun.IDB, album *AlbumDetail) error {
 			if p != nil {
 				p.Inherited = person.Decision == DecisionAllow
 				p.Effective = entryAllowed(person.Decision, p.Decision, "")
-				p.Suggested = p.Detected && p.Decision == "" && !p.Effective
 				p.AccessibleCount = 0
+				// Media the Person joined here is already theirs, so suggesting
+				// an allow would only turn it into a direct grant that outlives
+				// Leave.
+				joinedHere := false
 				for _, entry := range moment.Entries {
 					if entryAllowed(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
 						p.AccessibleCount++
+					}
+					if joined[person.PersonID] > 0 && undecided(person.Decision, p.Decision, entry.Decisions[person.PersonID]) {
+						joinedHere = true
 					}
 					if entry.Decisions[person.PersonID] != "" {
 						person.Exceptions++
 					}
 				}
+				p.Suggested = p.Detected && p.Decision == "" && !p.Effective && !joinedHere
 				if p.Decision != "" {
 					person.Exceptions++
 				}

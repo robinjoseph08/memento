@@ -331,7 +331,9 @@ it("ends an Album the viewer has part of with a link to the rest, labeled on Mor
   };
   mockViewer((path) => {
     if (path === "/api/albums")
-      return Response.json([{ ...reunion, photo_count: 1 }]);
+      return Response.json([
+        { ...reunion, photo_count: 1, has_own_media: true },
+      ]);
     if (path === "/api/albums/more") return Response.json([partial]);
     if (path === "/api/albums/reunion")
       return Response.json({
@@ -350,6 +352,11 @@ it("ends an Album the viewer has part of with a link to the rest, labeled on Mor
   expect(
     within(more).getByRole("link", { name: /Family reunion/ }),
   ).toHaveTextContent("3 more photos and 1 more video");
+  const own = screen
+    .getAllByRole("link", { name: /Family reunion/ })
+    .find((link) => !more.contains(link))!;
+  expect(own).toHaveTextContent("1 photo, 0 videos");
+  expect(own).not.toHaveTextContent("more");
   await user.click(
     screen
       .getAllByRole("link", { name: /Family reunion/ })

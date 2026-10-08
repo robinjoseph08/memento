@@ -2,8 +2,11 @@ package publishing_test
 
 import (
 	"testing"
+	"time"
+	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
+	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/publishing"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +24,7 @@ func (f offerFixture) ownAlbum(t *testing.T, personID string) (publishing.Viewer
 	require.NoError(t, err)
 	require.Len(t, albums, 1)
 	require.Equal(t, f.album.ID, albums[0].ID)
+	require.Equal(t, album.HasOwnMedia, albums[0].HasOwnMedia, "the list and the Album agree")
 	return album, true
 }
 
@@ -244,4 +248,38 @@ func TestViewingGroupsFollowOffersAndJoins(t *testing.T) {
 	}, groups())
 	require.NoError(t, f.module.JoinAlbum(t.Context(), granted, f.album.ID))
 	require.Equal(t, []string{first.ID, later.ID}, groups()["Granted"])
+}
+
+func TestMomentsNeverSuggestAPersonForMediaTheyJoined(t *testing.T) {
+	t.Parallel()
+	f := newOfferFixture(t)
+	grandma := f.person(t, "Grandma")
+	grandmaID := models.UUID(uuid.MustParse(grandma))
+	// Grandma's face is recognized in the later Moment.
+	for _, entry := range f.album.Moments[1].Entries {
+		face := models.MediaFaceAssociation{MediaItemID: models.UUID(uuid.MustParse(entry.MediaID)), SourceFaceID: "grandma-face", SourceName: "Grandma", SourceVersion: "1"}
+		_, err := f.db.NewInsert().Model(&face).Exec(t.Context())
+		require.NoError(t, err)
+	}
+	link := models.ImmichFaceLink{SourceID: "grandma-face", PersonID: &grandmaID, UpdatedAt: time.Now().UTC()}
+	_, err := f.db.NewInsert().Model(&link).Exec(t.Context())
+	require.NoError(t, err)
+	extended := f.circle(t, "Extended family", grandma)
+	f.offer(t, true, extended)
+	f.publish(t)
+	suggested := func() bool {
+		t.Helper()
+		album, err := f.module.GetAlbum(t.Context(), f.album.ID)
+		require.NoError(t, err)
+		person := personFor(album.Moments[1], grandma)
+		require.True(t, person.Detected)
+		require.False(t, person.Effective, "a Join is not a direct decision")
+		return person.Suggested
+	}
+	require.True(t, suggested(), "an Offer alone still leaves the suggestion")
+	require.NoError(t, f.module.JoinAlbum(t.Context(), grandma, f.album.ID))
+	require.False(t, suggested(), "allowing it would only turn joined media into a direct grant")
+	_, err = f.module.LeaveAlbum(t.Context(), grandma, f.album.ID)
+	require.NoError(t, err)
+	require.True(t, suggested())
 }

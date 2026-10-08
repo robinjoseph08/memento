@@ -541,10 +541,8 @@ func (m *Module) viewAlbums(ctx context.Context, actorID string, reach viewerRea
 			if err != nil {
 				return err
 			}
-			if reach == reachOffered {
-				if album.HasOwnMedia, err = reaches(ctx, tx, viewer, reachOwn, id); err != nil {
-					return err
-				}
+			if album.HasOwnMedia, err = reaches(ctx, tx, viewer, reachDirect, id); err != nil {
+				return err
 			}
 			result = append(result, album)
 		}

@@ -31,7 +31,9 @@ import { PersonAvatar } from "./person-avatar";
 
 // Who gains or loses media if the pending change is saved, shown before each
 // explicit action. While the review loads it says so; with no review yet,
-// placeholder explains how to get one, where the form has a way to.
+// placeholder explains how to get one, where the form has a way to. With
+// neither, such as after a failed review, the section stays out of the way
+// of the caller's error.
 export function VisibilityReview({
   changes,
   album,
@@ -45,6 +47,7 @@ export function VisibilityReview({
   pending?: boolean;
   placeholder?: string;
 }) {
+  if (!changes && !pending && !placeholder) return null;
   return (
     <section
       aria-label="Visibility review"
@@ -57,9 +60,7 @@ export function VisibilityReview({
             Reviewing visibility…
           </p>
         ) : (
-          placeholder && (
-            <p className="mt-3 text-sm text-muted">{placeholder}</p>
-          )
+          <p className="mt-3 text-sm text-muted">{placeholder}</p>
         )
       ) : changes.length === 0 ? (
         <p className="mt-3 text-sm text-muted">No one gains or loses media.</p>
@@ -424,7 +425,9 @@ export function AlbumAccess({ album }: { album: AlbumDetail }) {
             changes={dirty ? review.data?.changes : undefined}
             className="my-6"
             pending={dirty && review.isPending}
-            placeholder="Change access above to review it."
+            placeholder={
+              review.isError ? undefined : "Change access above to review it."
+            }
           />
           {review.isError && (
             <p className="mb-4 text-xs text-destructive" role="alert">
@@ -527,7 +530,7 @@ function RemoveAllAccessDialog({
           album={album}
           changes={review.data?.changes}
           className="my-6"
-          pending={review.isPending}
+          pending={review.isPending || review.isIdle}
         />
         {review.isError && (
           <p className="mb-4 text-sm text-destructive" role="alert">

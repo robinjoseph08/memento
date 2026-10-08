@@ -244,6 +244,45 @@ it("keeps selected media out after a visibility review and lists it as excluded"
   ).toBeVisible();
 });
 
+it("leaves no empty review section when the Keep out review fails", async () => {
+  desktopViewport();
+  mockAPI((path) =>
+    path.endsWith("/exclude/preview")
+      ? Response.json(
+          { error: { code: "internal", message: "Something went wrong." } },
+          { status: 500 },
+        )
+      : Response.json(album),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?moment=day-1&pane=detail",
+  );
+  const user = userEvent.setup();
+  render(<App />);
+  const momentPane = await screen.findByRole("region", { name: "First day" });
+  await user.click(within(momentPane).getByRole("button", { name: "Select" }));
+  await user.click(
+    within(momentPane).getByRole("checkbox", {
+      name: "Select Photo taken July 1, 2026 at 12:00 PM",
+    }),
+  );
+  await user.click(
+    within(momentPane).getByRole("button", { name: "Keep out" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    await within(dialog).findByRole("button", { name: "Try again" }),
+  ).toBeVisible();
+  expect(
+    within(dialog).queryByRole("region", { name: "Visibility review" }),
+  ).not.toBeInTheDocument();
+  expect(
+    within(dialog).getByRole("button", { name: "Keep out" }),
+  ).toBeDisabled();
+});
+
 it("adds excluded media back into a chosen Moment after a review", async () => {
   desktopViewport();
   let current = excludedAlbum;

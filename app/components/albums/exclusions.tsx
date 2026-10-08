@@ -70,7 +70,7 @@ export function ExcludeDialog({
           album={album}
           changes={preview.data?.changes}
           className="my-6"
-          pending={preview.isPending}
+          pending={preview.isPending || preview.isIdle}
         />
         {preview.isError && (
           <ReadFailure
@@ -180,7 +180,7 @@ function IncludeDialog({
             album={album}
             changes={preview.data?.changes}
             className="my-6"
-            pending={preview.isPending}
+            pending={preview.isPending || preview.isIdle}
           />
           {preview.isError && !errors.moment_id && (
             <div className="mb-4">

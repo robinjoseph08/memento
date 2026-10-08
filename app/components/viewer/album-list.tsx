@@ -90,6 +90,7 @@ export function ViewerAlbumList() {
           <AlbumGrid
             albums={more.data}
             link={(id) => `/albums/${encodeURIComponent(id)}/preview/photos`}
+            offered
           />
         </section>
       )}
@@ -100,9 +101,11 @@ export function ViewerAlbumList() {
 function AlbumGrid({
   albums,
   link,
+  offered = false,
 }: {
   albums: ViewerAlbum[];
   link: (id: string) => string;
+  offered?: boolean;
 }) {
   return (
     <ul className="mt-9 grid grid-cols-2 gap-x-5 gap-y-8 min-[601px]:grid-cols-3 min-[1001px]:grid-cols-4">
@@ -112,7 +115,7 @@ function AlbumGrid({
             className="group block rounded-sm p-2 focus-visible:outline-2 focus-visible:outline-ring"
             to={link(album.id)}
           >
-            <AlbumCard album={album} />
+            <AlbumCard album={album} offered={offered} />
           </Link>
         </li>
       ))}
