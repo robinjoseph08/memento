@@ -43,6 +43,9 @@ const offerLabels: Record<OfferDecision, string> = {
   inherit: "No Moment decision",
 };
 
+const lowerFirst = (label: string) =>
+  label.charAt(0).toLowerCase() + label.slice(1);
+
 export function SelectField({
   label,
   value,
@@ -462,7 +465,7 @@ export function StructureEditor({
                           { value: "offer", label: "Offer" },
                           { value: "withhold", label: "Withhold" },
                         ]}
-                        placeholder={`${offerLabels[conflict.source]} here, ${offerLabels[conflict.target].toLowerCase()} there`}
+                        placeholder={`${offerLabels[conflict.source]} here, ${lowerFirst(offerLabels[conflict.target])} there`}
                         value={circleResolutions[conflict.circle_id] ?? ""}
                       />
                     ))}

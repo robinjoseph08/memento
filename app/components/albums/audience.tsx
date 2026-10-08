@@ -19,24 +19,34 @@ export type AudiencePerson = Pick<
 // a count and any pending suggestions beside it. Hovering the stack lists
 // everyone; the names are also its accessible label, so the outline link
 // that contains it needs no second tab stop. Callers pass only the People
-// who belong in the stack, and the names of any Circles it is offered to.
+// who belong in the stack, and the names of any Circles it is offered to or
+// withheld from.
 export function Audience({
   people: allowed,
   offeredTo = [],
+  withheldFrom = [],
   suggestions = 0,
   emptyLabel = "No access yet",
 }: {
   people: AudiencePerson[];
   offeredTo?: string[];
+  withheldFrom?: string[];
   suggestions?: number;
   emptyLabel?: string;
 }) {
   const shown = allowed.slice(0, shownAvatars);
   const overflow = allowed.length - shown.length;
   const names = allowed.map((person) => person.display_name).join(", ");
+  const offered =
+    offeredTo.length > 0 ? `Offered to ${offeredTo.join(", ")}` : "";
+  const withheld =
+    withheldFrom.length > 0
+      ? `${offered ? "withheld" : "Withheld"} from ${withheldFrom.join(", ")}`
+      : "";
+  const circleLabel = [offered, withheld].filter(Boolean).join(", ");
   return (
     <span className="flex items-center gap-2 text-xs">
-      {allowed.length === 0 && offeredTo.length === 0 && (
+      {allowed.length === 0 && !circleLabel && (
         <span className="text-muted">{emptyLabel}</span>
       )}
       {allowed.length > 0 && (
@@ -72,10 +82,8 @@ export function Audience({
           </Tooltip>
         </TooltipProvider>
       )}
-      {offeredTo.length > 0 && (
-        <span className="min-w-0 truncate text-muted">
-          Offered to {offeredTo.join(", ")}
-        </span>
+      {circleLabel && (
+        <span className="min-w-0 truncate text-muted">{circleLabel}</span>
       )}
       {suggestions > 0 && (
         <span className="text-accent-foreground">{suggestions} suggested</span>

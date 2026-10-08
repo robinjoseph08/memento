@@ -317,6 +317,12 @@ function AlbumContent({ album }: { album: AlbumDetail }) {
                                   (person) => person.accessible_count > 0,
                                 )}
                                 suggestions={suggestions}
+                                withheldFrom={item.access.circles
+                                  .filter(
+                                    (circle) =>
+                                      circle.album_offered && !circle.offered,
+                                  )
+                                  .map((circle) => circle.name)}
                               />
                             </span>
                           </span>

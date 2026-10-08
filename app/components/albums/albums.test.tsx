@@ -1088,6 +1088,61 @@ it("offers and withholds a Moment for Circles and names the Offer where access s
   );
 });
 
+it("names the Circles a Moment is offered to and withheld from in the outline", async () => {
+  desktopViewport();
+  const circle = {
+    member_count: 2,
+    decision: "",
+    album_offered: false,
+    offered: false,
+  };
+  mockAPI(() =>
+    Response.json({
+      ...completeAlbum,
+      moments: [
+        {
+          ...completeAlbum.moments[0],
+          access: {
+            people: [],
+            faces: [],
+            circles: [
+              {
+                ...circle,
+                circle_id: "college",
+                name: "College friends",
+                decision: "offer",
+                offered: true,
+              },
+              {
+                ...circle,
+                circle_id: "extended",
+                name: "Extended family",
+                decision: "withhold",
+                album_offered: true,
+              },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  window.history.replaceState(
+    null,
+    "",
+    "/curator/albums/album-1?section=moments&moment=day-1",
+  );
+  render(<App />);
+  const outline = await screen.findByRole("navigation", {
+    name: "Album outline",
+  });
+  expect(
+    within(outline).getByText(
+      "Offered to College friends, withheld from Extended family",
+    ),
+  ).toBeVisible();
+  expect(within(outline).queryByText("No access yet")).not.toBeInTheDocument();
+});
+
 it("asks for a combined Offer when merging Moments offered differently", async () => {
   desktopViewport();
   const current: AlbumDetail = {
@@ -1147,6 +1202,9 @@ it("asks for a combined Offer when merging Moments offered differently", async (
       "These Moments differ. Choose access for every listed Person and Circle.",
     ),
   ).toBeVisible();
+  expect(
+    within(dialog).getByRole("combobox", { name: "Extended family" }),
+  ).toHaveTextContent("Offered here, no Moment decision there");
   await user.click(
     within(dialog).getByRole("combobox", { name: "Extended family" }),
   );
