@@ -311,8 +311,9 @@ it("leaves a joined Album after confirming and returns to the Album list", async
   await user.click(await screen.findByRole("button", { name: "Leave album" }));
   const dialog = await screen.findByRole("dialog");
   expect(dialog).toHaveTextContent(
-    "Photos and videos shared with you directly stay.",
+    "It goes back to More albums, where you can join it again.",
   );
+  expect(dialog).not.toHaveTextContent("shared with you directly");
   await user.click(within(dialog).getByRole("button", { name: "Leave album" }));
   await waitFor(() => expect(window.location.pathname).toBe("/albums"));
   expect(left).toBe(true);
@@ -396,7 +397,7 @@ it("stays on an Album after leaving when part of it was shared directly", async 
       return Response.json(
         left
           ? { ...reunion, photo_count: 1, more_photo_count: 2 }
-          : { ...reunion, joined: true },
+          : { ...reunion, joined: true, has_own_media: true },
       );
     if (path === "/api/albums/reunion/photos")
       return Response.json({ entries: [photo], next_cursor: "" });
@@ -406,11 +407,11 @@ it("stays on an Album after leaving when part of it was shared directly", async 
   const user = userEvent.setup();
   render(<App />);
   await user.click(await screen.findByRole("button", { name: "Leave album" }));
-  await user.click(
-    within(await screen.findByRole("dialog")).getByRole("button", {
-      name: "Leave album",
-    }),
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent(
+    "Photos and videos shared with you directly stay. The rest goes back to More albums.",
   );
+  await user.click(within(dialog).getByRole("button", { name: "Leave album" }));
   expect(
     await screen.findByText(/More photos are available in this album\./),
   ).toBeVisible();

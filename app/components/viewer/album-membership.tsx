@@ -52,13 +52,17 @@ export function JoinAlbum({
 // Leave on an Album the viewer joined. Whatever was shared with them directly
 // stays, and they stay on the Album to see it; with nothing left of their
 // own, the Album goes back to More albums and so do they.
-export function LeaveAlbum({ albumID }: { albumID: string }) {
-  const leave = useLeaveAlbum(albumID);
+export function LeaveAlbum({ album }: { album: ViewerAlbum }) {
+  const leave = useLeaveAlbum(album.id);
   const navigate = useNavigate();
   return (
     <div className="mt-8">
       <ConfirmAction
-        description="Photos and videos shared with you directly stay. You can join it again from More albums."
+        description={
+          album.has_own_media
+            ? "Photos and videos shared with you directly stay. The rest goes back to More albums."
+            : "It goes back to More albums, where you can join it again."
+        }
         error={leave.error}
         label="Leave album"
         onConfirm={() =>

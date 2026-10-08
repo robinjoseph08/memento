@@ -599,6 +599,9 @@ func (m *Module) ViewAlbum(ctx context.Context, actorID, previewPersonID, albumI
 		if err != nil {
 			return errorstack.CaptureContext(ctx, err)
 		}
+		if result.HasOwnMedia, err = reaches(ctx, tx, viewer, reachDirect, albumID); err != nil {
+			return err
+		}
 		result.Joined, err = reaches(ctx, tx, viewer, reachJoined, albumID)
 		return err
 	})

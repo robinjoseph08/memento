@@ -54,7 +54,7 @@ export function ViewerAlbumPage({ tab }: { tab: ViewerTab }) {
         All albums
       </BackLink>
       <ViewerGallery
-        actions={(album) => album.joined && <LeaveAlbum albumID={id} />}
+        actions={(album) => album.joined && <LeaveAlbum album={album} />}
         context={{ albumID: id }}
         entryID={entryID}
         entryLink={(entry) => `${base}/${tab}/${encodeURIComponent(entry)}`}

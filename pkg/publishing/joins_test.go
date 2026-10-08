@@ -69,6 +69,7 @@ func TestJoiningAnOfferedAlbumMakesItTheViewersOwn(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 3, own.PhotoCount)
 	require.True(t, own.Joined)
+	require.False(t, own.HasOwnMedia, "nothing was shared directly")
 	require.Zero(t, own.MorePhotoCount+own.MoreVideoCount)
 	require.Equal(t, 3, f.libraryPhotos(t, grandma))
 	require.Empty(t, f.moreAlbums(t, grandma))
@@ -127,6 +128,7 @@ func TestJoiningAnAlbumWithDirectAccessMergesTheOfferedMedia(t *testing.T) {
 	require.Equal(t, 3, own.PhotoCount)
 	require.Zero(t, own.MorePhotoCount+own.MoreVideoCount)
 	require.True(t, own.Joined)
+	require.True(t, own.HasOwnMedia, "part of it was shared directly")
 	require.Equal(t, 3, f.libraryPhotos(t, granted))
 	require.Empty(t, f.moreAlbums(t, granted))
 
