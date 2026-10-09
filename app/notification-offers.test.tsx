@@ -56,8 +56,10 @@ it("lets a Curator review Albums new to view apart from own Album changes and le
         offered_albums: [
           offered("wedding", "Wedding", 40),
           offered("party", "Party", 3),
+          ...[1, 2, 3, 4, 5, 6].map((n) =>
+            offered(`practice-${n}`, `Practice ${n}`, 1),
+          ),
         ],
-        more_offered_albums: 6,
         review_token: "alex-token",
       },
     ],
@@ -106,6 +108,9 @@ it("lets a Curator review Albums new to view apart from own Album changes and le
   const row = within(form).getAllByRole("listitem")[0];
   expect(row).toHaveTextContent("1 album");
   expect(row).toHaveTextContent("8 new albums to view");
+  expect(
+    within(row).getByRole("button", { name: "Show albums for Alex" }),
+  ).toHaveTextContent(/^Show$/);
 
   await user.click(
     within(row).getByRole("button", { name: "Show albums for Alex" }),
@@ -115,12 +120,27 @@ it("lets a Curator review Albums new to view apart from own Album changes and le
   });
   expect(section).toHaveTextContent("New albums you can view");
   expect(section).toHaveTextContent("Wedding · New to view · 40 photos");
-  expect(section).toHaveTextContent("and 6 more albums");
   expect(section).not.toHaveTextContent("Coast");
+  // The newest five show first, like the notification; the rest are one
+  // click away and can be left out too.
+  expect(within(section).getAllByRole("checkbox")).toHaveLength(5);
+  await user.click(
+    within(section).getByRole("button", { name: "Show 3 more albums" }),
+  );
+  expect(within(section).getAllByRole("checkbox")).toHaveLength(8);
   await user.click(
     within(section).getByRole("checkbox", { name: "Include Party for Alex" }),
   );
-  expect(row).toHaveTextContent("7 new albums to view (1 left out)");
+  await user.click(
+    within(section).getByRole("checkbox", {
+      name: "Include Practice 6 for Alex",
+    }),
+  );
+  expect(row).toHaveTextContent("6 new albums to view (2 left out)");
+  await user.click(
+    within(section).getByRole("button", { name: "Show fewer albums" }),
+  );
+  expect(within(section).getAllByRole("checkbox")).toHaveLength(5);
 
   await user.click(
     screen.getByRole("button", { name: "Send updates to 1 person" }),
@@ -136,7 +156,7 @@ it("lets a Curator review Albums new to view apart from own Album changes and le
           person_id: "alex",
           review_token: "alex-token",
           excluded_album_ids: [],
-          excluded_offered_album_ids: ["party"],
+          excluded_offered_album_ids: ["party", "practice-6"],
         },
       ],
     },

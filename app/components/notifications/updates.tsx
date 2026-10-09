@@ -92,16 +92,18 @@ function offeredKey(personID: string, albumID: string) {
   return `${personID}:offered:${albumID}`;
 }
 
-// What a row would still announce after the Curator's exclusions. Albums
-// collapsed into "and N more albums" cannot be left out one by one.
+// The notification lists this many Albums new to view, so the preview shows
+// the same newest few until the Curator asks for the rest.
+const shownOfferedAlbums = 5;
+
+// What a row would still announce after the Curator's exclusions.
 function remaining(person: PreviewPerson, excludedAlbums: Set<string>) {
   const albums = person.albums.filter(
     (album) => !excludedAlbums.has(albumKey(person.person_id, album.id)),
   );
-  const offered =
-    person.offered_albums.filter(
-      (album) => !excludedAlbums.has(offeredKey(person.person_id, album.id)),
-    ).length + person.more_offered_albums;
+  const offered = person.offered_albums.filter(
+    (album) => !excludedAlbums.has(offeredKey(person.person_id, album.id)),
+  ).length;
   return { albums, offered };
 }
 
@@ -325,11 +327,19 @@ function PersonRow({
   onToggleAlbum: (key: string, include: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [allOfferedShown, setAllOfferedShown] = useState(false);
   const detailsId = useId();
   const { albums, offered } = remaining(person, excludedAlbums);
   const counts = albumCounts(albums);
   const active = included && (albums.length > 0 || offered > 0);
-  const allOffered = person.offered_albums.length + person.more_offered_albums;
+  const allOffered = person.offered_albums.length;
+  const hiddenOffered = allOfferedShown
+    ? 0
+    : Math.max(0, allOffered - shownOfferedAlbums);
+  const shownOffered = person.offered_albums.slice(
+    0,
+    allOffered - hiddenOffered,
+  );
   return (
     <li className={cn("py-4", !active && "text-muted")} data-included={active}>
       <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
@@ -380,7 +390,7 @@ function PersonRow({
             size="sm"
             variant="ghost"
           >
-            {countLabel(person.albums.length + allOffered, "album", "albums")}
+            {expanded ? "Hide" : "Show"}
             <ChevronDown
               aria-hidden="true"
               className={cn("size-3.5", expanded && "rotate-180")}
@@ -410,7 +420,7 @@ function PersonRow({
             <section aria-label={`New albums ${person.display_name} can view`}>
               <h3 className="text-xs font-medium">New albums you can view</h3>
               <ul className="mt-2 flex flex-col gap-2">
-                {person.offered_albums.map((album) => (
+                {shownOffered.map((album) => (
                   <AlbumChoice
                     album={album}
                     detail="New to view"
@@ -423,15 +433,17 @@ function PersonRow({
                   />
                 ))}
               </ul>
-              {person.more_offered_albums > 0 && (
-                <p className="mt-2 ml-7 text-sm text-muted">
-                  and{" "}
-                  {countLabel(
-                    person.more_offered_albums,
-                    "more album",
-                    "more albums",
-                  )}
-                </p>
+              {allOffered > shownOfferedAlbums && (
+                <Button
+                  className="mt-1 ml-5 h-auto min-h-0 px-2 py-1 text-sm"
+                  onClick={() => setAllOfferedShown((value) => !value)}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {allOfferedShown
+                    ? "Show fewer albums"
+                    : `Show ${countLabel(hiddenOffered, "more album", "more albums")}`}
+                </Button>
               )}
             </section>
           )}

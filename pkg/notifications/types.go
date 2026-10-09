@@ -34,20 +34,19 @@ type NotificationAlbum struct {
 
 // PreviewPerson is one collapsible row. EmailEligible reports whether a
 // later email delivery could go anywhere; the Update Notification is created
-// either way. Albums are changes to the Person's own Albums. OfferedAlbums are
-// the newest few "New albums you can view", and MoreOfferedAlbums counts the
-// rest, which are announced with them. ReviewToken freezes what the row
-// showed for approval.
+// either way. Albums are changes to the Person's own Albums. OfferedAlbums
+// are every one of their "New albums you can view", newest first, so the
+// Curator can leave any of them out; the notification itself shows only the
+// newest few. ReviewToken freezes what the row showed for approval.
 type PreviewPerson struct {
-	PersonID          string              `json:"person_id"`
-	DisplayName       string              `json:"display_name"`
-	UpdateEmail       string              `json:"update_email"`
-	EmailUpdates      bool                `json:"email_updates"`
-	EmailEligible     bool                `json:"email_eligible"`
-	Albums            []NotificationAlbum `json:"albums"`
-	OfferedAlbums     []NotificationAlbum `json:"offered_albums"`
-	MoreOfferedAlbums int                 `json:"more_offered_albums"`
-	ReviewToken       string              `json:"review_token"`
+	PersonID      string              `json:"person_id"`
+	DisplayName   string              `json:"display_name"`
+	UpdateEmail   string              `json:"update_email"`
+	EmailUpdates  bool                `json:"email_updates"`
+	EmailEligible bool                `json:"email_eligible"`
+	Albums        []NotificationAlbum `json:"albums"`
+	OfferedAlbums []NotificationAlbum `json:"offered_albums"`
+	ReviewToken   string              `json:"review_token"`
 }
 
 // Preview is the batch a Curator reviews. EmailConfigured is false when the

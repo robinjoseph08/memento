@@ -39,7 +39,6 @@ func TestAlbumsNewToViewAreAnnouncedOnceBesideOwnAlbums(t *testing.T) {
 	row := preview.People[0]
 	assert.Equal(t, []notifications.NotificationAlbum{{ID: coast.ID, Title: "Coast", Status: notifications.AlbumNew, PhotoCount: 1}}, row.Albums)
 	assert.Equal(t, []notifications.NotificationAlbum{newToView(wedding, 40, 2), newToView(party, 3, 0)}, row.OfferedAlbums, "newest first, as More albums lists them")
-	assert.Zero(t, row.MoreOfferedAlbums)
 
 	// A Curator can leave one Album out of the section; it stays pending.
 	request := approveAll(preview, "", nil)
@@ -103,41 +102,42 @@ func TestManyAlbumsNewToViewCollapseToTheNewestFew(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, preview.People, 1)
 	row := preview.People[0]
-	require.Len(t, row.OfferedAlbums, 5)
+	require.Len(t, row.OfferedAlbums, 8, "the Curator sees every Album so any can be left out")
 	assert.Equal(t, "Album 1", row.OfferedAlbums[0].Title)
-	assert.Equal(t, "Album 5", row.OfferedAlbums[4].Title)
-	assert.Equal(t, 3, row.MoreOfferedAlbums)
+	assert.Equal(t, "Album 8", row.OfferedAlbums[7].Title)
 
-	// Leaving one of the shown Albums out brings the next newest into view.
+	// Leaving out a newer and an older Album; the notification shows the
+	// newest five of the rest.
 	request := approveAll(preview, "", nil)
-	request.People[0].ExcludedOfferedAlbumIDs = []string{albums[1].AlbumID}
+	request.People[0].ExcludedOfferedAlbumIDs = []string{albums[1].AlbumID, albums[7].AlbumID}
 	approval, err := module.ApproveUpdates(t.Context(), request)
 	require.NoError(t, err)
-	assert.Equal(t, 7, approval.People[0].OfferedAlbumCount)
+	assert.Equal(t, 6, approval.People[0].OfferedAlbumCount)
 	list, err := module.ListNotifications(t.Context(), alex.ID.String())
 	require.NoError(t, err)
 	notification := list.Notifications[0]
 	require.Len(t, notification.OfferedAlbums, 5)
 	assert.Equal(t, "Album 6", notification.OfferedAlbums[4].Title)
-	assert.Equal(t, 2, notification.MoreOfferedAlbums)
+	assert.Equal(t, 1, notification.MoreOfferedAlbums)
 	assert.Empty(t, notification.Albums)
 
 	require.NoError(t, module.Execute(t.Context(), approval.People[0].Delivery.ID, false))
 	require.Len(t, recorder.Sent(), 1)
 	sent := recorder.Sent()[0]
-	assert.Equal(t, "7 new albums you can view on Memento", sent.Subject)
-	assert.Contains(t, sent.Body, "There is something new for you to see in 7 albums on Memento.\n")
+	assert.Equal(t, "6 new albums you can view on Memento", sent.Subject)
+	assert.Contains(t, sent.Body, "There is something new for you to see in 6 albums on Memento.\n")
 	assert.Contains(t, sent.Body, "New albums you can view:\n\nAlbum 1\n1 photo\n\nAlbum 3\n3 photos\n")
-	assert.Contains(t, sent.Body, "Album 6\n6 photos\n\nAnd 2 more albums.\n")
+	assert.Contains(t, sent.Body, "Album 6\n6 photos\n\nAnd 1 more album.\n")
 	assert.NotContains(t, sent.Body, "Album 7")
 	assert.Contains(t, sent.Body, "See them on Memento:\n"+publicURL+"/albums\n")
 
-	// Every Album, shown or collapsed, was announced; the excluded one waits.
+	// Every Album, shown or collapsed, was announced; the excluded ones wait.
 	preview, err = module.PreviewUpdates(t.Context())
 	require.NoError(t, err)
 	require.Len(t, preview.People, 1)
+	require.Len(t, preview.People[0].OfferedAlbums, 2)
 	assert.Equal(t, "Album 2", preview.People[0].OfferedAlbums[0].Title)
-	assert.Len(t, preview.People[0].OfferedAlbums, 1)
+	assert.Equal(t, "Album 8", preview.People[0].OfferedAlbums[1].Title)
 }
 
 func TestUpdateEmailForOneAlbumNewToViewOpensIt(t *testing.T) {

@@ -273,7 +273,7 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 			for _, album := range update.albums {
 				row.Albums = append(row.Albums, album.NotificationAlbum)
 			}
-			row.OfferedAlbums, row.MoreOfferedAlbums = collapseOffered(update.offered)
+			row.OfferedAlbums = append([]NotificationAlbum{}, update.offered...)
 			result.People = append(result.People, row)
 		}
 		return nil

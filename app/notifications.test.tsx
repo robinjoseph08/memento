@@ -246,7 +246,6 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
         albums: [coast, family],
         review_token: "alex-token",
         offered_albums: [],
-        more_offered_albums: 0,
       },
       {
         person_id: "sam",
@@ -257,7 +256,6 @@ it("lets a Curator review recipients, leave out an Album update, add a note, and
         albums: [coast],
         review_token: "sam-token",
         offered_albums: [],
-        more_offered_albums: 0,
       },
     ],
     email_configured: true,
