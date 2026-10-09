@@ -44,6 +44,10 @@ func (noContent) VisibleEntries(context.Context, bun.IDB, string) ([]notificatio
 	return nil, nil
 }
 
+func (noContent) OfferedAlbums(context.Context, bun.IDB, string) ([]notifications.OfferedAlbum, error) {
+	return nil, nil
+}
+
 func enqueue(t *testing.T, db *bun.DB, module *notifications.Module, message notifications.Message) notifications.Delivery {
 	t.Helper()
 	var delivery notifications.Delivery

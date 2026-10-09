@@ -375,6 +375,10 @@ func (c brokenContent) VisibleEntries(context.Context, bun.IDB, string) ([]notif
 	return nil, c.err
 }
 
+func (c brokenContent) OfferedAlbums(context.Context, bun.IDB, string) ([]notifications.OfferedAlbum, error) {
+	return nil, c.err
+}
+
 func TestUpdateEmailThatCannotBePreparedFailsOnTheLastAttempt(t *testing.T) {
 	t.Parallel()
 	db := testdb.New(t)

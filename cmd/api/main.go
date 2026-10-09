@@ -104,6 +104,7 @@ func run(log logger.Logger) error {
 	imports.Chapters = library
 	mail = notifications.New(db, mailer, jobs.EnqueueMail, imports, nil)
 	mail.PublicURL = cfg.PublicURL
+	imports.Announcements = mail
 	// Deliveries interrupted by the previous process are uncertain, never resent.
 	recovered, err := mail.RecoverInterrupted(ctx)
 	if err != nil {

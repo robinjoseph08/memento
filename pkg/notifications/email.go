@@ -69,16 +69,29 @@ func mediaLabel(photos, videos int) string {
 }
 
 // renderUpdateEmail writes the plain-text email for an approved summary. It
-// lists Albums with their status and counts, never individual photos or
-// videos. One Album links straight to it; several link to the Album list.
-func renderUpdateEmail(publicURL, personName string, albums []NotificationAlbum, note, unsubscribeToken string) (subject, body string) {
+// lists the Person's own Albums with their status and counts, then "New
+// albums you can view", never individual photos or videos. One Album links
+// straight to it; several link to the Album list.
+func renderUpdateEmail(publicURL, personName string, update payload, unsubscribeToken string) (subject, body string) {
 	origin := strings.TrimRight(publicURL, "/")
+	albums, offered, note := update.Albums, update.OfferedAlbums, update.Note
+	allOffered := len(offered) + update.MoreOfferedAlbums
+	// An Album can be in both sections; the greeting counts it once.
+	distinct := map[string]bool{}
+	for _, album := range append(append([]NotificationAlbum{}, albums...), offered...) {
+		distinct[album.ID] = true
+	}
+	total := len(distinct) + update.MoreOfferedAlbums
 	var photos, videos int
 	for _, album := range albums {
 		photos += album.PhotoCount
 		videos += album.VideoCount
 	}
 	switch {
+	case len(albums) == 0 && allOffered == 1:
+		subject = fmt.Sprintf("You can now view %s on Memento", offered[0].Title)
+	case len(albums) == 0:
+		subject = fmt.Sprintf("%s you can view on Memento", plural(allOffered, "new album", "new albums"))
 	case len(albums) == 1 && albums[0].Status == AlbumNew:
 		subject = fmt.Sprintf("%s was shared with you on Memento", albums[0].Title)
 	case len(albums) == 1:
@@ -88,10 +101,10 @@ func renderUpdateEmail(publicURL, personName string, albums []NotificationAlbum,
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Hi %s,\n\n", personName)
-	if len(albums) == 1 {
+	if total == 1 {
 		b.WriteString("There is something new for you to see on Memento.\n\n")
 	} else {
-		fmt.Fprintf(&b, "There is something new for you to see in %s on Memento.\n\n", plural(len(albums), "album", "albums"))
+		fmt.Fprintf(&b, "There is something new for you to see in %s on Memento.\n\n", plural(total, "album", "albums"))
 	}
 	for _, album := range albums {
 		status := "updated"
@@ -100,12 +113,26 @@ func renderUpdateEmail(publicURL, personName string, albums []NotificationAlbum,
 		}
 		fmt.Fprintf(&b, "%s (%s)\n%s\n\n", album.Title, status, mediaLabel(album.PhotoCount, album.VideoCount))
 	}
+	if len(offered) > 0 {
+		b.WriteString("New albums you can view:\n\n")
+		for _, album := range offered {
+			fmt.Fprintf(&b, "%s\n%s\n\n", album.Title, mediaLabel(album.PhotoCount, album.VideoCount))
+		}
+		if update.MoreOfferedAlbums > 0 {
+			fmt.Fprintf(&b, "And %s.\n\n", plural(update.MoreOfferedAlbums, "more album", "more albums"))
+		}
+	}
 	if note != "" {
 		fmt.Fprintf(&b, "A note from your Curator:\n%s\n\n", note)
 	}
-	if len(albums) == 1 {
+	// An Album new to view opens its preview, which shows the Album itself
+	// once the Person has joined it.
+	switch {
+	case len(albums) == 1 && allOffered == 0:
 		fmt.Fprintf(&b, "See them on Memento:\n%s/albums/%s/photos\n\n", origin, albums[0].ID)
-	} else {
+	case len(albums) == 0 && allOffered == 1:
+		fmt.Fprintf(&b, "See them on Memento:\n%s/albums/%s/preview/photos\n\n", origin, offered[0].ID)
+	default:
 		fmt.Fprintf(&b, "See them on Memento:\n%s/albums\n\n", origin)
 	}
 	// The token travels as a query value so access logs, which record the
@@ -171,8 +198,15 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 	if err != nil {
 		return "", err
 	}
-	albums := stillVisible(body.Albums, approved, visible)
-	if len(albums) == 0 {
+	body.Albums = stillVisible(body.Albums, approved, visible)
+	if body.OfferedAlbums, err = m.stillOffered(ctx, tx, person.ID.String(), body.OfferedAlbums, visible); err != nil {
+		return "", err
+	}
+	// "And N more albums" only reads after the Albums it follows.
+	if len(body.OfferedAlbums) == 0 {
+		body.MoreOfferedAlbums = 0
+	}
+	if len(body.Albums) == 0 && len(body.OfferedAlbums) == 0 {
 		return "Nothing in this update is shared with this person any more.", nil
 	}
 	token, err := m.unsubscribeToken(ctx, tx, person.ID, now)
@@ -180,7 +214,7 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 		return "", err
 	}
 	row.Recipient = person.UpdateEmail
-	row.Subject, row.Body = renderUpdateEmail(m.PublicURL, person.DisplayName, albums, body.Note, token)
+	row.Subject, row.Body = renderUpdateEmail(m.PublicURL, person.DisplayName, body, token)
 	return "", nil
 }
 
@@ -215,6 +249,33 @@ func stillVisible(albums []NotificationAlbum, approved []string, visible []Visib
 		result = append(result, NotificationAlbum{ID: album.ID, Title: album.Title, Status: album.Status, PhotoCount: kept.PhotoCount, VideoCount: kept.VideoCount})
 	}
 	return result
+}
+
+// stillOffered keeps the approved "New albums you can view" the Person can
+// still open, offered or since joined, with their approved counts. Albums
+// past the shown few were never listed, so their count stays as approved.
+func (m *Module) stillOffered(ctx context.Context, db bun.IDB, personID string, albums []NotificationAlbum, visible []VisibleEntry) ([]NotificationAlbum, error) {
+	if len(albums) == 0 {
+		return nil, nil
+	}
+	offered, err := m.content.OfferedAlbums(ctx, db, personID)
+	if err != nil {
+		return nil, err
+	}
+	reachable := map[string]bool{}
+	for _, album := range offered {
+		reachable[album.AlbumID] = true
+	}
+	for _, entry := range visible {
+		reachable[entry.AlbumID] = true
+	}
+	result := []NotificationAlbum{}
+	for _, album := range albums {
+		if reachable[album.ID] {
+			result = append(result, album)
+		}
+	}
+	return result, nil
 }
 
 // UnsubscribeStatus describes the link's owner without changing anything, so

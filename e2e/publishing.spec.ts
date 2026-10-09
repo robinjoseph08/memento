@@ -687,7 +687,7 @@ test("Cover Order chooses each viewer's first accessible cover and shows a place
   }
 });
 
-test("Curator offers an Album to a Circle and a viewer finds, previews, and joins it from More albums", async ({
+test("Curator offers an Album to a Circle and announces it, and a viewer finds, previews, and joins it from More albums", async ({
   page,
   browser,
   baseURL,
@@ -718,6 +718,20 @@ test("Curator offers an Album to a Circle and a viewer finds, previews, and join
   await members.getByRole("checkbox", { name: "Sam", exact: true }).check();
   await members.getByRole("button", { name: "Save members" }).click();
   await expect(members).toHaveCount(0);
+
+  const signIn = async (email: string) => {
+    const context = await browser.newContext({ baseURL });
+    const member = await context.newPage();
+    await member.goto("/sign-in");
+    await member
+      .getByRole("textbox", { name: "Email", exact: true })
+      .fill(email);
+    await member.getByRole("button", { name: "Sign in", exact: true }).click();
+    await finishOnboarding(member);
+    return { context, member };
+  };
+  // Sam finishes Onboarding before the Offer, so the Album is news to them.
+  const sam = await signIn("sam@example.test");
 
   await page.goto("/curator/import?q=Coast");
   await page.getByRole("button", { name: "Import", exact: true }).click();
@@ -754,21 +768,42 @@ test("Curator offers an Album to a Circle and a viewer finds, previews, and join
     .getByRole("button", { name: "Publish album", exact: true })
     .click();
   await expect(publication).toHaveCount(0);
+  const accessURL = page.url();
 
-  const signIn = async (email: string) => {
-    const context = await browser.newContext({ baseURL });
-    const member = await context.newPage();
-    await member.goto("/sign-in");
-    await member
-      .getByRole("textbox", { name: "Email", exact: true })
-      .fill(email);
-    await member.getByRole("button", { name: "Sign in", exact: true }).click();
-    await finishOnboarding(member);
-    return { context, member };
-  };
-  const sam = await signIn("sam@example.test");
+  await page.getByRole("link", { name: "Updates", exact: true }).click();
+  const updates = page.getByRole("form", {
+    name: "Send updates",
+    exact: true,
+  });
+  const samRow = updates
+    .getByRole("listitem")
+    .filter({ hasText: "Sam" })
+    .first();
+  await expect(samRow).toContainText("1 new album to view");
+  await samRow.getByRole("button", { name: "Show albums for Sam" }).click();
+  await expect(
+    samRow.getByRole("region", { name: "New albums Sam can view" }),
+  ).toContainText("Fixture Album - Coast");
+  await updates
+    .getByRole("button", { name: "Send updates to 1 person" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Updates sent to 1 person" }),
+  ).toBeVisible();
+
   try {
     const member = sam.member;
+    await member.goto("/albums");
+    await member.getByRole("button", { name: "Updates, 1 unread" }).click();
+    const panel = member.getByRole("dialog", {
+      name: "New updates",
+      exact: true,
+    });
+    await expect(panel).toContainText("New album you can view");
+    await panel
+      .getByRole("button", { name: "Open Fixture Album - Coast" })
+      .click();
+    await expect(member).toHaveURL(new RegExp(`${viewerPath}/preview/photos$`));
     await member.goto("/albums");
     await expect(
       member.getByText("None yet. You can browse the albums below."),
@@ -827,7 +862,7 @@ test("Curator offers an Album to a Circle and a viewer finds, previews, and join
     await sam.context.close();
   }
 
-  await page.reload();
+  await page.goto(accessURL);
   await albumAccess.getByText("2 people not seen in this album").click();
   await expect(
     albumAccess.getByRole("checkbox", { name: "Album access for Sam, joined" }),

@@ -30,6 +30,12 @@ type ChapterService interface {
 	RetryChapters(ctx context.Context, mediaItemID string) error
 }
 
+// Announcements is Notifications' seam for Joins: what a Person joins
+// becomes part of their notification baseline in the same transaction.
+type Announcements interface {
+	RecordJoin(ctx context.Context, tx bun.Tx, personID, albumID string, entryIDs []string) error
+}
+
 type Module struct {
 	db      *bun.DB
 	source  immich.Library
@@ -40,6 +46,9 @@ type Module struct {
 	// Chapters queues extraction for imported videos. Nil, as in tests that
 	// never look at chapters, imports videos without probing them.
 	Chapters ChapterService
+	// Announcements records Joins in notification baselines. Nil, as in tests
+	// that never look at Update Notifications, records nothing.
+	Announcements Announcements
 }
 
 func New(db *bun.DB, source immich.Library, enqueue EnqueueImport) *Module {

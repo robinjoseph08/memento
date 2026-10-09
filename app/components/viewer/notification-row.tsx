@@ -4,12 +4,13 @@ import { useMarkNotificationRead } from "../../hooks/queries/notifications";
 import { errorMessage } from "../../lib/http";
 import { cn } from "../../lib/utils";
 import type { Notification } from "../../types/generated/notifications";
-import { countLabel } from "../albums/moment-labels";
 import { Button } from "../ui/button";
 import {
   notificationDate,
   notificationDestination,
+  notificationSummary,
   notificationTitle,
+  offeredLine,
 } from "./notification-labels";
 
 // One update, shared by the bell and the Updates page. Opening marks it read
@@ -29,15 +30,8 @@ export function NotificationRow({
   const markRead = useMarkNotificationRead();
   const navigate = useNavigate();
   const unread = !notification.read_at;
-  const photos = notification.albums.reduce(
-    (sum, album) => sum + album.photo_count,
-    0,
-  );
-  const videos = notification.albums.reduce(
-    (sum, album) => sum + album.video_count,
-    0,
-  );
   const title = notificationTitle(notification);
+  const offered = offeredLine(notification);
   async function open() {
     if (unread) {
       try {
@@ -66,13 +60,13 @@ export function NotificationRow({
       >
         <span className="block font-medium wrap-anywhere">{title}</span>
         <span className="block text-xs text-muted">
-          {countLabel(photos, "photo", "photos")} and{" "}
-          {countLabel(videos, "video", "videos")}
-          {notification.albums.length === 1 &&
-            ` · ${notification.albums[0].status === "new" ? "New album" : "Updated"}`}
+          {notificationSummary(notification)}
           {" · "}
           {notificationDate(notification.created_at)}
         </span>
+        {offered && (
+          <span className="mt-1 block text-xs wrap-anywhere">{offered}</span>
+        )}
         {notification.note && (
           <span className="mt-1 block text-xs wrap-anywhere">
             {notification.note}

@@ -20,12 +20,29 @@ import (
 type mutableContent struct {
 	mu      sync.Mutex
 	visible map[string][]notifications.VisibleEntry
+	offered map[string][]notifications.OfferedAlbum
 }
 
 func (c *mutableContent) VisibleEntries(_ context.Context, _ bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]notifications.VisibleEntry(nil), c.visible[personID]...), nil
+}
+
+func (c *mutableContent) OfferedAlbums(_ context.Context, _ bun.IDB, personID string) ([]notifications.OfferedAlbum, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]notifications.OfferedAlbum(nil), c.offered[personID]...), nil
+}
+
+// offer replaces the Person's "More albums", newest first.
+func (c *mutableContent) offer(personID string, albums ...notifications.OfferedAlbum) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.offered == nil {
+		c.offered = map[string][]notifications.OfferedAlbum{}
+	}
+	c.offered[personID] = albums
 }
 
 func (c *mutableContent) set(personID string, entries ...notifications.VisibleEntry) {

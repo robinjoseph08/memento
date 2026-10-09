@@ -30,6 +30,15 @@ type AnnouncedAlbum struct {
 	AnnouncedAt   time.Time
 }
 
+// AnnouncedOfferedAlbum records that an Album was announced to a Person as new to
+// view, so it is never announced that way again.
+type AnnouncedOfferedAlbum struct {
+	bun.BaseModel `bun:"table:announced_offered_albums,alias:announced_offered_album"`
+	PersonID      UUID `bun:"person_id,pk,type:uuid"`
+	AlbumID       UUID `bun:"album_id,pk,type:uuid"`
+	AnnouncedAt   time.Time
+}
+
 // AnnouncedEntry is the lifetime association between a Person and an Album
 // Entry. NotificationID names the Update Notification that announced it, and is
 // nil for content added at Onboarding or dismissed without a notification.

@@ -41,11 +41,11 @@ export function UpdatesPage() {
       <PageTitle title="Updates" />
       <h1 className={headingClass}>Send updates</h1>
       <p className="mt-5 max-w-[640px] text-muted">
-        Everyone below can now see photos or videos they have not been told
-        about. Review what each person would hear about, leave anyone out, add a
-        note, and send. Each person gets an update in Memento, and an email too
-        when they asked for one. For changes that do not need an announcement,
-        select them and choose Dismiss instead.
+        Everyone below can now see photos, videos, or albums they have not been
+        told about. Review what each person would hear about, leave anyone out,
+        add a note, and send. Each person gets an update in Memento, and an
+        email too when they asked for one. For changes that do not need an
+        announcement, select them and choose Dismiss instead.
       </p>
       {preview.isPending && (
         <p className="mt-9" role="status">
@@ -80,6 +80,29 @@ function deliveryLabel(person: PreviewPerson, emailConfigured: boolean) {
   if (!emailConfigured)
     return `In app only, email is not configured for this installation`;
   return `Email to ${person.update_email}`;
+}
+
+// Exclusions share one set: own Album changes keyed by Album, and Albums new
+// to view keyed apart, since one Album can be in both sections.
+function albumKey(personID: string, albumID: string) {
+  return `${personID}:${albumID}`;
+}
+
+function offeredKey(personID: string, albumID: string) {
+  return `${personID}:offered:${albumID}`;
+}
+
+// What a row would still announce after the Curator's exclusions. Albums
+// collapsed into "and N more albums" cannot be left out one by one.
+function remaining(person: PreviewPerson, excludedAlbums: Set<string>) {
+  const albums = person.albums.filter(
+    (album) => !excludedAlbums.has(albumKey(person.person_id, album.id)),
+  );
+  const offered =
+    person.offered_albums.filter(
+      (album) => !excludedAlbums.has(offeredKey(person.person_id, album.id)),
+    ).length + person.more_offered_albums;
+  return { albums, offered };
 }
 
 function albumCounts(albums: NotificationAlbum[]) {
@@ -118,13 +141,11 @@ function PreviewForm({
   );
   const noteId = useId();
   const errors = fieldErrors(approve.error);
-  const included = preview.people.filter(
-    (person) =>
-      !excludedPeople.has(person.person_id) &&
-      person.albums.some(
-        (album) => !excludedAlbums.has(`${person.person_id}:${album.id}`),
-      ),
-  );
+  const included = preview.people.filter((person) => {
+    if (excludedPeople.has(person.person_id)) return false;
+    const left = remaining(person, excludedAlbums);
+    return left.albums.length > 0 || left.offered > 0;
+  });
   const edited =
     note.trim() !== "" || excludedPeople.size > 0 || excludedAlbums.size > 0;
   useUnsavedChanges(
@@ -171,10 +192,9 @@ function PreviewForm({
       </EmptyState>
     );
   }
-  function toggleAlbum(personID: string, albumID: string, include: boolean) {
+  function toggleAlbum(key: string, include: boolean) {
     setExcludedAlbums((current) => {
       const next = new Set(current);
-      const key = `${personID}:${albumID}`;
       if (include) next.delete(key);
       else next.add(key);
       return next;
@@ -184,7 +204,14 @@ function PreviewForm({
     person_id: person.person_id,
     review_token: person.review_token,
     excluded_album_ids: person.albums
-      .filter((album) => excludedAlbums.has(`${person.person_id}:${album.id}`))
+      .filter((album) =>
+        excludedAlbums.has(albumKey(person.person_id, album.id)),
+      )
+      .map((album) => album.id),
+    excluded_offered_album_ids: person.offered_albums
+      .filter((album) =>
+        excludedAlbums.has(offeredKey(person.person_id, album.id)),
+      )
       .map((album) => album.id),
   }));
   return (
@@ -226,9 +253,7 @@ function PreviewForm({
                   return next;
                 })
               }
-              onToggleAlbum={(albumID, include) =>
-                toggleAlbum(person.person_id, albumID, include)
-              }
+              onToggleAlbum={toggleAlbum}
               person={person}
             />
           ))}
@@ -297,15 +322,14 @@ function PersonRow({
   emailConfigured: boolean;
   excludedAlbums: Set<string>;
   onToggle: (include: boolean) => void;
-  onToggleAlbum: (albumID: string, include: boolean) => void;
+  onToggleAlbum: (key: string, include: boolean) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
-  const albums = person.albums.filter(
-    (album) => !excludedAlbums.has(`${person.person_id}:${album.id}`),
-  );
+  const { albums, offered } = remaining(person, excludedAlbums);
   const counts = albumCounts(albums);
-  const active = included && albums.length > 0;
+  const active = included && (albums.length > 0 || offered > 0);
+  const allOffered = person.offered_albums.length + person.more_offered_albums;
   return (
     <li className={cn("py-4", !active && "text-muted")} data-included={active}>
       <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
@@ -327,16 +351,26 @@ function PersonRow({
           </span>
         </label>
         <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted">
-          <span>
-            {countLabel(albums.length, "album", "albums")}
-            {albums.length < person.albums.length &&
-              ` (${person.albums.length - albums.length} left out)`}
-          </span>
-          <MediaCounts
-            className="flex"
-            photos={counts.photos}
-            videos={counts.videos}
-          />
+          {person.albums.length > 0 && (
+            <>
+              <span>
+                {countLabel(albums.length, "album", "albums")}
+                {albums.length < person.albums.length &&
+                  ` (${person.albums.length - albums.length} left out)`}
+              </span>
+              <MediaCounts
+                className="flex"
+                photos={counts.photos}
+                videos={counts.videos}
+              />
+            </>
+          )}
+          {allOffered > 0 && (
+            <span>
+              {countLabel(offered, "new album", "new albums")} to view
+              {offered < allOffered && ` (${allOffered - offered} left out)`}
+            </span>
+          )}
           <Button
             aria-controls={detailsId}
             aria-expanded={expanded}
@@ -346,7 +380,7 @@ function PersonRow({
             size="sm"
             variant="ghost"
           >
-            {countLabel(person.albums.length, "album", "albums")}
+            {countLabel(person.albums.length + allOffered, "album", "albums")}
             <ChevronDown
               aria-hidden="true"
               className={cn("size-3.5", expanded && "rotate-180")}
@@ -355,49 +389,104 @@ function PersonRow({
         </span>
       </div>
       {expanded && (
-        <ul className="mt-3 ml-7 flex flex-col gap-2" id={detailsId}>
-          {person.albums.map((album) => {
-            const albumIncluded = !excludedAlbums.has(
-              `${person.person_id}:${album.id}`,
-            );
-            return (
-              <li
-                className={cn(
-                  "flex flex-wrap items-start gap-x-4 gap-y-1 text-sm",
-                  !albumIncluded && "text-muted line-through",
-                )}
-                key={album.id}
-              >
-                <label className="flex min-w-0 cursor-pointer items-start gap-3">
-                  <input
-                    aria-label={`Include ${album.title} for ${person.display_name}`}
-                    checked={albumIncluded}
-                    className="mt-1 size-4 shrink-0 cursor-pointer accent-primary"
+        <div className="mt-3 ml-7 flex flex-col gap-4" id={detailsId}>
+          {person.albums.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {person.albums.map((album) => (
+                <AlbumChoice
+                  album={album}
+                  detail={album.status === "new" ? "New album" : "Updated"}
+                  disabled={!included}
+                  excludedAlbums={excludedAlbums}
+                  exclusionKey={albumKey(person.person_id, album.id)}
+                  key={album.id}
+                  onToggle={onToggleAlbum}
+                  personName={person.display_name}
+                />
+              ))}
+            </ul>
+          )}
+          {allOffered > 0 && (
+            <section aria-label={`New albums ${person.display_name} can view`}>
+              <h3 className="text-xs font-medium">New albums you can view</h3>
+              <ul className="mt-2 flex flex-col gap-2">
+                {person.offered_albums.map((album) => (
+                  <AlbumChoice
+                    album={album}
+                    detail="New to view"
                     disabled={!included}
-                    onChange={(event) =>
-                      onToggleAlbum(album.id, event.target.checked)
-                    }
-                    type="checkbox"
+                    excludedAlbums={excludedAlbums}
+                    exclusionKey={offeredKey(person.person_id, album.id)}
+                    key={album.id}
+                    onToggle={onToggleAlbum}
+                    personName={person.display_name}
                   />
-                  <span className="min-w-0">
-                    <span className="wrap-anywhere">{album.title}</span>
-                    <span className="text-muted">
-                      {" · "}
-                      {album.status === "new" ? "New album" : "Updated"}
-                      {" · "}
-                      {countLabel(album.photo_count, "photo", "photos")},{" "}
-                      {countLabel(album.video_count, "video", "videos")}
-                    </span>
-                    {!albumIncluded && (
-                      <span className="block text-xs">Left out</span>
-                    )}
-                  </span>
-                </label>
-              </li>
-            );
-          })}
-        </ul>
+                ))}
+              </ul>
+              {person.more_offered_albums > 0 && (
+                <p className="mt-2 ml-7 text-sm text-muted">
+                  and{" "}
+                  {countLabel(
+                    person.more_offered_albums,
+                    "more album",
+                    "more albums",
+                  )}
+                </p>
+              )}
+            </section>
+          )}
+        </div>
       )}
+    </li>
+  );
+}
+
+function AlbumChoice({
+  album,
+  detail,
+  disabled,
+  excludedAlbums,
+  exclusionKey,
+  personName,
+  onToggle,
+}: {
+  album: NotificationAlbum;
+  detail: string;
+  disabled: boolean;
+  excludedAlbums: Set<string>;
+  exclusionKey: string;
+  personName: string;
+  onToggle: (key: string, include: boolean) => void;
+}) {
+  const albumIncluded = !excludedAlbums.has(exclusionKey);
+  return (
+    <li
+      className={cn(
+        "flex flex-wrap items-start gap-x-4 gap-y-1 text-sm",
+        !albumIncluded && "text-muted line-through",
+      )}
+    >
+      <label className="flex min-w-0 cursor-pointer items-start gap-3">
+        <input
+          aria-label={`Include ${album.title} for ${personName}`}
+          checked={albumIncluded}
+          className="mt-1 size-4 shrink-0 cursor-pointer accent-primary"
+          disabled={disabled}
+          onChange={(event) => onToggle(exclusionKey, event.target.checked)}
+          type="checkbox"
+        />
+        <span className="min-w-0">
+          <span className="wrap-anywhere">{album.title}</span>
+          <span className="text-muted">
+            {" · "}
+            {detail}
+            {" · "}
+            {countLabel(album.photo_count, "photo", "photos")},{" "}
+            {countLabel(album.video_count, "video", "videos")}
+          </span>
+          {!albumIncluded && <span className="block text-xs">Left out</span>}
+        </span>
+      </label>
     </li>
   );
 }
@@ -500,9 +589,16 @@ function SentRow({
       <span className="font-medium">{person.display_name}</span>
       <span className="text-muted">
         {" · "}
-        {countLabel(person.album_count, "album", "albums")},{" "}
-        {countLabel(person.photo_count, "photo", "photos")},{" "}
-        {countLabel(person.video_count, "video", "videos")}
+        {person.album_count > 0 && (
+          <>
+            {countLabel(person.album_count, "album", "albums")},{" "}
+            {countLabel(person.photo_count, "photo", "photos")},{" "}
+            {countLabel(person.video_count, "video", "videos")}
+          </>
+        )}
+        {person.album_count > 0 && person.offered_album_count > 0 && ", "}
+        {person.offered_album_count > 0 &&
+          `${countLabel(person.offered_album_count, "new album", "new albums")} to view`}
       </span>
       {delivery ? (
         <DeliveryStatus
