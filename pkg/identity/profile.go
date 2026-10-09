@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -30,7 +31,7 @@ func (m *Module) Profile(ctx context.Context, token string) (Profile, error) {
 
 // applyProfile validates and stores the fields a Person controls. Both profile
 // editing and Onboarding completion share it so the two paths cannot drift.
-func applyProfile(ctx context.Context, tx bun.Tx, person *models.Person, request UpdateProfileRequest) ([]LinkedEmail, error) {
+func (m *Module) applyProfile(ctx context.Context, tx bun.Tx, person *models.Person, request UpdateProfileRequest) ([]LinkedEmail, error) {
 	name, err := displayName(request.DisplayName)
 	if err != nil {
 		return nil, err
@@ -59,10 +60,30 @@ func applyProfile(ctx context.Context, tx bun.Tx, person *models.Person, request
 	person.DisplayName = name
 	person.UpdateEmail = request.UpdateEmail
 	person.EmailUpdates = request.EmailUpdates
-	if _, err := tx.NewUpdate().Model(person).Column("display_name", "update_email_id", "email_updates").WherePK().Exec(ctx); err != nil {
+	if err := m.setOfferedAlbumUpdates(ctx, tx, person, request.OfferedAlbumUpdates); err != nil {
+		return nil, err
+	}
+	if _, err := tx.NewUpdate().Model(person).Column("display_name", "update_email_id", "email_updates", "offered_album_updates").WherePK().Exec(ctx); err != nil {
 		return nil, errorstack.CaptureContext(ctx, err)
 	}
 	return linked, nil
+}
+
+// setOfferedAlbumUpdates changes "Tell me about albums I can join" on the
+// Person for the caller to save. Turning it back on records everything in
+// their "More albums" as announced, so it starts fresh instead of sending
+// what was offered while it was off.
+func (m *Module) setOfferedAlbumUpdates(ctx context.Context, tx bun.Tx, person *models.Person, on bool) error {
+	if on && !person.OfferedAlbumUpdates {
+		if m.Announcements == nil {
+			return errorstack.Capture(fmt.Errorf("turning on offered Album updates requires announcement storage"))
+		}
+		if err := m.Announcements.RecordOfferedAlbums(ctx, tx, person.ID.String()); err != nil {
+			return err
+		}
+	}
+	person.OfferedAlbumUpdates = on
+	return nil
 }
 
 func (m *Module) UpdateProfile(ctx context.Context, token string, request UpdateProfileRequest) (Profile, error) {
@@ -72,7 +93,7 @@ func (m *Module) UpdateProfile(ctx context.Context, token string, request Update
 		if err != nil {
 			return err
 		}
-		linked, err := applyProfile(ctx, tx, &person, request)
+		linked, err := m.applyProfile(ctx, tx, &person, request)
 		if err != nil {
 			return err
 		}

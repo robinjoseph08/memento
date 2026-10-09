@@ -199,7 +199,12 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 		return "", err
 	}
 	body.Albums = stillVisible(body.Albums, approved, visible)
-	if body.OfferedAlbums, err = m.stillOffered(ctx, tx, person.ID.String(), body.OfferedAlbums, visible); err != nil {
+	if !person.OfferedAlbumUpdates {
+		if len(body.Albums) == 0 && len(body.OfferedAlbums) > 0 {
+			return "This person turned off hearing about albums they can join.", nil
+		}
+		body.OfferedAlbums = nil
+	} else if body.OfferedAlbums, err = m.stillOffered(ctx, tx, person.ID.String(), body.OfferedAlbums, visible); err != nil {
 		return "", err
 	}
 	// "And N more albums" only reads after the Albums it follows.

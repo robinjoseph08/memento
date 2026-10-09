@@ -22,6 +22,7 @@ const member = {
   is_curator: false,
   update_email: "alex@example.test",
   email_updates: false,
+  offered_album_updates: true,
   avatar_url: "",
 };
 const curator = {
@@ -83,6 +84,11 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
   await user.click(
     screen.getByRole("checkbox", { name: "Email me when there are updates" }),
   );
+  const offers = screen.getByRole("checkbox", {
+    name: "Tell me about albums I can join",
+  });
+  expect(offers).toBeChecked();
+  await user.click(offers);
   await user.click(screen.getByRole("button", { name: "Continue to Memento" }));
   expect(
     await screen.findByRole("heading", { name: "No albums yet" }),
@@ -93,6 +99,7 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
       display_name: "Alex Family",
       update_email: "alex@example.test",
       email_updates: true,
+      offered_album_updates: false,
     },
   ]);
   expect(
@@ -104,6 +111,57 @@ it("resumes unfinished Onboarding from any signed-in page, hides navigation, and
   await waitFor(() => expect(window.location.pathname).toBe("/albums"));
   expect(completions).toHaveLength(1);
 });
+
+it.each([
+  [[], 0, null],
+  [[], 1, "You can view 1 album on your home page."],
+  [["Coast"], 3, "You can also view 3 more albums on your home page."],
+])(
+  "tells a new viewer how many more albums they can view, own=%j more=%i",
+  async (own, more, line) => {
+    const album = (title: string) => ({
+      id: title,
+      title,
+      cover_url: "",
+      photo_count: 1,
+      video_count: 0,
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        if (path.endsWith("/status"))
+          return Response.json({
+            claimed: true,
+            person: member,
+            sign_in_methods: ["fake"],
+          });
+        if (path.endsWith("/identity/profile"))
+          return Response.json({ person: member, emails: [account] });
+        if (path === "/api/albums") return Response.json(own.map(album));
+        if (path === "/api/albums/more")
+          return Response.json(
+            Array.from({ length: more }, (_, i) => album(`Offered ${i}`)),
+          );
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+    );
+    window.history.replaceState(null, "", "/welcome");
+    render(<App />);
+    const albums = await screen.findByRole("region", {
+      name: "Albums shared with you",
+    });
+    if (line) {
+      expect(await within(albums).findByText(line)).toBeVisible();
+      expect(within(albums).queryByText(/Nothing is shared/)).toBeNull();
+    } else {
+      await waitFor(() =>
+        expect(within(albums).getByText(/Nothing is shared/)).toBeVisible(),
+      );
+      expect(within(albums).queryByText(/You can/)).not.toBeInTheDocument();
+    }
+    expect(within(albums).queryByRole("button")).not.toBeInTheDocument();
+  },
+);
 
 it("shows pending Access Requests with a badge and approves one by creating a Person", async () => {
   const request = {

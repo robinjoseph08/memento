@@ -27,7 +27,7 @@ func (m *Module) CompleteOnboarding(ctx context.Context, token string, request U
 		if m.Announcements == nil {
 			return errorstack.Capture(fmt.Errorf("onboarding requires announcement storage"))
 		}
-		if _, err := applyProfile(ctx, tx, &person, request); err != nil {
+		if _, err := m.applyProfile(ctx, tx, &person, request); err != nil {
 			return err
 		}
 		now := m.now().UTC()

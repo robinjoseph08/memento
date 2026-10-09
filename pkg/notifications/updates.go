@@ -78,7 +78,7 @@ type unannouncedAlbum struct {
 // unlinked destination reads as no destination.
 func notifiablePeople(db bun.IDB, model any) *bun.SelectQuery {
 	return db.NewSelect().Model(model).
-		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.email_updates").
+		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.email_updates", "person.offered_album_updates").
 		ColumnExpr("coalesce(updates.email, '') AS update_email").
 		Join("LEFT JOIN linked_emails AS updates ON updates.id = person.update_email_id AND updates.unlinked_at IS NULL")
 }
@@ -113,14 +113,17 @@ func ineligibleReason(person models.Person) string {
 }
 
 // pending is current viewer-visible content minus everything already
-// announced to the Person.
-func (m *Module) pending(ctx context.Context, db bun.IDB, personID string) (pendingUpdate, error) {
+// announced to the Person. Albums new to view are left out while the Person
+// has turned off hearing about Albums they can join.
+func (m *Module) pending(ctx context.Context, db bun.IDB, person models.Person) (pendingUpdate, error) {
 	var result pendingUpdate
 	var err error
-	if result.albums, err = m.unannounced(ctx, db, personID); err != nil {
+	if result.albums, err = m.unannounced(ctx, db, person.ID.String()); err != nil {
 		return result, err
 	}
-	result.offered, err = m.unannouncedOffers(ctx, db, personID)
+	if person.OfferedAlbumUpdates {
+		result.offered, err = m.unannouncedOffers(ctx, db, person.ID.String())
+	}
 	return result, err
 }
 
@@ -257,7 +260,7 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		for _, person := range people {
-			update, err := m.pending(ctx, tx, person.ID.String())
+			update, err := m.pending(ctx, tx, person)
 			if err != nil {
 				return err
 			}
@@ -351,7 +354,7 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		outcome.Message = reason
 		return outcome, nil
 	}
-	update, err := m.pending(ctx, tx, row.PersonID)
+	update, err := m.pending(ctx, tx, person)
 	if err != nil {
 		return outcome, err
 	}

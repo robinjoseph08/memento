@@ -16,9 +16,12 @@ type Person struct {
 	UpdateEmailID         *UUID  `bun:"update_email_id,type:uuid"`
 	UpdateEmail           string `bun:",scanonly"`
 	EmailUpdates          bool
-	AvatarFaceID          *string
-	AvatarVersion         string `bun:",scanonly"`
-	CreatedAt             time.Time
+	// OfferedAlbumUpdates inserts as the column default, on, because false is
+	// Go's zero value. Updates write it as given.
+	OfferedAlbumUpdates bool `bun:",default:true"`
+	AvatarFaceID        *string
+	AvatarVersion       string `bun:",scanonly"`
+	CreatedAt           time.Time
 }
 
 // LinkedEmail is a verified, lowercased address that signs its Person in.

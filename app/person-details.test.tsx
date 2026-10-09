@@ -28,6 +28,7 @@ const alex = {
   onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "updates@example.test",
   email_updates: false,
+  offered_album_updates: true,
 };
 const account = {
   id: "account",
@@ -527,7 +528,61 @@ it("asks before deactivating a person and saves only after confirming", async ()
   );
   expect(await screen.findByRole("status")).toHaveTextContent("Person saved.");
   expect(saves).toEqual([
-    { display_name: "Alex", is_curator: false, deactivated: true },
+    {
+      display_name: "Alex",
+      is_curator: false,
+      deactivated: true,
+      offered_album_updates: true,
+    },
   ]);
   expect(screen.getByText("Deactivated")).toBeVisible();
+});
+
+it("lets a Curator turn off hearing about albums a person can join", async () => {
+  const saves: unknown[] = [];
+  let person = alex;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/status"))
+        return Response.json({
+          claimed: true,
+          person: robin,
+          sign_in_methods: ["fake"],
+        });
+      if (options?.method === "POST" && path.endsWith("/api/people/alex")) {
+        const body = JSON.parse(String(options.body));
+        saves.push(body);
+        person = { ...person, ...body };
+        return Response.json(person);
+      }
+      return Response.json({
+        person,
+        emails: [account],
+        preauthorizations: [],
+        invitations: [],
+        announced: { albums: 0, entries: 0 },
+        sessions: [],
+      });
+    }),
+  );
+  window.history.replaceState(null, "", "/curator/people/alex");
+  const user = userEvent.setup();
+  render(<App />);
+  const offers = await screen.findByRole("checkbox", {
+    name: "Tell them about albums they can join",
+  });
+  expect(offers).toBeChecked();
+  await user.click(offers);
+  await user.click(screen.getByRole("button", { name: "Save person" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("Person saved.");
+  expect(saves).toEqual([
+    {
+      display_name: "Alex",
+      is_curator: false,
+      deactivated: false,
+      offered_album_updates: false,
+    },
+  ]);
+  expect(offers).not.toBeChecked();
 });

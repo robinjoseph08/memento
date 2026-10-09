@@ -31,6 +31,7 @@ func TestFirstLinkedEmailEnablesEmailUpdates(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, person.UpdateEmail)
 	assert.False(t, person.EmailUpdates)
+	assert.True(t, person.OfferedAlbumUpdates, "new People hear about Albums they can join")
 	_, err = module.Preauthorize(t.Context(), curator.Token, person.ID, identity.PreauthorizeRequest{Email: "alex@example.test"})
 	require.NoError(t, err)
 	member, err := module.SignIn(t.Context(), identity.FakeClaims(identity.SignInRequest{Email: "alex@example.test", DisplayName: "Alex"}))

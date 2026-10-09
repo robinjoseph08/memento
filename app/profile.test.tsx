@@ -490,7 +490,7 @@ it.each([false, true])(
 );
 
 it("uses server notification defaults and preserves an unsaved opt-out on refresh", async () => {
-  let person = { ...alex, email_updates: true };
+  let person = { ...alex, email_updates: true, offered_album_updates: true };
   let emails = [account];
   vi.stubGlobal(
     "fetch",
@@ -516,10 +516,15 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
     name: "Email me when there are updates",
   });
   expect(updates).toBeChecked();
+  const offers = screen.getByRole("checkbox", {
+    name: "Tell me about albums I can join",
+  });
+  expect(offers).toBeChecked();
   expect(
     screen.getByRole("combobox", { name: "Email for updates" }),
   ).toHaveTextContent("alex@example.test");
   await user.click(updates);
+  await user.click(offers);
   person = { ...person, display_name: "Alex refreshed" };
   emails = [
     account,
@@ -536,6 +541,8 @@ it("uses server notification defaults and preserves an unsaved opt-out on refres
   await user.click(screen.getByRole("button", { name: "Save profile" }));
   expect(await screen.findByRole("status")).toHaveTextContent("Profile saved.");
   expect(updates).not.toBeChecked();
+  expect(offers).not.toBeChecked();
+  expect(person.offered_album_updates).toBe(false);
 });
 
 it("keeps another linked email available after unlinking one from your profile", async () => {

@@ -52,7 +52,7 @@ func (m *Module) change(ctx context.Context, fn func(context.Context, bun.Tx) er
 
 func selectPeople(tx bun.Tx, model any) *bun.SelectQuery {
 	return tx.NewSelect().Model(model).
-		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_email_id", "person.email_updates", "person.avatar_face_id", "person.created_at").
+		Column("person.id", "person.display_name", "person.is_curator", "person.onboarding_completed_at", "person.deactivated_at", "person.update_email_id", "person.email_updates", "person.offered_album_updates", "person.avatar_face_id", "person.created_at").
 		ColumnExpr("COALESCE(updates.email, '') AS update_email").
 		ColumnExpr("(SELECT coalesce(max(face.source_version), '') FROM media_face_associations AS face WHERE face.source_face_id = person.avatar_face_id) AS avatar_version").
 		Join("LEFT JOIN linked_emails AS updates ON updates.id = person.update_email_id")
@@ -279,6 +279,9 @@ func (m *Module) UpdatePerson(ctx context.Context, token, id string, request Upd
 		}
 		person.DisplayName = name
 		person.IsCurator = request.IsCurator
+		if err := m.setOfferedAlbumUpdates(ctx, tx, &person, request.OfferedAlbumUpdates); err != nil {
+			return err
+		}
 		if request.Deactivated {
 			if person.DeactivatedAt == nil {
 				now := m.now().UTC()
