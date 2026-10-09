@@ -333,7 +333,7 @@ function PersonRow({
   return (
     <li className={cn("py-4", !active && "text-muted")} data-included={active}>
       <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
-        <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3">
+        <label className="flex min-w-0 grow basis-56 cursor-pointer items-start gap-3">
           <input
             aria-label={`Include ${person.display_name}`}
             checked={included}

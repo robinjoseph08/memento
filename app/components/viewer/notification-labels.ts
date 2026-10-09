@@ -46,6 +46,15 @@ export function notificationTitle(notification: Notification) {
     : `${countLabel(titles.length, "album", "albums")}: ${titles.join(", ")}`;
 }
 
+// Counts what is new the way the update email does, leaving out a kind with
+// nothing in it.
+function mediaLabel(photos: number, videos: number) {
+  const photoLabel = countLabel(photos, "photo", "photos");
+  const videoLabel = countLabel(videos, "video", "videos");
+  if (photos > 0 && videos > 0) return `${photoLabel} and ${videoLabel}`;
+  return videos > 0 ? videoLabel : photoLabel;
+}
+
 // What the notification brings: media in the viewer's own Albums, or else
 // the Albums new to view.
 export function notificationSummary(notification: Notification) {
@@ -53,7 +62,7 @@ export function notificationSummary(notification: Notification) {
   if (albums.length > 0) {
     const photos = albums.reduce((sum, album) => sum + album.photo_count, 0);
     const videos = albums.reduce((sum, album) => sum + album.video_count, 0);
-    const media = `${countLabel(photos, "photo", "photos")} and ${countLabel(videos, "video", "videos")}`;
+    const media = mediaLabel(photos, videos);
     if (albums.length !== 1) return media;
     return `${media} · ${albums[0].status === "new" ? "New album" : "Updated"}`;
   }

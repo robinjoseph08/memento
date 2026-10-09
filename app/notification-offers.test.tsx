@@ -216,6 +216,9 @@ it("shows a viewer the Albums they can now view and opens a single one's preview
   const panel = await screen.findByRole("dialog", { name: "New updates" });
   const rows = within(panel).getAllByRole("listitem");
   expect(rows[0]).toHaveTextContent("Coast");
+  // Like the email, a kind with nothing new is left out.
+  expect(rows[0]).toHaveTextContent("2 photos · Updated");
+  expect(rows[0]).not.toHaveTextContent("0 videos");
   expect(rows[0]).toHaveTextContent("New albums you can view: Wedding");
   expect(rows[1]).toHaveTextContent("6 new albums you can view");
   expect(rows[1]).toHaveTextContent("Wedding, Party and 4 more albums");
