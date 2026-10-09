@@ -200,6 +200,15 @@ it("shows a viewer the Albums they can now view and opens a single one's preview
       more_offered_albums: 0,
       note: "",
     },
+    {
+      id: "older",
+      created_at: "2026-05-01T09:00:00Z",
+      read_at: null as string | null,
+      albums: [{ ...coast, photo_count: 0, video_count: 2 }],
+      offered_albums: [],
+      more_offered_albums: 0,
+      note: "",
+    },
   ];
   vi.stubGlobal(
     "fetch",
@@ -211,7 +220,7 @@ it("shows a viewer the Albums they can now view and opens a single one's preview
           sign_in_methods: ["fake"],
         });
       if (path === "/api/notifications")
-        return Response.json({ notifications, unread: 3 });
+        return Response.json({ notifications, unread: 4 });
       if (path === "/api/notifications/n0/read")
         return Response.json({
           ...notifications[2],
@@ -231,7 +240,7 @@ it("shows a viewer the Albums they can now view and opens a single one's preview
   const user = userEvent.setup();
   render(<App />);
   await user.click(
-    await screen.findByRole("button", { name: "Updates, 3 unread" }),
+    await screen.findByRole("button", { name: "Updates, 4 unread" }),
   );
   const panel = await screen.findByRole("dialog", { name: "New updates" });
   const rows = within(panel).getAllByRole("listitem");
@@ -239,6 +248,8 @@ it("shows a viewer the Albums they can now view and opens a single one's preview
   // Like the email, a kind with nothing new is left out.
   expect(rows[0]).toHaveTextContent("2 photos · Updated");
   expect(rows[0]).not.toHaveTextContent("0 videos");
+  expect(rows[3]).toHaveTextContent("2 videos · Updated");
+  expect(rows[3]).not.toHaveTextContent("0 photos");
   expect(rows[0]).toHaveTextContent("New albums you can view: Wedding");
   expect(rows[1]).toHaveTextContent("6 new albums you can view");
   expect(rows[1]).toHaveTextContent("Wedding, Party and 4 more albums");

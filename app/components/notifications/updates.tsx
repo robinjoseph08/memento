@@ -92,8 +92,9 @@ function offeredKey(personID: string, albumID: string) {
   return `${personID}:offered:${albumID}`;
 }
 
-// The notification lists this many Albums new to view, so the preview shows
-// the same newest few until the Curator asks for the rest.
+// A notification lists the newest few Albums new to view (shownOfferedAlbums
+// in pkg/notifications), so the preview starts with as many and shows the
+// rest on request, where any of them can be left out.
 const shownOfferedAlbums = 5;
 
 // What a row would still announce after the Curator's exclusions.
@@ -333,13 +334,10 @@ function PersonRow({
   const counts = albumCounts(albums);
   const active = included && (albums.length > 0 || offered > 0);
   const allOffered = person.offered_albums.length;
-  const hiddenOffered = allOfferedShown
-    ? 0
-    : Math.max(0, allOffered - shownOfferedAlbums);
-  const shownOffered = person.offered_albums.slice(
-    0,
-    allOffered - hiddenOffered,
-  );
+  const shownOffered = allOfferedShown
+    ? person.offered_albums
+    : person.offered_albums.slice(0, shownOfferedAlbums);
+  const hiddenOffered = allOffered - shownOffered.length;
   return (
     <li className={cn("py-4", !active && "text-muted")} data-included={active}>
       <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
@@ -435,6 +433,7 @@ function PersonRow({
               </ul>
               {allOffered > shownOfferedAlbums && (
                 <Button
+                  aria-expanded={allOfferedShown}
                   className="mt-1 ml-5 h-auto min-h-0 px-2 py-1 text-sm"
                   onClick={() => setAllOfferedShown((value) => !value)}
                   size="sm"

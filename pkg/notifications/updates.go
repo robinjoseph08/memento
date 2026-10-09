@@ -273,6 +273,7 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 			for _, album := range update.albums {
 				row.Albums = append(row.Albums, album.NotificationAlbum)
 			}
+			// Copied so an empty section is an empty list in JSON, never null.
 			row.OfferedAlbums = append([]NotificationAlbum{}, update.offered...)
 			result.People = append(result.People, row)
 		}
