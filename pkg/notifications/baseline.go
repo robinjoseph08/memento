@@ -11,8 +11,9 @@ import (
 )
 
 // RecordBaseline marks everything the Person can currently view as announced,
-// inside the caller's transaction so it commits with the owning transition.
-// Existing associations are kept, so repeating the call never announces more.
+// including every Album in their "More albums" as already new to view, inside
+// the caller's transaction so it commits with the owning transition. Existing
+// associations are kept, so repeating the call never announces more.
 func (m *Module) RecordBaseline(ctx context.Context, tx bun.Tx, personID string) (Baseline, error) {
 	id, err := uuid.Parse(personID)
 	if err != nil {
@@ -51,7 +52,68 @@ func (m *Module) RecordBaseline(ctx context.Context, tx bun.Tx, personID string)
 			return Baseline{}, errorstack.CaptureContext(ctx, err)
 		}
 	}
+	offered, err := m.content.OfferedAlbums(ctx, tx, personID)
+	if err != nil {
+		return Baseline{}, err
+	}
+	offerRows := make([]models.AnnouncedOfferedAlbum, 0, len(offered))
+	for _, album := range offered {
+		albumID, err := uuid.Parse(album.AlbumID)
+		if err != nil {
+			return Baseline{}, errorstack.Capture(err)
+		}
+		offerRows = append(offerRows, models.AnnouncedOfferedAlbum{PersonID: models.UUID(id), AlbumID: models.UUID(albumID), AnnouncedAt: now})
+	}
+	if len(offerRows) > 0 {
+		if _, err := tx.NewInsert().Model(&offerRows).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+			return Baseline{}, errorstack.CaptureContext(ctx, err)
+		}
+	}
 	return m.Announced(ctx, tx, personID)
+}
+
+// RecordJoin marks an Album the Person just joined, and the offered Album
+// Entries they joined with it, as announced, inside the Join's transaction.
+// They chose that media themselves, so only media added after the Join is
+// news, and the Album is never new to view again. Marking the Album itself
+// announced means direct media still pending in it reads as an update.
+func (m *Module) RecordJoin(ctx context.Context, tx bun.Tx, personID, albumID string, entryIDs []string) error {
+	person, err := uuid.Parse(personID)
+	if err != nil {
+		return errcodes.NotFound("Person")
+	}
+	album, err := uuid.Parse(albumID)
+	if err != nil {
+		return errcodes.NotFound("Album")
+	}
+	// Take the lock approval takes, so a Join waits for an approval in
+	// progress, and an approval after it sees the Join as a changed review.
+	_, err = tx.NewSelect().Model((*models.Person)(nil)).Column("person.id").Where("person.id = ?", personID).For("UPDATE").Exec(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	now := m.now().UTC()
+	offer := models.AnnouncedOfferedAlbum{PersonID: models.UUID(person), AlbumID: models.UUID(album), AnnouncedAt: now}
+	if _, err := tx.NewInsert().Model(&offer).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	if len(entryIDs) == 0 {
+		return nil
+	}
+	own := models.AnnouncedAlbum{PersonID: models.UUID(person), AlbumID: models.UUID(album), AnnouncedAt: now}
+	if _, err := tx.NewInsert().Model(&own).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	entryRows := make([]models.AnnouncedEntry, 0, len(entryIDs))
+	for _, id := range entryIDs {
+		entryID, err := uuid.Parse(id)
+		if err != nil {
+			return errorstack.Capture(err)
+		}
+		entryRows = append(entryRows, models.AnnouncedEntry{PersonID: models.UUID(person), EntryID: models.UUID(entryID), AnnouncedAt: now})
+	}
+	_, err = tx.NewInsert().Model(&entryRows).On("CONFLICT DO NOTHING").Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
 }
 
 // Announced counts the Person's baseline. Callers use it to show or assert

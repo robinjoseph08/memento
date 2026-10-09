@@ -27,6 +27,7 @@ const preview: Preview = {
       email_updates: true,
       email_eligible: true,
       review_token: "alex-token",
+      offered_albums: [],
       albums: [
         {
           id: "coast",
@@ -51,6 +52,7 @@ const preview: Preview = {
       email_updates: false,
       email_eligible: false,
       review_token: "sam-token",
+      offered_albums: [],
       albums: [
         {
           id: "coast",
@@ -175,6 +177,7 @@ it("confirms dismissal of only selected updates without sending and keeps the un
           person_id: "alex",
           review_token: "alex-token",
           excluded_album_ids: ["family"],
+          excluded_offered_album_ids: [],
         },
       ],
     },
@@ -189,6 +192,7 @@ it("confirms dismissal of only selected updates without sending and keeps the un
         ...preview.people[0],
         albums: [preview.people[0].albums[1]],
         review_token: "remaining-token",
+        offered_albums: [],
       },
       preview.people[1],
     ],
@@ -345,6 +349,7 @@ it("waits for a refreshed preview before allowing dismissal confirmation", async
   const refreshedPerson = {
     ...preview.people[0],
     review_token: "fresh-token",
+    offered_albums: [],
     albums: [{ ...preview.people[0].albums[0], photo_count: 5 }],
   };
   finish(Response.json({ ...preview, people: [refreshedPerson] }));
@@ -369,6 +374,7 @@ it("waits for a refreshed preview before allowing dismissal confirmation", async
           person_id: "alex",
           review_token: "fresh-token",
           excluded_album_ids: [],
+          excluded_offered_album_ids: [],
         },
       ],
     },

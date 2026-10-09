@@ -24,6 +24,10 @@ func (noContent) VisibleEntries(context.Context, bun.IDB, string) ([]notificatio
 	return nil, nil
 }
 
+func (noContent) OfferedAlbums(context.Context, bun.IDB, string) ([]notifications.OfferedAlbum, error) {
+	return nil, nil
+}
+
 var invitation = notifications.Message{Kind: "invitation", To: "alex@example.test", Subject: "You're invited", Body: "Sign in"}
 
 // mailRuntime wires the Notifications module to the runtime the way main does,
@@ -271,6 +275,10 @@ type staticContent map[string][]notifications.VisibleEntry
 
 func (c staticContent) VisibleEntries(_ context.Context, _ bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
 	return c[personID], nil
+}
+
+func (staticContent) OfferedAlbums(context.Context, bun.IDB, string) ([]notifications.OfferedAlbum, error) {
+	return nil, nil
 }
 
 // TestApprovedUpdateEmailRunsOnTheMailQueue approves an Update Notification

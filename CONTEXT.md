@@ -86,7 +86,7 @@ The People who can see exactly the same Moment covers in one Album. Viewing Grou
 _Avoid_: Cohort, Access Set, Segment
 
 **Unannounced Change**:
-An Album or Album Entry that became visible to a Person after that Person's notification baseline, counting only media they were granted directly or joined. An Album also counts once, as new to view, the first time it holds offered media that Person has not joined, unless that Person has turned off hearing about Albums they can join, in which case it is announced silently. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email or Push delivery.
+An Album or Album Entry that became visible to a Person after that Person's notification baseline, counting only media they were granted directly or joined. An Album also counts once, as new to view, the first time it holds offered media that Person has not joined, unless that Person has turned off hearing about Albums they can join, in which case it is announced silently. Completing Onboarding, approving an Update Notification, or dismissing selected changes advances the baseline, independently of email or Push delivery. Joining an Album advances it for the media joined, so only media added after the Join is new.
 
 **Update Notification**:
 A Curator-approved summary of one or more Unannounced Changes for a Person, always readable inside Memento. Email and Push are optional delivery channels for the same notification, and neither creates a notification of its own. Email respects the Person's email preference, and Push follows the phone's own notification setting.

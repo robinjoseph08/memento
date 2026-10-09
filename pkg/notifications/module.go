@@ -22,10 +22,23 @@ type VisibleEntry struct {
 	Kind       string
 }
 
+// OfferedAlbum is one Album in a Person's "More albums": it holds media
+// offered to them that they have not joined. Counts cover the offered media
+// only.
+type OfferedAlbum struct {
+	AlbumID    string
+	AlbumTitle string
+	PhotoCount int
+	VideoCount int
+}
+
 // VisibleContent is the consumer-owned view of Publishing that baselines need.
 // It must apply viewer eligibility only, never a Curator's administrative bypass.
+// VisibleEntries is the Person's own media, granted directly or joined.
+// OfferedAlbums is their "More albums", newest first.
 type VisibleContent interface {
 	VisibleEntries(ctx context.Context, db bun.IDB, personID string) ([]VisibleEntry, error)
+	OfferedAlbums(ctx context.Context, db bun.IDB, personID string) ([]OfferedAlbum, error)
 }
 
 // Module owns delivery records, announcement baselines, and Update

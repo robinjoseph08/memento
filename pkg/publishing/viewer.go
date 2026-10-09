@@ -633,9 +633,19 @@ func (m *Module) JoinAlbum(ctx context.Context, actorID, albumID string) error {
 			}
 			return errcodes.NotFound("Album")
 		}
+		joined := []string{}
+		err = viewerEntries(tx, viewer.reaching(reachOffered)).ColumnExpr("entry.id::text").Where("entry.album_id = ?", albumID).Scan(ctx, &joined)
+		if err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
 		row := models.AlbumJoin{AlbumID: models.UUID(uuid.MustParse(albumID)), PersonID: models.UUID(uuid.MustParse(viewer.personID)), CreatedAt: time.Now().UTC()}
-		_, err = tx.NewInsert().Model(&row).On("CONFLICT (album_id, person_id) DO NOTHING").Exec(ctx)
-		return errorstack.CaptureContext(ctx, err)
+		if _, err = tx.NewInsert().Model(&row).On("CONFLICT (album_id, person_id) DO NOTHING").Exec(ctx); err != nil {
+			return errorstack.CaptureContext(ctx, err)
+		}
+		if m.Announcements == nil {
+			return nil
+		}
+		return m.Announcements.RecordJoin(ctx, tx, viewer.personID, albumID, joined)
 	})
 	return transactionError(ctx, err)
 }
@@ -698,12 +708,11 @@ func joinedPeople(ctx context.Context, db bun.IDB, albumID string) (map[string]m
 	return result, nil
 }
 
-// VisibleEntries lists every Album Entry the Person can view as an ordinary
-// viewer through allowing Access Decisions in published Albums. Joined media
-// stays out, so a Join never queues an Update Notification for the Album just
-// joined. A Curator's administrative bypass is deliberately excluded so
-// announcement baselines never treat unpublished or otherwise
-// viewer-ineligible content as announced.
+// VisibleEntries lists every Album Entry of the Person's own as an ordinary
+// viewer: allowed by Access Decisions or joined, in published Albums. A
+// Curator's administrative bypass is deliberately excluded so announcement
+// baselines never treat unpublished or otherwise viewer-ineligible content as
+// announced.
 func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string) ([]notifications.VisibleEntry, error) {
 	if _, err := uuid.Parse(personID); err != nil {
 		return nil, errcodes.NotFound("Person")
@@ -715,7 +724,7 @@ func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string
 		Kind       string
 	}
 	rows := []row{}
-	err := viewerEntries(db, viewerContext{personID: personID, reach: reachDirect}).
+	err := viewerEntries(db, viewerContext{personID: personID, reach: reachOwn}).
 		ColumnExpr("entry.album_id, album.title AS album_title, entry.id AS entry_id, item.kind").
 		OrderExpr("entry.album_id, entry.id").Scan(ctx, &rows)
 	if err != nil {
@@ -726,4 +735,18 @@ func (m *Module) VisibleEntries(ctx context.Context, db bun.IDB, personID string
 		result = append(result, notifications.VisibleEntry{AlbumID: r.AlbumID, AlbumTitle: r.AlbumTitle, EntryID: r.EntryID, Kind: r.Kind})
 	}
 	return result, nil
+}
+
+// OfferedAlbums lists the Person's "More albums" for announcements, newest
+// first like the list itself, counting only the offered media.
+func (m *Module) OfferedAlbums(ctx context.Context, db bun.IDB, personID string) ([]notifications.OfferedAlbum, error) {
+	if _, err := uuid.Parse(personID); err != nil {
+		return nil, errcodes.NotFound("Person")
+	}
+	result := []notifications.OfferedAlbum{}
+	err := viewerEntries(db, viewerContext{personID: personID, reach: reachOffered}).
+		ColumnExpr("entry.album_id, album.title AS album_title").
+		ColumnExpr("count(*) FILTER (WHERE item.kind = 'IMAGE') AS photo_count, count(*) FILTER (WHERE item.kind = 'VIDEO') AS video_count").
+		Group("entry.album_id", "album.title").OrderExpr("max(item.captured_at) DESC, entry.album_id").Scan(ctx, &result)
+	return result, errorstack.CaptureContext(ctx, err)
 }

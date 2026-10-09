@@ -23,6 +23,12 @@ import (
 const (
 	AlbumNew     = "new"
 	AlbumUpdated = "updated"
+	AlbumOffered = "offered"
+
+	// shownOfferedAlbums is how many "New albums you can view" a notification
+	// lists before "and N more albums", so joining a Circle with years of
+	// offered Albums does not list every one.
+	shownOfferedAlbums = 5
 
 	ResultNotified  = "notified"
 	ResultDismissed = "dismissed"
@@ -33,10 +39,32 @@ const (
 	payloadVersion = 1
 )
 
-// payload is the immutable body of one Update Notification.
+// payload is the immutable body of one Update Notification. The offered
+// section is stored already collapsed to what the Person is shown. Its fields
+// are optional so rows written before it existed still decode as version 1.
 type payload struct {
-	Albums []NotificationAlbum `json:"albums"`
-	Note   string              `json:"note"`
+	Albums            []NotificationAlbum `json:"albums"`
+	OfferedAlbums     []NotificationAlbum `json:"offered_albums,omitempty"`
+	MoreOfferedAlbums int                 `json:"more_offered_albums,omitempty"`
+	Note              string              `json:"note"`
+}
+
+// pendingUpdate is everything not yet announced to one Person: changes to
+// their own Albums, and Albums new to view, newest first.
+type pendingUpdate struct {
+	albums  []unannouncedAlbum
+	offered []NotificationAlbum
+}
+
+func (p pendingUpdate) empty() bool { return len(p.albums) == 0 && len(p.offered) == 0 }
+
+// collapseOffered keeps the newest few offered Albums and counts the rest.
+// It never returns nil, so an empty section is an empty list in JSON.
+func collapseOffered(albums []NotificationAlbum) ([]NotificationAlbum, int) {
+	if len(albums) <= shownOfferedAlbums {
+		return append([]NotificationAlbum{}, albums...), 0
+	}
+	return albums[:shownOfferedAlbums], len(albums) - shownOfferedAlbums
 }
 
 // unannouncedAlbum is a preview row's Album with the exact Album Entries that
@@ -84,8 +112,45 @@ func ineligibleReason(person models.Person) string {
 	return ""
 }
 
-// unannounced is current viewer-visible content minus everything already
-// announced to the Person, grouped by Album with new or updated status.
+// pending is current viewer-visible content minus everything already
+// announced to the Person.
+func (m *Module) pending(ctx context.Context, db bun.IDB, personID string) (pendingUpdate, error) {
+	var result pendingUpdate
+	var err error
+	if result.albums, err = m.unannounced(ctx, db, personID); err != nil {
+		return result, err
+	}
+	result.offered, err = m.unannouncedOffers(ctx, db, personID)
+	return result, err
+}
+
+// unannouncedOffers is the Person's "More albums" minus every Album already
+// announced to them as new to view, newest first.
+func (m *Module) unannouncedOffers(ctx context.Context, db bun.IDB, personID string) ([]NotificationAlbum, error) {
+	offered, err := m.content.OfferedAlbums(ctx, db, personID)
+	if err != nil || len(offered) == 0 {
+		return nil, err
+	}
+	announced := []string{}
+	err = db.NewSelect().Model((*models.AnnouncedOfferedAlbum)(nil)).ColumnExpr("album_id::text").Where("person_id = ?", personID).Scan(ctx, &announced)
+	if err != nil {
+		return nil, errorstack.CaptureContext(ctx, err)
+	}
+	seen := make(map[string]bool, len(announced))
+	for _, id := range announced {
+		seen[id] = true
+	}
+	result := []NotificationAlbum{}
+	for _, album := range offered {
+		if !seen[album.AlbumID] {
+			result = append(result, NotificationAlbum{ID: album.AlbumID, Title: album.AlbumTitle, Status: AlbumOffered, PhotoCount: album.PhotoCount, VideoCount: album.VideoCount})
+		}
+	}
+	return result, nil
+}
+
+// unannounced is the Person's own visible content minus everything already
+// announced to them, grouped by Album with new or updated status.
 func (m *Module) unannounced(ctx context.Context, db bun.IDB, personID string) ([]unannouncedAlbum, error) {
 	visible, err := m.content.VisibleEntries(ctx, db, personID)
 	if err != nil {
@@ -148,22 +213,30 @@ func (m *Module) unannounced(ctx context.Context, db bun.IDB, personID string) (
 }
 
 // reviewToken covers the exact content a row announced: which Album Entries,
-// under which Albums, with which status. Titles may change without another
-// review; membership may not.
-func reviewToken(personID string, albums []unannouncedAlbum) (string, error) {
+// under which Albums, with which status, and which Albums are new to view.
+// Titles and offered counts may change without another review; membership
+// may not.
+func reviewToken(personID string, update pendingUpdate) (string, error) {
 	type reviewedAlbum struct {
 		ID       string   `json:"id"`
 		Status   string   `json:"status"`
 		EntryIDs []string `json:"entry_ids"`
 	}
-	reviewed := make([]reviewedAlbum, 0, len(albums))
-	for _, album := range albums {
+	reviewed := make([]reviewedAlbum, 0, len(update.albums))
+	for _, album := range update.albums {
 		reviewed = append(reviewed, reviewedAlbum{ID: album.ID, Status: album.Status, EntryIDs: album.EntryIDs})
 	}
+	// Sorted, so newer media reordering pending Albums needs no new review.
+	offered := make([]string, 0, len(update.offered))
+	for _, album := range update.offered {
+		offered = append(offered, album.ID)
+	}
+	sort.Strings(offered)
 	data, err := json.Marshal(struct {
 		PersonID string          `json:"person_id"`
 		Albums   []reviewedAlbum `json:"albums"`
-	}{personID, reviewed})
+		Offered  []string        `json:"offered"`
+	}{personID, reviewed, offered})
 	if err != nil {
 		return "", errorstack.Capture(err)
 	}
@@ -184,22 +257,24 @@ func (m *Module) PreviewUpdates(ctx context.Context) (Preview, error) {
 			return errorstack.CaptureContext(ctx, err)
 		}
 		for _, person := range people {
-			albums, err := m.unannounced(ctx, tx, person.ID.String())
+			update, err := m.pending(ctx, tx, person.ID.String())
 			if err != nil {
 				return err
 			}
-			if len(albums) == 0 {
+			if update.empty() {
 				continue
 			}
-			token, err := reviewToken(person.ID.String(), albums)
+			token, err := reviewToken(person.ID.String(), update)
 			if err != nil {
 				return err
 			}
 			row := PreviewPerson{PersonID: person.ID.String(), DisplayName: person.DisplayName, UpdateEmail: person.UpdateEmail,
-				EmailUpdates: person.EmailUpdates, EmailEligible: emailEligible(person), Albums: make([]NotificationAlbum, 0, len(albums)), ReviewToken: token}
-			for _, album := range albums {
+				EmailUpdates: person.EmailUpdates, EmailEligible: emailEligible(person), Albums: make([]NotificationAlbum, 0, len(update.albums)), ReviewToken: token}
+			for _, album := range update.albums {
 				row.Albums = append(row.Albums, album.NotificationAlbum)
 			}
+			// Copied so an empty section is an empty list in JSON, never null.
+			row.OfferedAlbums = append([]NotificationAlbum{}, update.offered...)
 			result.People = append(result.People, row)
 		}
 		return nil
@@ -276,15 +351,15 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		outcome.Message = reason
 		return outcome, nil
 	}
-	albums, err := m.unannounced(ctx, tx, row.PersonID)
+	update, err := m.pending(ctx, tx, row.PersonID)
 	if err != nil {
 		return outcome, err
 	}
-	if len(albums) == 0 {
+	if update.empty() {
 		outcome.Message = "Nothing new to announce. These updates were already sent or dismissed."
 		return outcome, nil
 	}
-	token, err := reviewToken(row.PersonID, albums)
+	token, err := reviewToken(row.PersonID, update)
 	if err != nil {
 		return outcome, err
 	}
@@ -296,6 +371,10 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	for _, id := range row.ExcludedAlbumIDs {
 		excluded[id] = true
 	}
+	excludedOffers := map[string]bool{}
+	for _, id := range row.ExcludedOfferedAlbumIDs {
+		excludedOffers[id] = true
+	}
 	body := payload{Albums: []NotificationAlbum{}, Note: note}
 	notification := models.UpdateNotification{ID: models.NewUUIDv7(), PersonID: person.ID, Version: payloadVersion, CreatedAt: now}
 	var notificationID *models.UUID
@@ -304,7 +383,7 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	}
 	albumRows := []models.AnnouncedAlbum{}
 	entryRows := []models.AnnouncedEntry{}
-	for _, album := range albums {
+	for _, album := range update.albums {
 		if excluded[album.ID] {
 			continue
 		}
@@ -325,7 +404,22 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		outcome.PhotoCount += album.PhotoCount
 		outcome.VideoCount += album.VideoCount
 	}
-	if len(body.Albums) == 0 {
+	offered := []NotificationAlbum{}
+	offerRows := []models.AnnouncedOfferedAlbum{}
+	for _, album := range update.offered {
+		if excludedOffers[album.ID] {
+			continue
+		}
+		albumID, err := uuid.Parse(album.ID)
+		if err != nil {
+			return outcome, errorstack.Capture(err)
+		}
+		offered = append(offered, album)
+		offerRows = append(offerRows, models.AnnouncedOfferedAlbum{PersonID: person.ID, AlbumID: models.UUID(albumID), AnnouncedAt: now})
+	}
+	outcome.OfferedAlbumCount = len(offered)
+	body.OfferedAlbums, body.MoreOfferedAlbums = collapseOffered(offered)
+	if len(body.Albums) == 0 && len(body.OfferedAlbums) == 0 {
 		outcome.Message = "Every update for this person was excluded."
 		return outcome, nil
 	}
@@ -335,13 +429,23 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 		}
 	}
 	// An updated Album already has its association; a new one gets it now.
-	if _, err := tx.NewInsert().Model(&albumRows).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
-		return outcome, errorstack.CaptureContext(ctx, err)
+	if len(albumRows) > 0 {
+		if _, err := tx.NewInsert().Model(&albumRows).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
+			return outcome, errorstack.CaptureContext(ctx, err)
+		}
 	}
-	// Entries were subtracted against the locked, committed announcement
-	// state, so a conflict here is a real bug rather than a race to absorb.
-	if _, err := tx.NewInsert().Model(&entryRows).Exec(ctx); err != nil {
-		return outcome, errorstack.CaptureContext(ctx, fmt.Errorf("announce entries for %s: %w", person.ID, err))
+	// Entries and offers were subtracted against the locked, committed
+	// announcement state, and Joins take the same lock, so a conflict here is
+	// a real bug rather than a race to absorb.
+	if len(entryRows) > 0 {
+		if _, err := tx.NewInsert().Model(&entryRows).Exec(ctx); err != nil {
+			return outcome, errorstack.CaptureContext(ctx, fmt.Errorf("announce entries for %s: %w", person.ID, err))
+		}
+	}
+	if len(offerRows) > 0 {
+		if _, err := tx.NewInsert().Model(&offerRows).Exec(ctx); err != nil {
+			return outcome, errorstack.CaptureContext(ctx, fmt.Errorf("announce offers for %s: %w", person.ID, err))
+		}
 	}
 	if dismiss {
 		outcome.Status = ResultDismissed
@@ -365,7 +469,7 @@ func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person model
 		if err != nil {
 			return err
 		}
-		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body.Albums, body.Note, token)
+		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body, token)
 		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text})
 		if err != nil {
 			return err
@@ -384,7 +488,7 @@ func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person model
 }
 
 func projectNotification(row models.UpdateNotification) (Notification, error) {
-	result := Notification{ID: row.ID.String(), CreatedAt: row.CreatedAt, ReadAt: row.ReadAt, Albums: []NotificationAlbum{}}
+	result := Notification{ID: row.ID.String(), CreatedAt: row.CreatedAt, ReadAt: row.ReadAt, Albums: []NotificationAlbum{}, OfferedAlbums: []NotificationAlbum{}}
 	if row.Version != payloadVersion {
 		return result, errorstack.Capture(fmt.Errorf("notification %s has unsupported payload version %d", row.ID, row.Version))
 	}
@@ -394,6 +498,8 @@ func projectNotification(row models.UpdateNotification) (Notification, error) {
 	}
 	result.Note = body.Note
 	result.Albums = append(result.Albums, body.Albums...)
+	result.OfferedAlbums = append(result.OfferedAlbums, body.OfferedAlbums...)
+	result.MoreOfferedAlbums = body.MoreOfferedAlbums
 	return result, nil
 }
 

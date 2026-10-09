@@ -90,7 +90,7 @@ func TestJoiningAnOfferedAlbumMakesItTheViewersOwn(t *testing.T) {
 	require.Equal(t, 3, preview.PhotoCount)
 	visible, err := f.module.VisibleEntries(t.Context(), f.db, grandma)
 	require.NoError(t, err)
-	require.Empty(t, visible, "joining announces nothing")
+	require.Len(t, visible, 3, "joined media counts as Grandma's own for announcements")
 
 	left, err := f.module.LeaveAlbum(t.Context(), grandma, f.album.ID)
 	require.NoError(t, err)

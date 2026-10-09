@@ -54,6 +54,8 @@ it("keeps one working notification bell across sign-out and sign-in without a re
               created_at: "2026-06-10T00:00:00Z",
               read_at: null,
               note: "New photos",
+              offered_albums: [],
+              more_offered_albums: 0,
               albums: [
                 {
                   id: "coast",

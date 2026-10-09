@@ -13,10 +13,17 @@ import (
 	"github.com/uptrace/bun"
 )
 
-type fixedContent struct{ entries []notifications.VisibleEntry }
+type fixedContent struct {
+	entries []notifications.VisibleEntry
+	offered []notifications.OfferedAlbum
+}
 
 func (f *fixedContent) VisibleEntries(context.Context, bun.IDB, string) ([]notifications.VisibleEntry, error) {
 	return f.entries, nil
+}
+
+func (f *fixedContent) OfferedAlbums(context.Context, bun.IDB, string) ([]notifications.OfferedAlbum, error) {
+	return f.offered, nil
 }
 
 func TestBaselineRecordsOnlyCurrentlyVisibleContentOnce(t *testing.T) {
