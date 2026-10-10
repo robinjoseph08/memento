@@ -26,6 +26,7 @@ import { Button } from "../ui/button";
 import { AlbumHeader } from "./album-header";
 import { aspectRatio, captureDate } from "./labels";
 import { Lightbox } from "./lightbox";
+import { photoRows } from "./photo-rows";
 import { RequestAccess } from "./request-access";
 import { Timeline } from "./timeline";
 
@@ -528,10 +529,8 @@ function MediaThumbnail({
   );
 }
 
-// Rows that preserve every aspect ratio: items join a row until its combined
-// width-to-height ratio would exceed the target, then each item's ratio is its
-// flex share, normalised so a lone portrait still fills its row. Short rows
-// keep their natural size instead of stretching. The
+// Lays out photos in rows that preserve every aspect ratio. Each item's ratio
+// is its flex share, normalised so a lone portrait still fills its row. The
 // same ratios lay out a day before its photos arrive, so nothing moves when
 // they do. Each row off screen skips layout and paint; its height is declared
 // from the same arithmetic in container units, so the page height is exact
@@ -546,19 +545,7 @@ function PhotoRows({
   tile: (index: number) => ReactNode;
 }) {
   const { target } = useRowLayout();
-  const rows: { items: number[]; sum: number; share: number }[] = [];
-  ratios.forEach((ratio, index) => {
-    const last = rows.at(-1);
-    if (!last || last.sum + ratio > target + 0.01)
-      rows.push({ items: [index], sum: ratio, share: 1 });
-    else {
-      last.items.push(index);
-      last.sum += ratio;
-    }
-  });
-  for (const [index, row] of rows.entries())
-    if (index === rows.length - 1 || row.sum < target * 0.7)
-      row.share = Math.min(1, row.sum / target);
+  const rows = photoRows(ratios, target);
   return (
     <div className="mt-5 flex flex-col gap-1">
       {rows.map((row) => (
