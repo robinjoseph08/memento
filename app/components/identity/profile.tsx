@@ -86,6 +86,7 @@ function ProfileDetails({ profile }: { profile: Profile }) {
     display_name: profile.person.display_name,
     update_email: profile.person.update_email,
     email_updates: profile.person.email_updates,
+    offered_album_updates: profile.person.offered_album_updates,
   };
   const [draft, setDraft] = useState<UpdateProfileRequest | null>(null);
   const values = draft ?? initial;
@@ -163,6 +164,28 @@ function ProfileDetails({ profile }: { profile: Profile }) {
           >
             Email me when there are updates
           </CheckField>
+          <p className="mb-6 text-xs text-muted">
+            Check this if you want to receive an email whenever there are new
+            photos and videos for you to see in Memento.
+          </p>
+          <CheckField
+            checked={values.offered_album_updates}
+            error={errors.offered_album_updates}
+            name="offered_album_updates"
+            onChange={(event) => {
+              update.reset();
+              setDraft({
+                ...values,
+                offered_album_updates: event.target.checked,
+              });
+            }}
+          >
+            Tell me about albums I can join
+          </CheckField>
+          <p className="mb-6 text-xs text-muted">
+            Check this if you want to know about albums that you have access to,
+            but you might not have been a part of.
+          </p>
           <Button type="submit">
             {update.isPending ? "Saving…" : "Save profile"}
           </Button>

@@ -3,7 +3,7 @@ import { useId, useState } from "react";
 
 import { useCompleteOnboarding } from "../../hooks/queries/admission";
 import { useProfile } from "../../hooks/queries/profile";
-import { useViewerAlbums } from "../../hooks/queries/viewer";
+import { useMoreAlbums, useViewerAlbums } from "../../hooks/queries/viewer";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import type {
@@ -63,6 +63,7 @@ function OnboardingForm({ profile }: { profile: Profile }) {
     display_name: profile.person.display_name,
     update_email: profile.person.update_email,
     email_updates: profile.person.email_updates,
+    offered_album_updates: profile.person.offered_album_updates,
   };
   const [draft, setDraft] = useState<UpdateProfileRequest | null>(null);
   const values = draft ?? initial;
@@ -135,6 +136,28 @@ function OnboardingForm({ profile }: { profile: Profile }) {
           >
             Email me when there are updates
           </CheckField>
+          <p className="mb-6 text-xs text-muted">
+            Check this if you want to receive an email whenever there are new
+            photos and videos for you to see in Memento.
+          </p>
+          <CheckField
+            checked={values.offered_album_updates}
+            error={errors.offered_album_updates}
+            name="offered_album_updates"
+            onChange={(event) => {
+              complete.reset();
+              setDraft({
+                ...values,
+                offered_album_updates: event.target.checked,
+              });
+            }}
+          >
+            Tell me about albums I can join
+          </CheckField>
+          <p className="mb-6 text-xs text-muted">
+            Check this if you want to know about albums that you have access to,
+            but you might not have been a part of.
+          </p>
           <Button type="submit">
             {complete.isPending ? "Finishing…" : "Continue to Memento"}
             <ArrowRight
@@ -171,11 +194,10 @@ function AvailableAlbums({ curator }: { curator: boolean }) {
           />
         </div>
       )}
-      {albums.data?.length === 0 && (
+      {curator && albums.data?.length === 0 && (
         <p className="mt-4 max-w-120 text-muted">
-          {curator
-            ? "Nothing is imported yet. You'll bring albums in from Immich after this step."
-            : "Nothing is shared with you yet. Your Curator will choose what to share, and you'll hear about it here."}
+          Nothing is imported yet. You'll bring albums in from Immich after this
+          step.
         </p>
       )}
       {albums.data && albums.data.length > 0 && (
@@ -204,6 +226,30 @@ function AvailableAlbums({ curator }: { curator: boolean }) {
           ))}
         </ul>
       )}
+      {!curator && albums.data && (
+        <MoreAlbumsCount shared={albums.data.length > 0} />
+      )}
     </section>
   );
+}
+
+// Onboarding only says that More albums exists; joining waits for the home
+// page. With nothing shared and nothing offered, it says so instead.
+function MoreAlbumsCount({ shared }: { shared: boolean }) {
+  const more = useMoreAlbums();
+  const count = more.data?.length ?? 0;
+  if (count === 0) {
+    if (shared || more.isPending) return null;
+    return (
+      <p className="mt-4 max-w-120 text-muted">
+        Nothing is shared with you yet. Your Curator will choose what to share,
+        and you'll hear about it here.
+      </p>
+    );
+  }
+  const albums = count === 1 ? "album" : "albums";
+  const line = shared
+    ? `You can also view ${count} more ${albums} on your home page.`
+    : `You can view ${count} ${albums} on your home page.`;
+  return <p className="mt-4 max-w-120 text-sm text-muted">{line}</p>;
 }

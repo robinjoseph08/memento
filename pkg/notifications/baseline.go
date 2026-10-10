@@ -2,6 +2,7 @@ package notifications
 
 import (
 	"context"
+	"time"
 	"uuid"
 
 	"github.com/robinjoseph08/memento/pkg/errcodes"
@@ -52,24 +53,48 @@ func (m *Module) RecordBaseline(ctx context.Context, tx bun.Tx, personID string)
 			return Baseline{}, errorstack.CaptureContext(ctx, err)
 		}
 	}
-	offered, err := m.content.OfferedAlbums(ctx, tx, personID)
-	if err != nil {
+	if err := m.recordOffered(ctx, tx, models.UUID(id), now); err != nil {
 		return Baseline{}, err
 	}
-	offerRows := make([]models.AnnouncedOfferedAlbum, 0, len(offered))
+	return m.Announced(ctx, tx, personID)
+}
+
+// RecordOfferedAlbums marks every Album in the Person's "More albums" as
+// already new to view, inside the caller's transaction. Turning "Tell me
+// about albums I can join" back on calls it, so Albums offered while it was
+// off are never sent afterwards.
+func (m *Module) RecordOfferedAlbums(ctx context.Context, tx bun.Tx, personID string) error {
+	id, err := uuid.Parse(personID)
+	if err != nil {
+		return errcodes.NotFound("Person")
+	}
+	// Lock the Person before the announcement rows, in the order Joins and
+	// approvals do, so a Join at the same moment waits instead of deadlocking.
+	_, err = tx.NewSelect().Model((*models.Person)(nil)).Column("person.id").Where("person.id = ?", personID).For("UPDATE").Exec(ctx)
+	if err != nil {
+		return errorstack.CaptureContext(ctx, err)
+	}
+	return m.recordOffered(ctx, tx, models.UUID(id), m.now().UTC())
+}
+
+func (m *Module) recordOffered(ctx context.Context, tx bun.Tx, personID models.UUID, now time.Time) error {
+	offered, err := m.content.OfferedAlbums(ctx, tx, personID.String())
+	if err != nil {
+		return err
+	}
+	rows := make([]models.AnnouncedOfferedAlbum, 0, len(offered))
 	for _, album := range offered {
 		albumID, err := uuid.Parse(album.AlbumID)
 		if err != nil {
-			return Baseline{}, errorstack.Capture(err)
+			return errorstack.Capture(err)
 		}
-		offerRows = append(offerRows, models.AnnouncedOfferedAlbum{PersonID: models.UUID(id), AlbumID: models.UUID(albumID), AnnouncedAt: now})
+		rows = append(rows, models.AnnouncedOfferedAlbum{PersonID: personID, AlbumID: models.UUID(albumID), AnnouncedAt: now})
 	}
-	if len(offerRows) > 0 {
-		if _, err := tx.NewInsert().Model(&offerRows).On("CONFLICT DO NOTHING").Exec(ctx); err != nil {
-			return Baseline{}, errorstack.CaptureContext(ctx, err)
-		}
+	if len(rows) == 0 {
+		return nil
 	}
-	return m.Announced(ctx, tx, personID)
+	_, err = tx.NewInsert().Model(&rows).On("CONFLICT DO NOTHING").Exec(ctx)
+	return errorstack.CaptureContext(ctx, err)
 }
 
 // RecordJoin marks an Album the Person just joined, and the offered Album

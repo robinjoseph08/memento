@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/robinjoseph08/memento/pkg/models"
 	"github.com/robinjoseph08/memento/pkg/notifications"
 	"github.com/robinjoseph08/memento/pkg/testdb"
 	"github.com/stretchr/testify/assert"
@@ -294,4 +295,89 @@ func TestUpdateEmailCountsAnAlbumInBothSectionsOnceAndDropsWithdrawnOffers(t *te
 	assert.Contains(t, sent.Body, "There is something new for you to see on Memento.\n")
 	assert.NotContains(t, sent.Body, "New albums you can view")
 	assert.NotContains(t, sent.Body, "more album")
+}
+
+func TestTurningOffAlbumsICanJoinLeavesThemOutOfEveryChannel(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	content := &mutableContent{visible: map[string][]notifications.VisibleEntry{}}
+	module, recorder, _ := mailModule(t, db, content)
+	coast := seedAlbum(t, db, "Coast", "coast-01.jpg")
+	wedding := seedAlbum(t, db, "Wedding", "wedding-01.jpg")
+	party := seedAlbum(t, db, "Party", "party-01.jpg")
+	alex := seedPerson(t, db, "Alex", personOptions{email: "alex@example.test", emailUpdates: true, offersOff: true})
+	sam := seedPerson(t, db, "Sam", personOptions{offersOff: true})
+	content.set(alex.ID.String(), coast.Entries...)
+	content.offer(alex.ID.String(), offered(wedding, 40, 2))
+	content.offer(sam.ID.String(), offered(wedding, 40, 2), offered(party, 3, 0))
+
+	// Only Alex's own Album is pending, and Sam, with nothing else new, has
+	// no update at all.
+	result := approveOne(t, module, "")
+	assert.Equal(t, notifications.ResultNotified, result.Status)
+	assert.Equal(t, 1, result.AlbumCount)
+	assert.Zero(t, result.OfferedAlbumCount)
+	list, err := module.ListNotifications(t.Context(), alex.ID.String())
+	require.NoError(t, err)
+	require.Len(t, list.Notifications, 1)
+	assert.Empty(t, list.Notifications[0].OfferedAlbums)
+	require.NoError(t, module.Execute(t.Context(), result.Delivery.ID, false))
+	assert.NotContains(t, recorder.Sent()[0].Body, "New albums you can view")
+	preview, err := module.PreviewUpdates(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, preview.People)
+
+	// Turning it back on records what is offered now as already announced,
+	// so only Albums offered afterwards are news.
+	for _, person := range []models.Person{alex, sam} {
+		person.OfferedAlbumUpdates = true
+		require.NoError(t, db.RunInTx(t.Context(), nil, func(ctx context.Context, tx bun.Tx) error {
+			if _, err := tx.NewUpdate().Model(&person).Column("offered_album_updates").WherePK().Exec(ctx); err != nil {
+				return err
+			}
+			return module.RecordOfferedAlbums(ctx, tx, person.ID.String())
+		}))
+	}
+	preview, err = module.PreviewUpdates(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, preview.People, "nothing offered while it was off is sent")
+	beach := seedAlbum(t, db, "Beach", "beach-01.jpg")
+	content.offer(sam.ID.String(), offered(beach, 1, 0), offered(wedding, 40, 2), offered(party, 3, 0))
+	preview, err = module.PreviewUpdates(t.Context())
+	require.NoError(t, err)
+	require.Len(t, preview.People, 1)
+	assert.Equal(t, []notifications.NotificationAlbum{newToView(beach, 1, 0)}, preview.People[0].OfferedAlbums)
+}
+
+func TestUpdateEmailDropsAlbumsNewToViewTurnedOffSinceApproval(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	content := &mutableContent{visible: map[string][]notifications.VisibleEntry{}}
+	module, recorder, _ := mailModule(t, db, content)
+	coast := seedAlbum(t, db, "Coast", "coast-01.jpg")
+	wedding := seedAlbum(t, db, "Wedding", "wedding-01.jpg")
+	alex := seedPerson(t, db, "Alex", personOptions{email: "alex@example.test", emailUpdates: true})
+	content.set(alex.ID.String(), coast.Entries...)
+	content.offer(alex.ID.String(), offered(wedding, 40, 2))
+	result := approveOne(t, module, "")
+	_, err := db.NewUpdate().Model((*models.Person)(nil)).Set("offered_album_updates = false").Where("id = ?", alex.ID).Exec(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, module.Execute(t.Context(), result.Delivery.ID, false))
+	require.Len(t, recorder.Sent(), 1)
+	assert.Contains(t, recorder.Sent()[0].Body, "Coast")
+	assert.NotContains(t, recorder.Sent()[0].Body, "New albums you can view")
+
+	// An update of only Albums new to view is skipped, saying why.
+	party := seedAlbum(t, db, "Party", "party-01.jpg")
+	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("offered_album_updates = true").Where("id = ?", alex.ID).Exec(t.Context())
+	require.NoError(t, err)
+	content.offer(alex.ID.String(), offered(party, 1, 0))
+	result = approveOne(t, module, "")
+	_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("offered_album_updates = false").Where("id = ?", alex.ID).Exec(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, module.Execute(t.Context(), result.Delivery.ID, false))
+	delivery := status(t, db, module, result.Delivery.ID)
+	assert.Equal(t, "skipped", delivery.Status)
+	assert.Equal(t, "This person turned off hearing about albums they can join.", delivery.Message)
+	assert.Len(t, recorder.Sent(), 1)
 }

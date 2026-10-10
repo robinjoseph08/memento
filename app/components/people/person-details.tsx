@@ -54,6 +54,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
     display_name: person.display_name,
     is_curator: person.is_curator,
     deactivated: !!person.deactivated_at,
+    offered_album_updates: person.offered_album_updates,
   };
   const [draft, setDraft] = useState<UpdatePersonRequest | null>(null);
   const values = draft ?? initial;
@@ -148,6 +149,24 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
                     yourself.
                   </p>
                 )}
+                <CheckField
+                  checked={values.offered_album_updates}
+                  error={errors.offered_album_updates}
+                  name="offered_album_updates"
+                  onChange={(event) => {
+                    update.reset();
+                    setDraft({
+                      ...values,
+                      offered_album_updates: event.target.checked,
+                    });
+                  }}
+                >
+                  Tell them about albums they can join
+                </CheckField>
+                <p className="mb-6 text-xs text-muted">
+                  Updates list new albums offered to their Circles. They can
+                  also change this in their profile.
+                </p>
                 <Button type="submit">
                   {update.isPending ? "Saving…" : "Save person"}
                 </Button>
@@ -215,8 +234,7 @@ export function PersonDetails({ detail }: { detail: PersonDetail }) {
               </div>
             </dl>
             <p className="mt-5 text-xs text-muted">
-              This person manages their notification preferences in their
-              profile.
+              This person manages their email preferences in their profile.
             </p>
           </section>
         </div>

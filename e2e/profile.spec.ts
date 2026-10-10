@@ -1,6 +1,6 @@
 import { expect, finishOnboarding, test } from "./fixtures";
 
-test("a touch user clears their update email and can identify the current browser", async ({
+test("a touch user clears their update email, stops hearing about albums they can join, and can identify the current browser", async ({
   browser,
   baseURL,
 }) => {
@@ -24,6 +24,11 @@ test("a touch user clears their update email and can identify the current browse
     await page
       .getByRole("checkbox", { name: "Email me when there are updates" })
       .tap();
+    const offers = page.getByRole("checkbox", {
+      name: "Tell me about albums I can join",
+    });
+    await expect(offers).toBeChecked();
+    await offers.tap();
     await page.getByRole("button", { name: "Save profile" }).tap();
     await expect(page.getByRole("status")).toHaveText("Profile saved.");
     await page.reload();
@@ -31,6 +36,7 @@ test("a touch user clears their update email and can identify the current browse
     await expect(
       page.getByRole("checkbox", { name: "Email me when there are updates" }),
     ).not.toBeChecked();
+    await expect(offers).not.toBeChecked();
     const sessions = page.getByRole("table", { name: "Browser sessions" });
     await expect(
       sessions.getByText("This browser", { exact: true }),

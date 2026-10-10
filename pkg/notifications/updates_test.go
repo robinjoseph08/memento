@@ -100,6 +100,8 @@ type personOptions struct {
 	curator, deactivated, notOnboarded bool
 	email                              string
 	emailUpdates                       bool
+	// offersOff turns off "Tell me about albums I can join".
+	offersOff bool
 }
 
 func seedPerson(t *testing.T, db *bun.DB, name string, options personOptions) models.Person {
@@ -119,6 +121,11 @@ func seedPerson(t *testing.T, db *bun.DB, name string, options personOptions) mo
 		_, err = db.NewInsert().Model(&linked).Exec(t.Context())
 		require.NoError(t, err)
 		_, err = db.NewUpdate().Model((*models.Person)(nil)).Set("update_email_id = ?", linked.ID).Set("email_updates = ?", options.emailUpdates).Where("id = ?", person.ID).Exec(t.Context())
+		require.NoError(t, err)
+	}
+	if options.offersOff {
+		person.OfferedAlbumUpdates = false
+		_, err = db.NewUpdate().Model(&person).Column("offered_album_updates").WherePK().Exec(t.Context())
 		require.NoError(t, err)
 	}
 	return person

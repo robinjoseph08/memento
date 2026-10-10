@@ -34,9 +34,11 @@ type Mail interface {
 	Deliveries(context.Context, bun.IDB, []string) (map[string]notifications.Delivery, error)
 }
 
-// Announcements is the consumer-owned view of Notifications for Onboarding baselines.
+// Announcements is the consumer-owned view of Notifications for Onboarding
+// baselines and for turning "Tell me about albums I can join" back on.
 type Announcements interface {
 	RecordBaseline(context.Context, bun.Tx, string) (notifications.Baseline, error)
+	RecordOfferedAlbums(context.Context, bun.Tx, string) error
 	Announced(context.Context, bun.IDB, string) (notifications.Baseline, error)
 }
 
@@ -68,7 +70,8 @@ type Module struct {
 	PublicURL string
 	// Mail is nil until the server wires Notifications; Invitations then report SMTP as unconfigured.
 	Mail Mail
-	// Announcements records the Onboarding baseline. Completion fails without it.
+	// Announcements records the Onboarding baseline and Albums offered while
+	// a Person was not hearing about them. Both fail without it.
 	Announcements Announcements
 	// Sender is nil until mail is configured, which turns Sign-in Codes off.
 	Sender Sender
@@ -264,7 +267,8 @@ func insertSession(ctx context.Context, tx bun.Tx, emailID models.UUID, device s
 func projectPerson(person models.Person) Person {
 	return Person{ID: person.ID.String(), DisplayName: person.DisplayName, IsCurator: person.IsCurator,
 		OnboardingCompletedAt: person.OnboardingCompletedAt, DeactivatedAt: person.DeactivatedAt,
-		UpdateEmail: person.UpdateEmail, EmailUpdates: person.EmailUpdates, AvatarURL: personAvatarURL(person)}
+		UpdateEmail: person.UpdateEmail, EmailUpdates: person.EmailUpdates, OfferedAlbumUpdates: person.OfferedAlbumUpdates,
+		AvatarURL: personAvatarURL(person)}
 }
 
 // Authenticate rejects expired sessions and extends active sessions at most daily.
