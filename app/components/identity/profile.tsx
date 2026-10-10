@@ -165,8 +165,8 @@ function ProfileDetails({ profile }: { profile: Profile }) {
             Email me when there are updates
           </CheckField>
           <p className="mb-6 text-xs text-muted">
-            Updates always appear in Memento. This also sends each one to the
-            email above.
+            Check this if you want to receive an email whenever there are new
+            photos and videos for you to see in Memento.
           </p>
           <CheckField
             checked={values.offered_album_updates}
@@ -183,8 +183,8 @@ function ProfileDetails({ profile }: { profile: Profile }) {
             Tell me about albums I can join
           </CheckField>
           <p className="mb-6 text-xs text-muted">
-            Updates also list new albums you can choose to join. You can always
-            find them under More albums on your home page.
+            Check this if you want to know about albums that you have access to,
+            but you might not have been a part of.
           </p>
           <Button type="submit">
             {update.isPending ? "Saving…" : "Save profile"}
