@@ -98,10 +98,12 @@ type CreatePersonRequest struct {
 }
 
 type UpdatePersonRequest struct {
-	DisplayName         string `json:"display_name" validate:"required,max=100" mod:"trim"`
-	IsCurator           bool   `json:"is_curator"`
-	Deactivated         bool   `json:"deactivated"`
-	OfferedAlbumUpdates bool   `json:"offered_album_updates"`
+	DisplayName string `json:"display_name" validate:"required,max=100" mod:"trim"`
+	IsCurator   bool   `json:"is_curator"`
+	Deactivated bool   `json:"deactivated"`
+	// OfferedAlbumUpdates keeps the current setting when omitted, so older
+	// clients never turn it off by leaving it out.
+	OfferedAlbumUpdates *bool `json:"offered_album_updates"`
 }
 
 type LinkFaceRequest struct {
@@ -122,10 +124,12 @@ type PreauthorizeRequest struct {
 }
 
 type UpdateProfileRequest struct {
-	DisplayName         string `json:"display_name" validate:"required,max=100" mod:"trim"`
-	UpdateEmail         string `json:"update_email" validate:"omitempty,email,max=254"`
-	EmailUpdates        bool   `json:"email_updates"`
-	OfferedAlbumUpdates bool   `json:"offered_album_updates"`
+	DisplayName  string `json:"display_name" validate:"required,max=100" mod:"trim"`
+	UpdateEmail  string `json:"update_email" validate:"omitempty,email,max=254"`
+	EmailUpdates bool   `json:"email_updates"`
+	// OfferedAlbumUpdates keeps the current setting when omitted, so older
+	// clients never turn it off by leaving it out.
+	OfferedAlbumUpdates *bool `json:"offered_album_updates"`
 }
 
 // LinkedEmail is a Linked Email as the Person page and profile show it.

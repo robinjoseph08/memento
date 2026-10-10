@@ -31,22 +31,26 @@ func TestAlbumsICanJoinIsEditedEverywhereAndStartsFreshWhenTurnedBackOn(t *testi
 	curator := claimCurator(t, module)
 	album := a.publishedAlbum(t)
 
-	// Everyone starts with it on, and Onboarding saves their choice.
+	// Everyone starts with it on, and Onboarding saves their choice. Leaving
+	// it out, as older clients do, keeps it on.
 	people := map[string]identity.Session{}
-	for name, on := range map[string]bool{"Pat": false, "Sam": true, "Kim": true} {
+	for name, choice := range map[string]*bool{"Pat": new(false), "Sam": nil, "Kim": new(true)} {
 		session := authorizePerson(t, module, curator, name, name+"@example.test")
 		assert.True(t, session.Person.OfferedAlbumUpdates)
-		completed, err := module.CompleteOnboarding(t.Context(), session.Token, identity.UpdateProfileRequest{DisplayName: name, OfferedAlbumUpdates: on})
+		completed, err := module.CompleteOnboarding(t.Context(), session.Token, identity.UpdateProfileRequest{DisplayName: name, OfferedAlbumUpdates: choice})
 		require.NoError(t, err)
-		assert.Equal(t, on, completed.OfferedAlbumUpdates)
+		assert.Equal(t, name != "Pat", completed.OfferedAlbumUpdates)
 		people[name] = session
 	}
 	pat, sam, kim := people["Pat"], people["Sam"], people["Kim"]
 
 	// Kim turns it off in the profile.
-	profile, err := module.UpdateProfile(t.Context(), kim.Token, identity.UpdateProfileRequest{DisplayName: "Kim", OfferedAlbumUpdates: false})
+	profile, err := module.UpdateProfile(t.Context(), kim.Token, identity.UpdateProfileRequest{DisplayName: "Kim", OfferedAlbumUpdates: new(false)})
 	require.NoError(t, err)
 	assert.False(t, profile.Person.OfferedAlbumUpdates)
+	renamed, err := module.UpdatePerson(t.Context(), curator.Token, kim.Person.ID, identity.UpdatePersonRequest{DisplayName: "Kim"})
+	require.NoError(t, err)
+	assert.False(t, renamed.OfferedAlbumUpdates, "a Curator edit that leaves it out keeps it off")
 
 	circle, err := module.CreateCircle(t.Context(), curator.Token, identity.CircleRequest{Name: "Family"})
 	require.NoError(t, err)
@@ -60,10 +64,10 @@ func TestAlbumsICanJoinIsEditedEverywhereAndStartsFreshWhenTurnedBackOn(t *testi
 
 	// Pat turns it back on in the profile, and a Curator does it for Kim on
 	// the person-details page. What was offered meanwhile stays unsent.
-	profile, err = module.UpdateProfile(t.Context(), pat.Token, identity.UpdateProfileRequest{DisplayName: "Pat", OfferedAlbumUpdates: true})
+	profile, err = module.UpdateProfile(t.Context(), pat.Token, identity.UpdateProfileRequest{DisplayName: "Pat", OfferedAlbumUpdates: new(true)})
 	require.NoError(t, err)
 	assert.True(t, profile.Person.OfferedAlbumUpdates)
-	updated, err := module.UpdatePerson(t.Context(), curator.Token, kim.Person.ID, identity.UpdatePersonRequest{DisplayName: "Kim", OfferedAlbumUpdates: true})
+	updated, err := module.UpdatePerson(t.Context(), curator.Token, kim.Person.ID, identity.UpdatePersonRequest{DisplayName: "Kim", OfferedAlbumUpdates: new(true)})
 	require.NoError(t, err)
 	assert.True(t, updated.OfferedAlbumUpdates)
 	detail, err := module.GetPerson(t.Context(), curator.Token, kim.Person.ID)
@@ -73,10 +77,10 @@ func TestAlbumsICanJoinIsEditedEverywhereAndStartsFreshWhenTurnedBackOn(t *testi
 	assert.Nil(t, pendingOffers(t, a, kim.Person.ID))
 
 	// Saving it on again keeps what is pending, and a Curator can turn it off.
-	_, err = module.UpdateProfile(t.Context(), sam.Token, identity.UpdateProfileRequest{DisplayName: "Sam", OfferedAlbumUpdates: true})
+	_, err = module.UpdateProfile(t.Context(), sam.Token, identity.UpdateProfileRequest{DisplayName: "Sam", OfferedAlbumUpdates: new(true)})
 	require.NoError(t, err)
 	require.Len(t, pendingOffers(t, a, sam.Person.ID), 1)
-	updated, err = module.UpdatePerson(t.Context(), curator.Token, sam.Person.ID, identity.UpdatePersonRequest{DisplayName: "Sam", OfferedAlbumUpdates: false})
+	updated, err = module.UpdatePerson(t.Context(), curator.Token, sam.Person.ID, identity.UpdatePersonRequest{DisplayName: "Sam", OfferedAlbumUpdates: new(false)})
 	require.NoError(t, err)
 	assert.False(t, updated.OfferedAlbumUpdates)
 	assert.Nil(t, pendingOffers(t, a, sam.Person.ID))

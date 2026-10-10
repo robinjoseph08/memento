@@ -70,10 +70,14 @@ func (m *Module) applyProfile(ctx context.Context, tx bun.Tx, person *models.Per
 }
 
 // setOfferedAlbumUpdates changes "Tell me about albums I can join" on the
-// Person for the caller to save. Turning it back on records everything in
-// their "More albums" as announced, so it starts fresh instead of sending
-// what was offered while it was off.
-func (m *Module) setOfferedAlbumUpdates(ctx context.Context, tx bun.Tx, person *models.Person, on bool) error {
+// Person for the caller to save; nil keeps it as it is. Turning it back on
+// records everything in their "More albums" as announced, so it starts fresh
+// instead of sending what was offered while it was off.
+func (m *Module) setOfferedAlbumUpdates(ctx context.Context, tx bun.Tx, person *models.Person, request *bool) error {
+	if request == nil {
+		return nil
+	}
+	on := *request
 	if on && !person.OfferedAlbumUpdates {
 		if m.Announcements == nil {
 			return errorstack.Capture(fmt.Errorf("turning on offered Album updates requires announcement storage"))
