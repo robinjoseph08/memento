@@ -175,9 +175,9 @@ func (f *immichFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/api/server/version":
-		minor := 1
+		minor := 3
 		if state.Unsupported {
-			minor = 3
+			minor = 4
 		}
 		if err := json.NewEncoder(w).Encode(map[string]any{"major": 3, "minor": minor, "patch": 0, "prerelease": nil}); err != nil {
 			return

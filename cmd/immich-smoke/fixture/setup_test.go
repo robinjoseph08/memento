@@ -46,7 +46,7 @@ func TestJPEG(t *testing.T) {
 
 func TestSetupUsesAdminOnlyToCreateNonAdminSource(t *testing.T) {
 	t.Parallel()
-	for _, release := range []string{"v3.1.0", "v3.0.3"} {
+	for _, release := range []string{"v3.3.1", "v3.2.4"} {
 		t.Run(release, func(t *testing.T) {
 			t.Parallel()
 			for _, ids := range [][]string{{"asset-1", "asset-2", "asset-3", "asset-4"}, {"asset-1", "asset-3", "asset-2", "asset-4"}} {
@@ -71,9 +71,9 @@ func testSetup(t *testing.T, release string, assetIDs []string) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/server/version":
-			version := `{"major":3,"minor":1,"patch":0,"prerelease":null}`
-			if release == "v3.0.3" {
-				version = `{"major":3,"minor":0,"patch":3,"prerelease":null}`
+			version := `{"major":3,"minor":3,"patch":1,"prerelease":null}`
+			if release == "v3.2.4" {
+				version = `{"major":3,"minor":2,"patch":4,"prerelease":null}`
 			}
 			_, _ = io.WriteString(w, version)
 		case "/api/auth/admin-sign-up":
@@ -240,10 +240,10 @@ func TestSetupRejectsWrongReleaseBeforeWrites(t *testing.T) {
 	for _, test := range []struct {
 		name, expected, response, failure string
 	}{
-		{"wrong default", "v3.1.0", `{"major":3,"minor":0,"patch":3,"prerelease":null}`, "expected stable v3.1.0"},
-		{"wrong explicit", "v3.0.3", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, "expected stable v3.0.3"},
-		{"prerelease", "v3.0.3", `{"major":3,"minor":0,"patch":3,"prerelease":1}`, "expected stable v3.0.3"},
-		{"unsupported despite exact match", "v3.3.0", `{"major":3,"minor":3,"patch":0,"prerelease":null}`, "Import and synchronization require stable Immich"},
+		{"wrong default", "v3.3.1", `{"major":3,"minor":2,"patch":4,"prerelease":null}`, "expected stable v3.3.1"},
+		{"wrong explicit", "v3.2.4", `{"major":3,"minor":3,"patch":1,"prerelease":null}`, "expected stable v3.2.4"},
+		{"prerelease", "v3.2.4", `{"major":3,"minor":2,"patch":4,"prerelease":1}`, "expected stable v3.2.4"},
+		{"unsupported despite exact match", "v3.4.0", `{"major":3,"minor":4,"patch":0,"prerelease":null}`, "Import and synchronization require stable Immich"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()

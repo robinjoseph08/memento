@@ -3,7 +3,7 @@
 set -euo pipefail
 set +x
 
-release=v3.2.1
+release=v3.3.1
 probe=false
 ml=false
 permission_failure=
@@ -17,14 +17,14 @@ while (( $# )); do
     --probe) probe=true; shift ;;
     --ml) ml=true; shift ;;
     --help|-h)
-      printf 'Usage: mise test:immich [--version vMAJOR.MINOR.PATCH] [--probe] [--ml] [--permission-failure NAME]\nDefault: v3.2.1. --probe bypasses only the test command import policy.\nEvidence is retained in tmp/immich-smoke.*/artifacts.\n'
+      printf 'Usage: mise test:immich [--version vMAJOR.MINOR.PATCH] [--probe] [--ml] [--permission-failure NAME]\nDefault: v3.3.1. --probe bypasses only the test command import policy.\nEvidence is retained in tmp/immich-smoke.*/artifacts.\n'
       exit 0
       ;;
     *) printf 'Unknown argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
 [[ $release =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
-  printf 'Version must be an exact stable tag such as v3.2.1\n' >&2; exit 1;
+  printf 'Version must be an exact stable tag such as v3.3.1\n' >&2; exit 1;
 }
 [[ -z $permission_failure || $permission_failure =~ ^[a-z]+\.[a-z]+$ ]] || {
   printf 'Permission must be a name such as asset.read\n' >&2; exit 1;
@@ -108,10 +108,8 @@ actual=$(shasum -a 256 "$work/compose.yaml")
 printf '%s  compose.yaml\n' "${actual%% *}" > "$artifacts/checksums.txt"
 # Checksums of the official assets, not of our override or interpolated config.
 case "$release" in
-  v3.2.1) expected=fa98c3eb0884b0b88aaee11a9c9acb8cfb17a0f495d12c21358deb6d3e8a546b ;;
-  v3.1.0) expected=c651a8211c9ab152bf7060ba1f370737ad2b4872da788a6c8a9e7fa7d4217357 ;;
-  v3.0.3) expected=da6f0ca9156c1716e69b3067cb8775b735a4a69fb478a8719e56cf7ea3e3d246 ;;
-  v2.7.5) expected=69da59c813f1382400a8fe9fce9f51ac00a4d05d7d1571a0d49dcd517ae41ad5 ;;
+  v3.3.1) expected=2601c893aa3217d3c0c7284c23aaa1699aac75b533c84c0315fd16b7889fd552 ;;
+  v3.2.4) expected=fa98c3eb0884b0b88aaee11a9c9acb8cfb17a0f495d12c21358deb6d3e8a546b ;;
   *) expected= ;;
 esac
 if [[ -n $expected ]]; then

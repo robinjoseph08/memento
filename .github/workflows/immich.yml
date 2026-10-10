@@ -27,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJSON((inputs.full_matrix || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["v3.2.1", "v3.1.0", "v3.0.3"]' || '["v3.2.1"]') }}
+        version: ${{ fromJSON((inputs.full_matrix || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["v3.3.1", "v3.2.4"]' || '["v3.3.1"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,7 +48,7 @@ jobs:
           if-no-files-found: warn
 
   ml:
-    name: Immich v3.2.1 ML recognition
+    name: Immich v3.3.1 ML recognition
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.ml)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -59,11 +59,11 @@ jobs:
       - uses: jdx/mise-action@v4
       - name: Install ffprobe
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-      - run: mise test:immich --version v3.2.1 --ml
+      - run: mise test:immich --version v3.3.1 --ml
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: immich-v3.2.1-ml
+          name: immich-v3.3.1-ml
           path: tmp/immich-smoke.*/artifacts/
           retention-days: 14
           if-no-files-found: warn

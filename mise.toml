@@ -121,7 +121,7 @@ run = "go test ./... -parallel 4 -coverprofile coverage.out"
 [tasks."test:immich"]
 description = "Smoke-test the production adapter against a disposable official Immich release"
 usage = '''
-flag "--version <tag>" default="v3.2.1" help="Exact stable Immich release tag"
+flag "--version <tag>" default="v3.3.1" help="Exact stable Immich release tag"
 flag "--probe" help="Bypass only the test command import policy"
 flag "--ml" help="Run slower machine-learning recognition smoke"
 flag "--permission-failure <name>" help="Remove one fixture key permission and check the diagnostic"

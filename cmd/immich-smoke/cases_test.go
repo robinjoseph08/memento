@@ -55,7 +55,7 @@ func TestAdditionalCasesThroughPublishingAndMedia(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/api/server/version":
-			_, _ = w.Write([]byte(`{"major":3,"minor":1,"patch":0,"prerelease":null}`))
+			_, _ = w.Write([]byte(`{"major":3,"minor":3,"patch":1,"prerelease":null}`))
 		case r.URL.Path == "/api/albums/cases":
 			_ = json.NewEncoder(w).Encode(immich.Album{ID: "cases", Name: "Extra cases", Description: "Extra cases", Count: 5, UpdatedAt: "2024-07-04T19:00:00Z"})
 		case r.URL.Path == "/api/search/metadata":
