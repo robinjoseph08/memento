@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-10
+
+- [Feature] Let People turn off hearing about Albums they can join (#124)
+- [Feature] Announce newly offered Albums in Update Notifications (#123)
+- [Feature] Offer and withhold individual Moments for Circles (#122)
+- [Feature] Join and Leave offered Albums (#121)
+- [Frontend] Spread the Album cover glow across the whole viewer header (#120)
+- [Test] Wait for Sam's refreshed preview before loading the June 2 photo in the Cover Order test (#119)
+- [Feature] Pick Circles when approving a join Access Request (#118)
+- [Deps] Bump the javascript-dependencies group with 9 updates (#114)
+- [Feature] Offer an Album to Circles and browse it from More albums (#116)
+- [Fix] Skip dev server ports held on any loopback or wildcard address (#115)
+- [Feature] Create Circles and manage their members (#112)
+- [Frontend] Let Curators switch to the viewer pages (#111)
+- [Docs] Define Circles, Offers, and Joins for discovering Albums (#110)
+- [CI] Cross-compile Docker images with native build stages (#100)
+
 ## [0.4.0] - 2026-10-03
 
 - [Deps] Bump the javascript-dependencies group across 1 directory with 16 updates (#96)
