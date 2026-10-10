@@ -22,13 +22,13 @@ func TestConnectionDiagnostic(t *testing.T) {
 		usable, supported     bool
 		message               string
 	}{
-		{"healthy", `{"major":3,"minor":1,"patch":0,"prerelease":null,"future":"ignored"}`, `[]`, 200, true, true, "album"},
-		{"unsupported but connected", `{"major":2,"minor":7,"patch":0,"prerelease":null}`, `[]`, 200, true, false, "3.0.x"},
-		{"invalid key", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, `secret-key`, 401, false, true, "API key"},
-		{"permission denied", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, `secret-key`, 403, false, true, "album.read"},
-		{"outage", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, `secret-key`, 503, false, true, "unavailable"},
+		{"healthy", `{"major":3,"minor":3,"patch":0,"prerelease":null,"future":"ignored"}`, `[]`, 200, true, true, "album"},
+		{"unsupported but connected", `{"major":3,"minor":4,"patch":0,"prerelease":null}`, `[]`, 200, true, false, "3.3.x"},
+		{"invalid key", `{"major":3,"minor":3,"patch":0,"prerelease":null}`, `secret-key`, 401, false, true, "API key"},
+		{"permission denied", `{"major":3,"minor":3,"patch":0,"prerelease":null}`, `secret-key`, 403, false, true, "album.read"},
+		{"outage", `{"major":3,"minor":3,"patch":0,"prerelease":null}`, `secret-key`, 503, false, true, "unavailable"},
 		{"malformed version", `{"secret":"secret-key"}`, `[]`, 200, false, false, "version"},
-		{"malformed albums", `{"major":3,"minor":1,"patch":0,"prerelease":null}`, `{}`, 200, false, true, "unreadable"},
+		{"malformed albums", `{"major":3,"minor":3,"patch":0,"prerelease":null}`, `{}`, 200, false, true, "unreadable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -66,15 +66,16 @@ func TestImportVersionGate(t *testing.T) {
 		version   string
 		supported bool
 	}{
-		{`{"major":3,"minor":0,"patch":0,"prerelease":null}`, true},
 		{`{"major":3,"minor":0,"patch":3,"prerelease":null}`, true},
 		{`{"major":3,"minor":1,"patch":19,"prerelease":null}`, true},
 		{`{"major":3,"minor":2,"patch":0,"prerelease":null}`, true},
-		{`{"major":3,"minor":2,"patch":1,"prerelease":null}`, true},
-		{`{"major":3,"minor":3,"patch":0,"prerelease":null}`, false},
+		{`{"major":3,"minor":2,"patch":4,"prerelease":null}`, true},
+		{`{"major":3,"minor":3,"patch":0,"prerelease":null}`, true},
+		{`{"major":3,"minor":3,"patch":1,"prerelease":null}`, true},
+		{`{"major":3,"minor":4,"patch":0,"prerelease":null}`, false},
 		{`{"major":2,"minor":7,"patch":5,"prerelease":null}`, false},
 		{`{"major":4,"minor":0,"patch":0,"prerelease":null}`, false},
-		{`{"major":3,"minor":1,"patch":0,"prerelease":1}`, false},
+		{`{"major":3,"minor":3,"patch":0,"prerelease":1}`, false},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
 			t.Parallel()
@@ -90,7 +91,7 @@ func TestImportVersionGate(t *testing.T) {
 				var coded *errcodes.Error
 				require.ErrorAs(t, err, &coded)
 				assert.Equal(t, "immich_unsupported_version", coded.Code)
-				assert.Contains(t, err.Error(), "3.0.x, 3.1.x, or 3.2.x")
+				assert.Contains(t, err.Error(), "3.x up to 3.3.x")
 			}
 		})
 	}

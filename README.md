@@ -60,7 +60,7 @@ needed.
 You need:
 
 - An Immich server on a supported release. Memento imports from **Immich
-  3.0.x, 3.1.x, and 3.2.x**; 2.x does not work. See
+  3.x up to 3.3.x**; 2.x does not work. See
   [Immich imports](#immich-imports).
 - PostgreSQL 14 or newer. The steps below reuse Immich's PostgreSQL container
   with a separate database and role. A
@@ -321,18 +321,15 @@ Any PostgreSQL 14 or newer works. The password still goes inside
 
 ## Immich imports
 
-The import and synchronization gate supports stable Immich **3.0.x, 3.1.x,
-and 3.2.x**. Other versions still report their detected version during setup,
-but Memento blocks new imports and synchronization and shows a warning. Safe
-existing reads remain available when the source APIs work. The
-[release smoke test](#smoke-test-a-real-immich-release) defaults to v3.2.1 and
-also tests v3.1.0 and v3.0.3; this is not a claim that every patch in those
-minors has been certified.
-
-**Immich 2.x does not work with this release of Memento.** Testing the latest
-2.x release, v2.7.5, confirmed that the shipped adapter rejects its asset metadata.
-Imports and synchronization remain blocked on all 2.x versions. Use a supported
-3.x release instead; `--probe` is a diagnostic tool, not a compatibility workaround.
+The import and synchronization gate allows stable Immich **3.x up to 3.3.x**.
+The two most recent minors, currently 3.2.x and 3.3.x, are tested; older 3.x
+releases are allowed but no longer tested. Other versions, including 2.x and
+releases newer than the latest tested minor, still report their detected
+version during setup, but Memento blocks new imports and synchronization and
+shows a warning. Safe existing reads remain available when the source APIs
+work. The [release smoke test](#smoke-test-a-real-immich-release) tests v3.3.1
+and v3.2.4; this is not a claim that every patch in those minors has been
+certified.
 
 The API key from [step 2](#2-create-the-immich-api-key) needs only read
 permissions. `album.read` and `asset.read` list albums and their assets. The
@@ -790,20 +787,19 @@ and Worker behavior. To run it locally against a disposable PostgreSQL 14:
 
 ```sh
 mise test:immich                         # pinned current release
-mise test:immich --version v3.1.0
-mise test:immich --version v3.0.3         # retained support for existing installations
-mise test:immich --version v2.7.5 --probe # exploratory, not declared support
+mise test:immich --version v3.2.4         # pinned previous minor
+mise test:immich --version vX.Y.Z --probe # a new release outside the declared range
 ```
 
 This requires Docker Compose 2.24.4 or newer, `curl`, `shasum`, Python 3, and
 `ffprobe`. Budget 5 to 15 minutes per release after image downloads and enough
 Docker memory for Immich and two PostgreSQL containers. The default release is
-v3.2.1. `--version` accepts an exact stable tag, not a floating tag or prerelease.
+v3.3.1. `--version` accepts an exact stable tag, not a floating tag or prerelease.
 The script downloads the official Compose file and tagged image into a uniquely
 named disposable project. Official Compose SHA-256 checks are pinned for
-v3.2.1, v3.1.0, v3.0.3, and the exploratory v2.7.5. Other exact releases can be
-tried without a pinned Compose checksum. Running container image IDs and registry
-digests are recorded, rather than assuming a tag still resolves to the same image.
+v3.3.1 and v3.2.4. Other exact releases can be tried without a pinned Compose
+checksum. Running container image IDs and registry digests are recorded, rather
+than assuming a tag still resolves to the same image.
 The fixture checks the actual API version against the requested tag before writes.
 Ports bind only to loopback. Core checks disable machine learning and reverse
 geocoding; manual face associations make them deterministic.
@@ -854,7 +850,7 @@ fixture/reset command; each invocation creates new users, media, and databases.
 For an intentional permission failure or the separate slower recognition check:
 
 ```sh
-mise test:immich --version v3.0.3 --permission-failure asset.download
+mise test:immich --version v3.2.4 --permission-failure asset.download
 mise test:immich --ml
 ```
 
@@ -866,16 +862,14 @@ without checking model-specific identity, geometry, scores, or clustering. Budge
 
 ### Maintain the compatibility declaration
 
-Each release tests the latest stable Immich minor and its predecessor. Memento
-also retains 3.0.x support for existing installations. Pinned representatives are
-v3.2.1, v3.1.0, and v3.0.3. Keep testing 3.0.x until its removal is an explicit
-release decision. The v2.7.5 probe does not pass: fixture creation succeeds, but
-the shipped adapter rejects asset metadata. Its OpenAPI also reports v2 wire
-formats such as string video duration where Memento expects an integer. It does
-not work out of the box, and the production gate continues to block 2.x.
+Memento tests the two most recent stable Immich minors, with no exceptions.
+Each minor is represented by its latest patch: v3.3.1 and v3.2.4. The gate
+allows every 3.x release up to the newest tested minor, so older 3.x
+installations keep importing without being tested. When Immich ships a new
+minor, the tested pair moves up by one and the gate's upper bound follows.
 
 Pull requests run the pinned current version in a separate parallel CI job.
-Nightly and pre-release workflows test every declared minor. Nightly recognition
+Nightly and pre-release workflows test both declared minors. Nightly recognition
 is a separate slower job. The release detector probes a newly released stable tag
 and reports success in its run summary or opens a diagnostic issue on failure.
 It never changes the declaration or production gate automatically.
@@ -887,25 +881,28 @@ a wire contract; HTTP permission errors identify the missing grant; startup
 failures point to service logs. Share only redacted evidence, never your real API
 key, a full `docker inspect`, or interpolated Compose configuration.
 
-After proving compatibility, update the gate and message in
+After proving compatibility, raise the gate's upper bound and its message in
 `pkg/immich/client.go`, its boundary tests, `fixture.Release`, the smoke runner's
-default and official Compose checksum, the mise task default, CI matrices and
-release detector pins, and this declaration. Move the controlled fixture's
-unsupported version beyond the range too. Run all declared minors again before
-release; do not generate adapter code from the candidate's OpenAPI document.
+default and official Compose checksums, the mise task default, CI matrices and
+release detector pins, and this declaration. Move the development fixture's
+supported and unsupported versions in `cmd/fixture` up with the range too, along
+with the version `e2e/app.spec.ts` expects it to report. Run both declared minors
+again before release; do not generate adapter code from the candidate's OpenAPI
+document.
 
 Once the detector workflow is on the default branch, simulate either outcome
 without changing support:
 
 ```sh
-gh workflow run immich-release-detector.yml -f simulated_release=v3.0.3
+gh workflow run immich-release-detector.yml -f simulated_release=v3.3.1
 gh workflow run immich-release-detector.yml -f simulated_release=v2.7.5
 ```
 
 The first should report success; the second exercises the diagnostic issue path
-for an incompatible release. These commands run GitHub Actions and may create or
-comment on a compatibility issue. Before merging the workflow, use the local
-`--probe` command to inspect the same core evidence without publishing anything.
+because the fixture cannot even upload photos to Immich 2.x. These commands run
+GitHub Actions and may create or comment on a compatibility issue. Before merging
+the workflow, use the local `--probe` command to inspect the same core evidence
+without publishing anything.
 
 ### Browser certification
 

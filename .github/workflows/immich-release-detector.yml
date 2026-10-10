@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       simulated_release:
-        description: Exact official stable tag to probe, even if already declared, such as v2.7.5
+        description: Exact official stable tag to probe, even if already declared, such as v3.3.1
         type: string
         required: false
 
@@ -41,7 +41,7 @@ jobs:
             if (!/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tag)) {
               throw new Error('Expected an exact stable release tag');
             }
-            const declared = ['v3.2.1', 'v3.1.0', 'v3.0.3'];
+            const declared = ['v3.3.1', 'v3.2.4'];
             if (simulated || !declared.includes(tag)) core.setOutput('version', tag);
             await core.summary.addRaw(`Latest requested Immich release: ${tag}. Supported versions were not changed.\n`).write();
 

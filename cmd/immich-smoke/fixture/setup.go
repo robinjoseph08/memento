@@ -20,7 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 )
 
-const Release = "v3.2.1"
+const Release = "v3.3.1"
 
 var readPermissions = []string{"album.read", "asset.download", "asset.read", "asset.view", "face.read", "person.read"}
 
@@ -117,10 +117,9 @@ func (f *Library) OriginalRange(ctx context.Context, id string) (status int, con
 }
 
 type api struct {
-	legacyUpload bool
-	baseURL      string
-	token        string
-	http         *http.Client
+	baseURL string
+	token   string
+	http    *http.Client
 }
 
 func (a *api) request(ctx context.Context, method, path, contentType string, body io.Reader, target any) error {
@@ -196,7 +195,7 @@ func setup(ctx context.Context, baseURL, expectedRelease string, probe bool) (*L
 	if err != nil || u.Scheme != "http" || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost") || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("fixture requires a disposable loopback HTTP origin")
 	}
-	a := &api{baseURL: baseURL, legacyUpload: strings.HasPrefix(expectedRelease, "v2."), http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
+	a := &api{baseURL: baseURL, http: &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}}
 	var version struct {
 		Major      int  `json:"major"`
 		Minor      int  `json:"minor"`
@@ -333,16 +332,6 @@ func (a *api) upload(ctx context.Context, filename string, data []byte) (string,
 	}
 	if _, err := file.Write(data); err != nil {
 		return "", err
-	}
-	// Immich 2.x requires device identity on uploads; v3 removed these fields.
-	// This changes fixture writes only, never the adapter being tested.
-	if a.legacyUpload {
-		if err := writer.WriteField("deviceId", "memento-smoke"); err != nil {
-			return "", err
-		}
-		if err := writer.WriteField("deviceAssetId", filename); err != nil {
-			return "", err
-		}
 	}
 	// Deliberately different from EXIF. Waiting must observe extracted metadata, not upload defaults.
 	for _, field := range []string{"fileCreatedAt", "fileModifiedAt"} {

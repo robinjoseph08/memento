@@ -36,7 +36,7 @@ func (l *library) CheckImport(context.Context) error {
 		return outage()
 	}
 	if l.unsupported {
-		return &errcodes.Error{HTTPCode: 409, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.0.x and 3.1.x. Update Immich or Memento first."}
+		return &errcodes.Error{HTTPCode: 409, Code: "immich_unsupported_version", Message: "Import and synchronization require stable Immich 3.x up to 3.3.x. Update Immich or Memento first."}
 	}
 	return nil
 }

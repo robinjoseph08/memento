@@ -45,20 +45,19 @@ func TestSmokeScriptSelection(t *testing.T) {
 		badChecksum            bool
 		goFailure              bool
 	}{
-		{name: "default", release: "v3.2.1"},
-		{name: "previous minor", release: "v3.1.0", args: []string{"--version", "v3.1.0"}},
-		{name: "retained minor", release: "v3.0.3", args: []string{"--version", "v3.0.3"}},
-		{name: "unpinned patch", release: "v3.1.1", args: []string{"--version", "v3.1.1"}},
+		{name: "default", release: "v3.3.1"},
+		{name: "previous minor", release: "v3.2.4", args: []string{"--version", "v3.2.4"}},
+		{name: "unpinned patch", release: "v3.2.5", args: []string{"--version", "v3.2.5"}},
 		{name: "floating", args: []string{"--version", "release"}, failure: "exact stable tag"},
-		{name: "prerelease", args: []string{"--version", "v3.1.0-rc.1"}, failure: "exact stable tag"},
-		{name: "leading zero", args: []string{"--version", "v3.01.0"}, failure: "exact stable tag"},
-		{name: "exploratory", release: "v2.7.5", args: []string{"--version", "v2.7.5", "--probe"}},
-		{name: "ML", release: "v3.2.1", args: []string{"--ml"}},
-		{name: "permission diagnostic", release: "v3.2.1", args: []string{"--permission-failure", "asset.read"}},
-		{name: "failed smoke retains evidence", release: "v3.2.1", goFailure: true, failure: "fixture failed"},
+		{name: "prerelease", args: []string{"--version", "v3.3.0-rc.1"}, failure: "exact stable tag"},
+		{name: "leading zero", args: []string{"--version", "v3.03.0"}, failure: "exact stable tag"},
+		{name: "probe", release: "v3.4.0", args: []string{"--version", "v3.4.0", "--probe"}},
+		{name: "ML", release: "v3.3.1", args: []string{"--ml"}},
+		{name: "permission diagnostic", release: "v3.3.1", args: []string{"--permission-failure", "asset.read"}},
+		{name: "failed smoke retains evidence", release: "v3.3.1", goFailure: true, failure: "fixture failed"},
 		{name: "missing", args: []string{"--version"}, failure: "Missing value"},
 		{name: "unknown", args: []string{"--other"}, failure: "Unknown argument"},
-		{name: "checksum", release: "v3.0.3", args: []string{"--version", "v3.0.3"}, badChecksum: true, failure: "checksum mismatch"},
+		{name: "checksum", release: "v3.2.4", args: []string{"--version", "v3.2.4"}, badChecksum: true, failure: "checksum mismatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -78,10 +77,9 @@ case "${0##*/}" in
     ;;
   shasum)
     if [[ $SMOKE_TEST_BAD_CHECKSUM == true ]]; then printf 'wrong\n'
-    elif [[ $IMMICH_VERSION == v3.0.3 ]]; then printf 'da6f0ca9156c1716e69b3067cb8775b735a4a69fb478a8719e56cf7ea3e3d246  compose.yaml\n'
-    elif [[ $IMMICH_VERSION == v3.2.1 ]]; then printf 'fa98c3eb0884b0b88aaee11a9c9acb8cfb17a0f495d12c21358deb6d3e8a546b  compose.yaml\n'
-    elif [[ $IMMICH_VERSION == v2.7.5 ]]; then printf '69da59c813f1382400a8fe9fce9f51ac00a4d05d7d1571a0d49dcd517ae41ad5  compose.yaml\n'
-    else printf 'c651a8211c9ab152bf7060ba1f370737ad2b4872da788a6c8a9e7fa7d4217357  compose.yaml\n'; fi
+    elif [[ $IMMICH_VERSION == v3.3.1 ]]; then printf '2601c893aa3217d3c0c7284c23aaa1699aac75b533c84c0315fd16b7889fd552  compose.yaml\n'
+    elif [[ $IMMICH_VERSION == v3.2.4 ]]; then printf 'fa98c3eb0884b0b88aaee11a9c9acb8cfb17a0f495d12c21358deb6d3e8a546b  compose.yaml\n'
+    else printf 'unpinned  compose.yaml\n'; fi
     ;;
   docker)
     if [[ "$*" == *'up --detach'* && "$*" == *'immich-machine-learning'* ]]; then touch "$SMOKE_TEST_LOG.ml"; fi
@@ -139,7 +137,7 @@ esac
 			} else {
 				require.Contains(t, text, "go|run ./cmd/immich-smoke --version "+test.release+" --openapi ")
 				require.Contains(t, text, "https://raw.githubusercontent.com/immich-app/immich/"+test.release+"/open-api/immich-openapi-specs.json")
-				if test.name == "exploratory" {
+				if test.name == "probe" {
 					require.Contains(t, text, " --probe|")
 				}
 				if test.name == "ML" {

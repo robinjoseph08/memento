@@ -49,7 +49,7 @@ func parseOptions(args []string) (options, error) {
 		return o, err
 	}
 	if flags.NArg() != 0 || !regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(o.Release) {
-		return o, fmt.Errorf("version must be an exact stable tag such as v3.2.1")
+		return o, fmt.Errorf("version must be an exact stable tag such as v3.3.1")
 	}
 	return o, nil
 }
