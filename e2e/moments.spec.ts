@@ -89,19 +89,15 @@ test("arranges a large Moment and reviews face-based access on desktop and mobil
   ).toHaveText("Moment access saved.");
 
   await firstMoment
-    .getByRole("button", { name: "Select", exact: true })
-    .click();
-  await firstMoment
-    .getByRole("checkbox", { name: /^Select Photo(?: \d+)? taken/ })
+    .getByRole("button", { name: /^Edit Photo(?: \d+)? taken/ })
     .nth(1)
-    .check();
-  await firstMoment.getByRole("button", { name: "Set as cover" }).click();
-  const coverDialog = page.getByRole("dialog", {
-    name: "Change Moment cover?",
-  });
-  await coverDialog.getByRole("button", { name: "Save cover" }).click();
-  await expect(coverDialog).toHaveCount(0);
-  await firstMoment.getByRole("button", { name: "Done" }).click();
+    .click();
+  const photoDetails = page.getByRole("dialog", { name: "Photo details" });
+  const coverForm = photoDetails.getByRole("form", { name: "Moment cover" });
+  await coverForm.getByRole("button", { name: "Set as cover" }).click();
+  await expect(coverForm).toContainText("This photo is the cover for");
+  await photoDetails.getByRole("button", { name: "Cancel" }).click();
+  await expect(photoDetails).toHaveCount(0);
 
   await firstMoment
     .getByRole("button", { name: "Select", exact: true })
