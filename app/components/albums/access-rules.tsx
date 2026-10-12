@@ -4,11 +4,13 @@ import {
   useExcludeEntries,
   usePreviewExclude,
   useSetAccessRules,
+  useSetMomentCover,
 } from "../../hooks/queries/albums";
 import { useReturnFocus } from "../../hooks/use-return-focus";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import { mediaLabel } from "../../lib/media-labels";
+import { cn } from "../../lib/utils";
 import type {
   AccessPerson,
   AlbumDetail,
@@ -30,7 +32,7 @@ import {
 } from "../ui/dialog";
 import { accessDetail, byPresence } from "./access-labels";
 import { AlbumImage } from "./album-image";
-import { countLabel } from "./moment-labels";
+import { countLabel, momentHeading } from "./moment-labels";
 import { PersonAvatar } from "./person-avatar";
 import { VideoDetails } from "./video-details";
 
@@ -116,10 +118,16 @@ export function RulesDialog({
     setDiscards((count) => count + 1);
     setCloseWhenSettled(true);
   };
+  const cover = useSetMomentCover(album.id, moment.id);
+  const isCover = !!entry && entry.id === moment.cover_entry_id;
+  // One action at a time: each saves on its own and refreshes the whole Album.
+  const busy = save.isPending || cover.isPending || excluding;
   const returnFocus = useReturnFocus();
   const errors = fieldErrors(save.error);
   const errorId = useId();
   const circlesErrorId = useId();
+  const accessFormId = useId();
+  const momentName = momentHeading(moment).title;
   const albumAllowed = (person: AccessPerson) =>
     album.access.some(
       (item) =>
@@ -144,7 +152,7 @@ export function RulesDialog({
     return "Inherit: no access";
   };
   function changeOpen(next: boolean) {
-    if (next || save.isPending) return;
+    if (next || busy) return;
     if (dirty) setDiscardOpen(true);
     else onClose();
   }
@@ -164,7 +172,7 @@ export function RulesDialog({
               ? `${entryLabel}. The title shows in every album with this video. Access decisions here override its Moment and the Album.`
               : entry
                 ? "Decisions for this photo override its Moment and the Album."
-                : `Decisions for ${moment.label} override Album access. Item exceptions still win.`}
+                : `Decisions for ${momentName} override Album access. Item exceptions still win.`}
           </DialogDescription>
           {entry &&
             (video && entry.playback_url ? (
@@ -205,6 +213,7 @@ export function RulesDialog({
             aria-label={entry ? "Item access" : "Rules & exceptions"}
             className={video ? "mt-2" : "mt-6"}
             error={save.error}
+            id={accessFormId}
             onSubmit={(event) => {
               event.preventDefault();
               if (save.isPending) return;
@@ -286,20 +295,40 @@ export function RulesDialog({
                   <FieldError error={errors.circles} id={circlesErrorId} />
                 </>
               )}
-              <div className="mt-6 flex flex-wrap gap-2">
-                <Button type="submit">
-                  {save.isPending ? "Saving…" : "Save access"}
-                </Button>
-                <Button
-                  onClick={() => changeOpen(false)}
-                  type="button"
-                  variant="outline"
-                >
-                  Cancel
-                </Button>
-              </div>
             </fieldset>
           </Form>
+          {entry && (
+            // Setting the cover saves in one click: it changes no one's
+            // access and another item can take its place at any time.
+            <Form
+              aria-busy={cover.isPending}
+              aria-label="Moment cover"
+              className="mt-6 border-t border-border pt-5"
+              error={cover.error}
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!cover.isPending && !isCover)
+                  cover.mutate({ entry_id: entry.id });
+              }}
+            >
+              <h3 className="text-xs font-medium">Cover</h3>
+              <p className="mt-1 text-xs text-muted" role="status">
+                {isCover
+                  ? `This ${video ? "video" : "photo"} is the cover for ${momentName}.`
+                  : `Use this ${video ? "video" : "photo"} as the cover for ${momentName}. No one gains or loses media.`}
+              </p>
+              {!isCover && (
+                <Button
+                  className="mt-3"
+                  disabled={busy}
+                  type="submit"
+                  variant="outline"
+                >
+                  {cover.isPending ? "Saving…" : "Set as cover"}
+                </Button>
+              )}
+            </Form>
+          )}
           {entry && (
             <Form
               aria-busy={excluding}
@@ -319,7 +348,7 @@ export function RulesDialog({
               </p>
               <Button
                 className="mt-3"
-                disabled={excluding || save.isPending}
+                disabled={busy}
                 type="submit"
                 variant="outline"
               >
@@ -327,6 +356,26 @@ export function RulesDialog({
               </Button>
             </Form>
           )}
+          {/* Cover and Keep out save on their own, so Save access and Cancel
+              sit below them as the dialog's footer. */}
+          <div
+            className={cn(
+              "mt-6 flex flex-wrap gap-2",
+              entry && "border-t border-border pt-5",
+            )}
+          >
+            <Button disabled={busy} form={accessFormId} type="submit">
+              {save.isPending ? "Saving…" : "Save access"}
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() => changeOpen(false)}
+              type="button"
+              variant="outline"
+            >
+              Cancel
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
       <ConfirmDialog

@@ -158,9 +158,11 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
   await details
     .getByRole("button", { name: "Retry chapters", exact: true })
     .click();
-  await expect(details.getByRole("status")).toContainText(
-    "Reading chapters from the video",
-  );
+  await expect(
+    details
+      .getByRole("status")
+      .filter({ hasText: "Reading chapters from the video" }),
+  ).toBeVisible();
   await expect(details.getByText("This video has no chapters.")).toBeVisible({
     timeout: 60_000,
   });

@@ -4,18 +4,13 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import {
   useRefreshMomentFaces,
-  useSetMomentCover,
   useUpdateMoment,
 } from "../../hooks/queries/albums";
 import { useUnsavedChanges } from "../../hooks/use-unsaved-changes";
 import { fieldErrors } from "../../lib/http";
 import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import { cn, withParams } from "../../lib/utils";
-import type {
-  AlbumDetail,
-  Entry,
-  Moment,
-} from "../../types/generated/publishing";
+import type { AlbumDetail, Moment } from "../../types/generated/publishing";
 import { ConfirmDialog } from "../forms/confirm-dialog";
 import { Field, Form, sectionHeadingClass } from "../people/form-fields";
 import { CountBadge } from "../shell/count-badge";
@@ -27,7 +22,6 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { RulesDialog } from "./access-rules";
-import { AlbumImage } from "./album-image";
 import { EntryPreview } from "./entry-preview";
 import { ExcludeDialog } from "./exclusions";
 import { MediaCounts } from "./media-counts";
@@ -40,7 +34,7 @@ const initialMediaCount = 24;
 
 // One Moment at a time: its title and counts, Rename and Merge, the access
 // strip, then a full-width grid. Selection is a mode a Curator enters for a
-// move, split, or cover change, so the everyday view stays a plain overview.
+// move or split, so the everyday view stays a plain overview.
 export function MomentPane({
   album,
   moment,
@@ -93,7 +87,6 @@ export function MomentPane({
     if (requestedEntry && !editingEntry) clearEntry();
   }, [requestedEntry, editingEntry]);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [coverEntry, setCoverEntry] = useState<Entry | null>(null);
   const [structure, setStructure] = useState<{
     operation: StructureOperation;
     selectedEntryIDs: string[];
@@ -273,17 +266,6 @@ export function MomentPane({
                 </Button>
                 {single && (
                   <Button
-                    disabled={single.id === moment.cover_entry_id}
-                    onClick={() => setCoverEntry(single)}
-                    size="sm"
-                    type="button"
-                    variant="outline"
-                  >
-                    Set as cover
-                  </Button>
-                )}
-                {single && (
-                  <Button
                     onClick={() => editEntry(single.id)}
                     size="sm"
                     type="button"
@@ -360,15 +342,6 @@ export function MomentPane({
           albumID={album.id}
           moment={moment}
           onOpenChange={(open) => !open && setRenameOpen(false)}
-          open
-        />
-      )}
-      {coverEntry && (
-        <CoverDialog
-          albumID={album.id}
-          entry={coverEntry}
-          moment={moment}
-          onOpenChange={(open) => !open && setCoverEntry(null)}
           open
         />
       )}
@@ -481,71 +454,5 @@ function RenameMomentDialog({
         title="Discard this Moment title?"
       />
     </>
-  );
-}
-
-function CoverDialog({
-  albumID,
-  moment,
-  entry,
-  open,
-  onOpenChange,
-}: {
-  albumID: string;
-  moment: Moment;
-  entry?: Entry;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const update = useSetMomentCover(albumID, moment.id);
-  function changeOpen(next: boolean) {
-    if (!next && update.isPending) return;
-    onOpenChange(next);
-  }
-  return (
-    <Dialog onOpenChange={changeOpen} open={open && !!entry}>
-      <DialogContent>
-        <DialogTitle>Change Moment cover?</DialogTitle>
-        <DialogDescription className="mt-3 text-sm text-muted">
-          Use this item as the cover for {moment.label}. No one gains or loses
-          media.
-        </DialogDescription>
-        {entry && (
-          <AlbumImage
-            alt={mediaLabel(entry)}
-            className="mt-4 h-auto max-h-48 w-auto max-w-full"
-            fallback="No preview available"
-            src={entry.available ? entry.thumbnail_url : ""}
-          />
-        )}
-        <Form
-          aria-busy={update.isPending}
-          aria-label="Change Moment cover"
-          className="mt-6"
-          error={update.error}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (entry)
-              update.mutate(
-                { entry_id: entry.id },
-                { onSuccess: () => onOpenChange(false) },
-              );
-          }}
-        >
-          <fieldset className="flex gap-2" disabled={update.isPending}>
-            <Button type="submit">
-              {update.isPending ? "Saving…" : "Save cover"}
-            </Button>
-            <Button
-              onClick={() => changeOpen(false)}
-              type="button"
-              variant="outline"
-            >
-              Cancel
-            </Button>
-          </fieldset>
-        </Form>
-      </DialogContent>
-    </Dialog>
   );
 }

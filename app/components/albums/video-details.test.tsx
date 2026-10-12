@@ -175,9 +175,9 @@ it("edits a video title with the filename as fallback and retries failed chapter
       {},
     ]),
   );
-  expect(await within(dialog).findByRole("status")).toHaveTextContent(
-    "Reading chapters from the video.",
-  );
+  expect(
+    await within(dialog).findByText(/^Reading chapters from the video\./),
+  ).toHaveAttribute("role", "status");
   await user.type(title, "Evening waves");
   await user.click(within(dialog).getByRole("button", { name: "Save title" }));
   await waitFor(() =>

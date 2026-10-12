@@ -99,7 +99,7 @@ export function AlbumCover({ album }: { album: AlbumDetail }) {
       ) : album.moments.length === 1 ? (
         <p className="mt-6 text-sm text-muted">
           This Album has one Moment, so its cover is the Album cover. Change it
-          from the Moment with Set as cover.
+          by opening a photo or video in the Moment and choosing Set as cover.
         </p>
       ) : (
         <Form

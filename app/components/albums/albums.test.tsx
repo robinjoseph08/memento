@@ -493,7 +493,6 @@ it("uses the Outline pane for selection and saves Moment access explicitly", asy
   await user.click(screen.getByRole("checkbox", { name: "Select Waves" }));
   expect(screen.getByRole("button", { name: "Move" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "Split" })).toBeEnabled();
-  expect(screen.getByRole("button", { name: "Set as cover" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "Done" }));
   expect(
     screen.queryByRole("checkbox", { name: "Select Waves" }),
@@ -1988,6 +1987,55 @@ it("opens item details and access from a tile or a single selection without play
   await user.click(screen.getByRole("checkbox", { name: "Select Waves" }));
   await user.click(screen.getByRole("button", { name: "Video details" }));
   expect(screen.getByRole("dialog", { name: "Video details" })).toBeVisible();
+});
+
+it("sets the Moment cover from item details in one click", async () => {
+  desktopViewport();
+  // An untitled Moment is named by its weekday date, as in its heading.
+  let current: AlbumDetail = {
+    ...completeAlbum,
+    moments: completeAlbum.moments.map((moment) => ({
+      ...moment,
+      title: "",
+      label: "July 1, 2026",
+    })),
+  };
+  const requests: Array<{ path: string; body: unknown }> = [];
+  mockAPI((path, options) => {
+    if (path.endsWith("/cover")) {
+      requests.push({ path, body: JSON.parse(String(options?.body)) });
+      current = {
+        ...current,
+        moments: current.moments.map((moment) => ({
+          ...moment,
+          cover_entry_id: "video",
+        })),
+      };
+    }
+    return Response.json(current);
+  });
+  window.history.replaceState(null, "", "/curator/albums/album-1");
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole("button", { name: "Edit Waves" }));
+  const cover = within(
+    screen.getByRole("dialog", { name: "Video details" }),
+  ).getByRole("form", { name: "Moment cover" });
+  await user.click(within(cover).getByRole("button", { name: "Set as cover" }));
+  await waitFor(() =>
+    expect(within(cover).getByRole("status")).toHaveTextContent(
+      "This video is the cover for Wednesday, July 1, 2026.",
+    ),
+  );
+  expect(requests).toEqual([
+    {
+      path: "/api/curator/albums/album-1/moments/day-1/cover",
+      body: { entry_id: "video" },
+    },
+  ]);
+  expect(
+    within(cover).queryByRole("button", { name: "Set as cover" }),
+  ).not.toBeInTheDocument();
 });
 
 it("opens saved rules without granting detected people and saves only the edited choice", async () => {
