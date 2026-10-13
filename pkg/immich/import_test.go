@@ -53,11 +53,11 @@ func TestAlbumRequiredMetadata(t *testing.T) {
 	})
 }
 
-const assetJSON = `{"id":"asset/opaque ?#%","checksum":"2jmj7l5rSw0yVb/vlWAYkK/YBwk=","originalFileName":"photo.jpg","type":"IMAGE","visibility":"timeline","localDateTime":"2026-06-01T23:30:00-07:00","fileCreatedAt":"2026-06-02T06:30:00Z","updatedAt":"2026-06-02T07:00:00Z","isOffline":false,"isTrashed":false,"width":4032,"height":3024,"duration":null,"thumbhash":null,"livePhotoVideoId":"live-video","exifInfo":{"timeZone":"America/Los_Angeles","orientation":1,"future":true},"future":"ignored"}`
+const assetJSON = `{"id":"asset/opaque ?#%","checksum":"2jmj7l5rSw0yVb/vlWAYkK/YBwk=","originalFileName":"photo.jpg","type":"IMAGE","visibility":"timeline","localDateTime":"2026-06-01T23:30:00-07:00","fileCreatedAt":"2026-06-02T06:30:00Z","updatedAt":"2026-06-02T07:00:00Z","isOffline":false,"isTrashed":false,"isEdited":false,"width":4032,"height":3024,"duration":null,"thumbhash":null,"livePhotoVideoId":"live-video","exifInfo":{"timeZone":"America/Los_Angeles","orientation":1,"future":true},"future":"ignored"}`
 
 func TestAssetRequiredMetadata(t *testing.T) {
 	t.Parallel()
-	for _, field := range []string{"id", "checksum", "originalFileName", "type", "visibility", "localDateTime", "fileCreatedAt", "updatedAt", "isOffline", "isTrashed", "width", "height", "duration", "thumbhash"} {
+	for _, field := range []string{"id", "checksum", "originalFileName", "type", "visibility", "localDateTime", "fileCreatedAt", "updatedAt", "isOffline", "isTrashed", "isEdited", "width", "height", "duration", "thumbhash"} {
 		t.Run("missing "+field, func(t *testing.T) {
 			t.Parallel()
 			var document map[string]any
@@ -70,7 +70,7 @@ func TestAssetRequiredMetadata(t *testing.T) {
 			assert.Empty(t, asset.ID)
 		})
 	}
-	for field, value := range map[string]any{"id": "", "checksum": "bad", "originalFileName": "", "type": "FUTURE", "localDateTime": "2026-06-01", "fileCreatedAt": "bad", "updatedAt": nil, "isOffline": nil, "isTrashed": nil, "width": -1, "height": -1, "duration": -1, "livePhotoVideoId": ""} {
+	for field, value := range map[string]any{"id": "", "checksum": "bad", "originalFileName": "", "type": "FUTURE", "localDateTime": "2026-06-01", "fileCreatedAt": "bad", "updatedAt": nil, "isOffline": nil, "isTrashed": nil, "isEdited": nil, "width": -1, "height": -1, "duration": -1, "livePhotoVideoId": ""} {
 		t.Run("invalid "+field, func(t *testing.T) {
 			t.Parallel()
 			var document map[string]any

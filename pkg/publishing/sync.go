@@ -358,24 +358,36 @@ func (m *Module) readSource(ctx context.Context, state syncState) (syncSource, e
 	return source, nil
 }
 
-// factsEqual compares stored source facts. EXIF is compared only after a
-// complete read because the membership listing omits it.
+// factsEqual compares stored source facts that describe what a photo or video
+// shows. EXIF is compared only after a complete read because the membership
+// listing omits it. Immich touches updatedAt and can re-encode the thumbhash
+// without changing the photo, as favoriting or rebuilding thumbnails does, so
+// neither is compared; their stored copies refresh with the next real change.
+// The content version derives from the compared facts, and rows written under
+// an earlier formula must not all read as changed.
 func factsEqual(stored, candidate models.MediaItem, withEXIF bool) bool {
 	stored.ID, candidate.ID = models.UUID{}, models.UUID{}
 	stored.VideoTitle, candidate.VideoTitle = nil, nil
+	stored.ContentVersion, candidate.ContentVersion = "", ""
+	stored.SourceUpdatedAt, candidate.SourceUpdatedAt = time.Time{}, time.Time{}
+	stored.Thumbhash, candidate.Thumbhash = nil, nil
+	// A row from before Memento read Immich's edit state is taken as unedited,
+	// so an edit since then is reviewed once, including one imported already
+	// edited, which Memento cannot tell apart.
+	if stored.Edited == nil && candidate.Edited != nil && !*candidate.Edited {
+		stored.Edited = candidate.Edited
+	}
 	if !withEXIF {
 		stored.EXIF, candidate.EXIF = nil, nil
 	}
 	// PostgreSQL keeps microseconds; compare what a round trip preserves.
 	stored.CapturedAt, candidate.CapturedAt = stored.CapturedAt.UTC().Truncate(time.Microsecond), candidate.CapturedAt.UTC().Truncate(time.Microsecond)
 	stored.SourceCreatedAt, candidate.SourceCreatedAt = stored.SourceCreatedAt.UTC().Truncate(time.Microsecond), candidate.SourceCreatedAt.UTC().Truncate(time.Microsecond)
-	stored.SourceUpdatedAt, candidate.SourceUpdatedAt = stored.SourceUpdatedAt.UTC().Truncate(time.Microsecond), candidate.SourceUpdatedAt.UTC().Truncate(time.Microsecond)
 	return reflect.DeepEqual(stored, candidate)
 }
 
-// changedFields names what differs. Anything outside the displayed facts,
-// including Immich's own updated time that versions the browser URLs, reads
-// as details.
+// changedFields names what differs. Anything else factsEqual compares, such
+// as dimensions, EXIF, or stacking, reads as details.
 func changedFields(stored, candidate models.MediaItem) []string {
 	fields := []string{}
 	if stored.Checksum != candidate.Checksum {
@@ -737,7 +749,8 @@ func orEmpty(refs []SyncAlbumRef) []SyncAlbumRef {
 }
 
 // reviewedItem is the source facts a review compared, in a stable shape for
-// hashing. It leaves out the row identity and the Curator's video title.
+// hashing. It leaves out the row identity, the Curator's video title, and the
+// facts factsEqual ignores, so a touch in Immich does not stale a review.
 type reviewedItem struct {
 	SourceID             string         `json:"source_id"`
 	Checksum             string         `json:"checksum"`
@@ -745,27 +758,25 @@ type reviewedItem struct {
 	Kind                 string         `json:"kind"`
 	CapturedAt           time.Time      `json:"captured_at"`
 	SourceCreatedAt      time.Time      `json:"source_created_at"`
-	SourceUpdatedAt      time.Time      `json:"source_updated_at"`
 	Offline              bool           `json:"offline"`
 	Trashed              bool           `json:"trashed"`
+	Edited               *bool          `json:"edited"`
 	Width                *int           `json:"width"`
 	Height               *int           `json:"height"`
 	Duration             *int           `json:"duration"`
-	Thumbhash            *string        `json:"thumbhash"`
 	LivePhotoVideoID     *string        `json:"live_photo_video_id"`
 	SourceStackID        *string        `json:"source_stack_id"`
 	SourceStackPrimaryID *string        `json:"source_stack_primary_id"`
 	SourceStackCount     *int           `json:"source_stack_count"`
 	EXIF                 map[string]any `json:"exif"`
-	ContentVersion       string         `json:"content_version"`
 }
 
 func reviewedItemOf(item models.MediaItem) reviewedItem {
 	return reviewedItem{SourceID: item.SourceID, Checksum: item.Checksum, Filename: item.Filename, Kind: item.Kind, CapturedAt: item.CapturedAt,
-		SourceCreatedAt: item.SourceCreatedAt, SourceUpdatedAt: item.SourceUpdatedAt, Offline: item.Offline, Trashed: item.Trashed,
-		Width: item.Width, Height: item.Height, Duration: item.Duration, Thumbhash: item.Thumbhash, LivePhotoVideoID: item.LivePhotoVideoID,
+		SourceCreatedAt: item.SourceCreatedAt, Offline: item.Offline, Trashed: item.Trashed, Edited: item.Edited,
+		Width: item.Width, Height: item.Height, Duration: item.Duration, LivePhotoVideoID: item.LivePhotoVideoID,
 		SourceStackID: item.SourceStackID, SourceStackPrimaryID: item.SourceStackPrimaryID, SourceStackCount: item.SourceStackCount,
-		EXIF: item.EXIF, ContentVersion: item.ContentVersion}
+		EXIF: item.EXIF}
 }
 
 // syncReviewToken covers the diff and every decision about it, so an apply

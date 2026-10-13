@@ -29,6 +29,7 @@ type Asset struct {
 	UpdatedAt        string         `json:"updatedAt"`
 	Offline          bool           `json:"isOffline"`
 	Trashed          bool           `json:"isTrashed"`
+	Edited           bool           `json:"isEdited"`
 	Width            *int           `json:"width"`
 	Height           *int           `json:"height"`
 	Duration         *int           `json:"duration"`

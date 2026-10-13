@@ -188,6 +188,54 @@ func TestSyncNoOpAdditionAndPersistentExclusion(t *testing.T) {
 	requireCode(t, err, "validation_error")
 }
 
+func TestSyncIgnoresImmichTouchesAndReportsEditsToRowsWithoutEditState(t *testing.T) {
+	t.Parallel()
+	source := syncFixture()
+	db, module, album, _ := syncedAlbums(t, source, &recordingChapters{})
+	// Rows written before Memento read Immich's edit state do not know it, and
+	// carry a content version from an earlier formula.
+	_, err := db.NewUpdate().Table("media_items").Set("edited = NULL").Set("content_version = 'thumbnail-v1:' || source_id").Where("TRUE").Exec(t.Context())
+	require.NoError(t, err)
+
+	review, err := module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	assert.True(t, review.UpToDate, "an unedited photo without a known edit state is not a change to review")
+
+	// Favoriting or rebuilding thumbnails in Immich touches the asset and can
+	// re-encode its thumbhash without changing the photo.
+	rebuilt := "2ecFHYaucnxwl4iTmVhndmWfWvaa"
+	source.asset("a").UpdatedAt, source.asset("a").Thumbhash = "2026-10-13T20:19:52.713Z", &rebuilt
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	assert.True(t, review.UpToDate, "a touch in Immich is not a change to review")
+
+	// Mirroring or turning a photo half way keeps its dimensions, so only the
+	// edited flag shows it changed.
+	source.asset("a").Edited = true
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Changes, 1)
+	assert.Equal(t, []string{"details"}, review.Changes[0].Fields)
+	_, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+	var edited *bool
+	require.NoError(t, db.NewSelect().Table("media_items").Column("edited").Where("source_id = 'a'").Scan(t.Context(), &edited))
+	require.NotNil(t, edited)
+	assert.True(t, *edited)
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	assert.True(t, review.UpToDate)
+
+	// A review stays applicable when Immich touches a photo it lists.
+	source.asset("b").Width = new(1943)
+	review, err = module.CheckSync(t.Context(), album.ID, publishing.SyncRequest{})
+	require.NoError(t, err)
+	require.Len(t, review.Changes, 1)
+	source.asset("b").UpdatedAt = "2026-10-13T21:00:00Z"
+	_, err = module.ApplySync(t.Context(), album.ID, publishing.SyncRequest{ReviewToken: review.ReviewToken})
+	require.NoError(t, err)
+}
+
 func TestSyncRemovalRestartRestoreAndAnnouncements(t *testing.T) {
 	t.Parallel()
 	source := syncFixture()
@@ -447,9 +495,9 @@ func TestSyncSharedItemCheckCancelApplyAndExtraction(t *testing.T) {
 	for _, change := range review.Changes {
 		changes[change.Filename] = change
 	}
-	assert.Equal(t, []string{"checksum", "details"}, changes["family reunion.MP4"].Fields)
+	assert.Equal(t, []string{"checksum"}, changes["family reunion.MP4"].Fields)
 	assert.Equal(t, []publishing.SyncAlbumRef{{ID: other.ID, Title: "Reunion"}}, changes["family reunion.MP4"].OtherAlbums)
-	assert.Equal(t, []string{"capture_time", "details"}, changes["second.jpg"].Fields)
+	assert.Equal(t, []string{"capture_time"}, changes["second.jpg"].Fields)
 	assert.Equal(t, "2026-07-05T12:00:00", changes["second.jpg"].NewCapturedAt)
 	assert.Empty(t, changes["second.jpg"].OtherAlbums)
 	assert.Empty(t, review.Audience, "metadata changes alter no one's access")

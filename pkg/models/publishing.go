@@ -31,17 +31,20 @@ type IgnoredSource struct {
 
 // MediaItem holds shared source facts, never media bytes.
 type MediaItem struct {
-	bun.BaseModel        `bun:"table:media_items,alias:media_item"`
-	ID                   UUID `bun:"id,pk,type:uuid"`
-	SourceID             string
-	Checksum             string
-	Filename             string
-	Kind                 string
-	CapturedAt           time.Time `bun:"type:timestamp without time zone"`
-	SourceCreatedAt      time.Time
-	SourceUpdatedAt      time.Time
-	Offline              bool
-	Trashed              bool
+	bun.BaseModel   `bun:"table:media_items,alias:media_item"`
+	ID              UUID `bun:"id,pk,type:uuid"`
+	SourceID        string
+	Checksum        string
+	Filename        string
+	Kind            string
+	CapturedAt      time.Time `bun:"type:timestamp without time zone"`
+	SourceCreatedAt time.Time
+	SourceUpdatedAt time.Time
+	Offline         bool
+	Trashed         bool
+	// Edited is whether Immich reports non-destructive edits. Nil means the
+	// row predates Memento reading it.
+	Edited               *bool
 	Width                *int
 	Height               *int
 	Duration             *int

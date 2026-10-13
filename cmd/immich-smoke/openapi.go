@@ -83,7 +83,7 @@ func CheckOpenAPI(reader io.Reader, release string) error {
 	requirements := map[string]map[string]string{
 		"ServerVersionResponseDto": {"major": "integer", "minor": "integer", "patch": "integer", "prerelease": "integer"},
 		"AlbumResponseDto":         {"id": "string", "albumName": "string", "description": "string", "albumThumbnailAssetId": "string", "assetCount": "integer", "updatedAt": "string"},
-		"AssetResponseDto":         {"id": "string", "checksum": "string", "originalFileName": "string", "type": "string", "visibility": "string", "localDateTime": "string", "fileCreatedAt": "string", "updatedAt": "string", "isOffline": "boolean", "isTrashed": "boolean", "width": "integer", "height": "integer", "duration": "integer", "thumbhash": "string", "livePhotoVideoId": "string", "exifInfo": "object", "stack": "object"},
+		"AssetResponseDto":         {"id": "string", "checksum": "string", "originalFileName": "string", "type": "string", "visibility": "string", "localDateTime": "string", "fileCreatedAt": "string", "updatedAt": "string", "isOffline": "boolean", "isTrashed": "boolean", "isEdited": "boolean", "width": "integer", "height": "integer", "duration": "integer", "thumbhash": "string", "livePhotoVideoId": "string", "exifInfo": "object", "stack": "object"},
 		"AssetStackResponseDto":    {"id": "string", "primaryAssetId": "string", "assetCount": "integer"},
 		"MetadataSearchDto":        {"albumIds": "array", "page": "integer", "size": "integer", "withStacked": "boolean", "order": "string"},
 		"SearchResponseDto":        {"assets": "object"},

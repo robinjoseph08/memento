@@ -93,6 +93,19 @@ func (f *Library) SetDescription(ctx context.Context, albumID, description strin
 	return f.owner.json(ctx, http.MethodPatch, "/albums/"+url.PathEscape(albumID), map[string]string{"description": description}, nil)
 }
 
+// Favorite marks an asset as a favorite, which touches it in Immich without
+// changing what it shows.
+func (f *Library) Favorite(ctx context.Context, id string) error {
+	return f.owner.json(ctx, http.MethodPut, "/assets/"+url.PathEscape(id), map[string]bool{"isFavorite": true}, nil)
+}
+
+// Crop applies a non-destructive crop from the top-left corner through
+// Immich's editor API. The original file and its checksum stay unchanged.
+func (f *Library) Crop(ctx context.Context, id string, width, height int) error {
+	edit := map[string]any{"action": "crop", "parameters": map[string]int{"x": 0, "y": 0, "width": width, "height": height}}
+	return f.owner.json(ctx, http.MethodPut, "/assets/"+url.PathEscape(id)+"/edits", map[string]any{"edits": []any{edit}}, nil)
+}
+
 // OriginalRange asks Immich's original-file endpoint for the first two bytes
 // with the read key, the way ffprobe does, and reports whether the server
 // honored the range. It exists so the smoke can prove range support directly
