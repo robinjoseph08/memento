@@ -117,6 +117,7 @@ func TestUpdateEmailIsRecheckedAgainstEligibilityBeforeSending(t *testing.T) {
 				require.Len(t, recorder.Sent(), 1)
 				assert.Equal(t, options.email, recorder.Sent()[0].To)
 				assert.Equal(t, notifications.KindUpdate, recorder.Sent()[0].Kind)
+				assert.Contains(t, recorder.Sent()[0].HTML, "See them on Memento</a>", "the re-rendered email keeps its HTML")
 			} else {
 				assert.Empty(t, recorder.Sent(), "a skipped recipient is never emailed")
 			}
@@ -170,6 +171,12 @@ func TestUpdateEmailMirrorsTheStillVisibleApprovedSubset(t *testing.T) {
 	assert.Contains(t, sent.Body, "See them on Memento:\n"+publicURL+"/albums\n", "several Albums open the ordinary Album list")
 	assert.NotContains(t, sent.Body, "/albums/"+coast.ID, "no per-Album link list")
 	assert.Regexp(t, `\n`+regexp.QuoteMeta(publicURL)+`/unsubscribe\?token=[A-Za-z0-9_-]{43}\n`, sent.Body)
+	assert.Contains(t, sent.HTML, "2 photos and 1 video", "the HTML is re-rendered with the text")
+	assert.NotContains(t, sent.HTML, "/albums/"+coast.ID, "no per-Album link list")
+	var row models.MailDelivery
+	require.NoError(t, db.NewSelect().Model(&row).Where("id = ?", result.Delivery.ID).Scan(t.Context()))
+	assert.Equal(t, sent.Body, row.Body, "the record keeps what was sent")
+	assert.Equal(t, sent.HTML, row.HTML)
 	// Filtering never rewrites the immutable summary or the announcements.
 	after := storedNotification(t, db, result.NotificationID)
 	assert.Equal(t, stored.Payload, after.Payload)

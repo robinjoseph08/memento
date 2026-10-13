@@ -43,6 +43,21 @@ func (p *OSProcesses) Start(ctx context.Context, env Environment, mode string, a
 	}
 }
 
+func (p *OSProcesses) PreviewEmail(ctx context.Context, env Environment, proxyPort, serverPort int) error {
+	server := strconv.Itoa(serverPort)
+	// -c /dev/null keeps the API's .air.toml, with its tygo pre-build, out of it.
+	return runSingleProcess(ctx, env.CurrentRoot, os.Environ(), "air", "-c", "/dev/null",
+		"--build.cmd", "go build -o ./build/emailpreview/emailpreview ./cmd/emailpreview",
+		"--build.entrypoint", "./build/emailpreview/emailpreview",
+		"--build.args_bin", "-addr=localhost:"+server,
+		"--build.include_ext", "go",
+		"--build.exclude_regex", "_test.go",
+		"--build.exclude_dir", "app,build,mobile,node_modules,e2e,tmp",
+		"--proxy.enabled", "true",
+		"--proxy.app_port", server,
+		"--proxy.proxy_port", strconv.Itoa(proxyPort))
+}
+
 func (p *OSProcesses) Mobile(ctx context.Context, env Environment, host, installationURL string) error {
 	values := append([]string{}, os.Environ()...)
 	values = append(values,

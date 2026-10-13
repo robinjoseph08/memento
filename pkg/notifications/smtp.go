@@ -3,10 +3,12 @@ package notifications
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"mime"
+	"mime/quotedprintable"
 	"net"
 	"net/mail"
 	"net/smtp"
@@ -187,8 +189,11 @@ func (m *SMTPMailer) sender() string {
 	return m.from.Name + " <" + m.from.Address + ">"
 }
 
-// formatMessage renders a plain-text UTF-8 email with CRLF line endings. The
-// Message-ID uses the sender's domain so receivers see a fully qualified one.
+// formatMessage renders a UTF-8 email with CRLF line endings: plain text
+// alone, or text and HTML as multipart/alternative alternatives. HTML that
+// references inline images travels with them in a multipart/related part.
+// The Message-ID uses the sender's domain so receivers see a fully qualified
+// one.
 func formatMessage(sender *mail.Address, message Message, now time.Time) string {
 	domain := "memento"
 	if at := strings.LastIndex(sender.Address, "@"); at >= 0 {
@@ -200,11 +205,71 @@ func formatMessage(sender *mail.Address, message Message, now time.Time) string 
 	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", message.Subject) + "\r\n")
 	b.WriteString("Date: " + now.UTC().Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("Message-ID: <" + models.NewUUIDv7().String() + "@" + domain + ">\r\n")
-	b.WriteString("MIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
-	body := strings.ReplaceAll(strings.ReplaceAll(message.Body, "\r\n", "\n"), "\n", "\r\n")
-	b.WriteString(body)
-	if !strings.HasSuffix(body, "\r\n") {
-		b.WriteString("\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	if message.HTML == "" {
+		writeTextPart(&b, message.Body)
+		return b.String()
 	}
+	// A boundary only needs to be absent from the parts. Quoted-printable
+	// and base64 never contain "=_", and the UUID keeps it out of the text.
+	alternative := "=_" + models.NewUUIDv7().String()
+	b.WriteString("Content-Type: multipart/alternative; boundary=\"" + alternative + "\"\r\n\r\n")
+	b.WriteString("--" + alternative + "\r\n")
+	writeTextPart(&b, message.Body)
+	b.WriteString("--" + alternative + "\r\n")
+	if !strings.Contains(message.HTML, "cid:"+MarkContentID) {
+		writeHTMLPart(&b, message.HTML)
+	} else {
+		related := "=_" + models.NewUUIDv7().String()
+		b.WriteString("Content-Type: multipart/related; type=\"text/html\"; boundary=\"" + related + "\"\r\n\r\n")
+		b.WriteString("--" + related + "\r\n")
+		writeHTMLPart(&b, message.HTML)
+		b.WriteString("--" + related + "\r\n")
+		writeMarkPart(&b)
+		b.WriteString("--" + related + "--\r\n")
+	}
+	b.WriteString("--" + alternative + "--\r\n")
 	return b.String()
+}
+
+// writeHTMLPart uses quoted-printable to keep HTML lines under SMTP's
+// 998-octet limit.
+func writeHTMLPart(b *strings.Builder, html string) {
+	b.WriteString("Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n")
+	writer := quotedprintable.NewWriter(b)
+	_, _ = writer.Write([]byte(html))
+	_ = writer.Close()
+	b.WriteString("\r\n")
+}
+
+func writeMarkPart(b *strings.Builder) {
+	b.WriteString("Content-Type: image/png\r\nContent-Transfer-Encoding: base64\r\n")
+	b.WriteString("Content-ID: <" + MarkContentID + ">\r\nContent-Disposition: inline\r\n\r\n")
+	encoded := base64.StdEncoding.EncodeToString(markPNG)
+	for len(encoded) > 76 {
+		b.WriteString(encoded[:76] + "\r\n")
+		encoded = encoded[76:]
+	}
+	b.WriteString(encoded + "\r\n")
+}
+
+// writeTextPart keeps text readable as 8bit, falling back to
+// quoted-printable only when a line, such as a long Curator note, would pass
+// SMTP's 998-octet limit.
+func writeTextPart(b *strings.Builder, text string) {
+	body := strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+	if !strings.HasSuffix(body, "\r\n") {
+		body += "\r\n"
+	}
+	for line := range strings.SplitSeq(body, "\r\n") {
+		if len(line) > 998 {
+			b.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n")
+			writer := quotedprintable.NewWriter(b)
+			_, _ = writer.Write([]byte(body))
+			_ = writer.Close()
+			return
+		}
+	}
+	b.WriteString("Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: 8bit\r\n\r\n")
+	b.WriteString(body)
 }

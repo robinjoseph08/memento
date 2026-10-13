@@ -99,6 +99,13 @@ func (p *fakeProcesses) E2E(_ context.Context, _ Environment, project string, we
 	return nil
 }
 
+func (p *fakeProcesses) PreviewEmail(_ context.Context, _ Environment, proxyPort, serverPort int) error {
+	p.mode = "preview-email"
+	p.webPort = proxyPort
+	p.apiPort = serverPort
+	return nil
+}
+
 type fakePorts struct {
 	ports []int
 }
@@ -249,6 +256,22 @@ func TestStartUsesPortsSelectedAtRuntime(t *testing.T) {
 	assert.Equal(t, "all", processes.mode)
 	assert.Equal(t, 3580, processes.apiPort)
 	assert.Equal(t, 5174, processes.webPort)
+}
+
+func TestPreviewEmailUsesPortsSelectedAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	processes := &fakeProcesses{}
+	app := testApp(testEnvironment(root, root), &fakeDatabase{})
+	app.Ports = &fakePorts{ports: []int{4401, 4411}}
+	app.Processes = processes
+
+	require.NoError(t, app.Run(context.Background(), []string{"preview-email"}))
+	assert.Equal(t, "preview-email", processes.mode)
+	assert.Equal(t, 4401, processes.webPort)
+	assert.Equal(t, 4411, processes.apiPort)
+	assert.Contains(t, app.Stdout.(*bytes.Buffer).String(), "Email previews: http://localhost:4401")
 }
 
 func TestPortAllocatorSkipsAPortHeldByAnotherProject(t *testing.T) {

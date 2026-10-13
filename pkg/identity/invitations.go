@@ -35,19 +35,17 @@ func invitationEligibility(person models.Person, approval models.Preauthorizatio
 	return nil
 }
 
-// invitationMessage is plain outreach: it names the exact email to sign in
+// InvitationMessage is plain outreach: it names the exact email to sign in
 // with and links to ordinary sign-in. It carries no token or private link.
-func invitationMessage(publicURL, personName, curatorName, email string) notifications.Message {
-	body := fmt.Sprintf(`Hi %s,
-
-%s shared photos and videos with you on Memento.
-
-Sign in with %s to get started:
-%s/sign-in
-
-Access is tied to this email address, so signing in with a different one will not work.
-`, personName, curatorName, email, strings.TrimRight(publicURL, "/"))
-	return notifications.Message{Kind: "invitation", To: email, Subject: fmt.Sprintf("%s invited you to Memento", curatorName), Body: body}
+func InvitationMessage(publicURL, personName, curatorName, email string) notifications.Message {
+	text, html := notifications.Email{
+		notifications.Greeting(personName),
+		notifications.Paragraph(curatorName + " shared photos and videos with you on Memento."),
+		notifications.Paragraph("Sign in with " + email + " to get started."),
+		notifications.Button{Label: "Sign in to Memento", URL: strings.TrimRight(publicURL, "/") + "/sign-in"},
+		notifications.Paragraph(fmt.Sprintf("Access is tied to this email address. If you'd like to use a different one, let %s know and they can add it.", curatorName)),
+	}.Render()
+	return notifications.Message{Kind: "invitation", To: email, Subject: fmt.Sprintf("%s invited you to Memento", curatorName), Body: text, HTML: html}
 }
 
 func projectInvitation(row models.Invitation, email, sentBy string, delivery notifications.Delivery) Invitation {
@@ -137,7 +135,7 @@ func (m *Module) SendInvitation(ctx context.Context, token, personID string, req
 		if m.Mail == nil {
 			return notifications.ErrMailUnconfigured
 		}
-		delivery, err := m.Mail.Enqueue(ctx, tx, invitationMessage(m.PublicURL, person.DisplayName, curator.DisplayName, approval.Email))
+		delivery, err := m.Mail.Enqueue(ctx, tx, InvitationMessage(m.PublicURL, person.DisplayName, curator.DisplayName, approval.Email))
 		if err != nil {
 			return err
 		}

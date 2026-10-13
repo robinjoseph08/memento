@@ -16,6 +16,10 @@ import (
 const (
 	defaultAPIPort = 3579
 	defaultWebPort = 5173
+	// The email preview's address is its proxy, which reloads the page after
+	// a rebuild; the server behind it never needs to be opened directly.
+	defaultEmailPreviewPort       = 4400
+	defaultEmailPreviewServerPort = 4410
 )
 
 // Environment describes the repository and worktree resources used by a command.
@@ -67,6 +71,9 @@ type ProcessManager interface {
 	// prefilled with installationURL.
 	Mobile(ctx context.Context, env Environment, host, installationURL string) error
 	E2E(context.Context, Environment, string, int) error
+	// PreviewEmail serves the email previews on proxyPort, rebuilding the
+	// server on serverPort when Go files change.
+	PreviewEmail(ctx context.Context, env Environment, proxyPort, serverPort int) error
 }
 
 // App implements the command interface used by mise tasks.
@@ -118,6 +125,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.start(ctx, env, args[1:])
 	case "e2e":
 		return a.e2e(ctx, env, args[1:])
+	case "preview-email":
+		return a.previewEmail(ctx, env)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -395,6 +404,23 @@ func (a *App) e2e(ctx context.Context, env Environment, args []string) error {
 	}
 	defer func() { _ = lease.Close() }()
 	return a.Processes.E2E(ctx, env, project, lease.Port())
+}
+
+func (a *App) previewEmail(ctx context.Context, env Environment) error {
+	proxyLease, err := a.Ports.Acquire(defaultEmailPreviewPort)
+	if err != nil {
+		return fmt.Errorf("reserve email preview port: %w", err)
+	}
+	defer func() { _ = proxyLease.Close() }()
+	serverLease, err := a.Ports.Acquire(defaultEmailPreviewServerPort)
+	if err != nil {
+		return fmt.Errorf("reserve email preview server port: %w", err)
+	}
+	defer func() { _ = serverLease.Close() }()
+	if err := a.printf("Email previews: http://localhost:%d\n", proxyLease.Port()); err != nil {
+		return err
+	}
+	return a.Processes.PreviewEmail(ctx, env, proxyLease.Port(), serverLease.Port())
 }
 
 func (a *App) confirm(message string) (bool, error) {

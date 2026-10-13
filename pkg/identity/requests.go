@@ -80,18 +80,35 @@ func (m *Module) recordAccessRequest(ctx context.Context, tx bun.Tx, claims Clai
 	if open {
 		return nil
 	}
-	return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to join Memento", claims.Email), fmt.Sprintf(`%s (%s) signed in to Memento with a verified email address that has no access yet.
+	return m.alertCurators(ctx, tx, JoinRequestMessage(m.PublicURL, claims.DisplayName, claims.Email))
+}
 
-Review the request and decide whether to link or create a person:
-%s/curator/requests
+// JoinRequestMessage alerts Curators to someone new asking to join. It has
+// no recipient; alertCurators addresses one copy to each Curator.
+func JoinRequestMessage(publicURL, name, email string) notifications.Message {
+	text, html := notifications.Email{
+		notifications.Paragraph(fmt.Sprintf("%s (%s) signed in to Memento with a verified email address that has no access yet.", name, email)),
+		notifications.Paragraph("Review the request and decide whether to link or create a person."),
+		notifications.Button{Label: "Review the request", URL: strings.TrimRight(publicURL, "/") + "/curator/requests"},
+		notifications.Paragraph("Nothing is shared until you approve it and grant album access."),
+	}.Render()
+	return notifications.Message{Kind: "access_request", Subject: fmt.Sprintf("%s asked to join Memento", email), Body: text, HTML: html}
+}
 
-Nothing is shared until you approve it and grant album access.
-`, claims.DisplayName, claims.Email, strings.TrimRight(m.PublicURL, "/")))
+// AlbumRequestMessage alerts Curators to a Person asking to see an Album.
+// Like JoinRequestMessage, it has no recipient yet.
+func AlbumRequestMessage(publicURL, personName, albumTitle string) notifications.Message {
+	text, html := notifications.Email{
+		notifications.Paragraph(fmt.Sprintf("%s asked to see the album \"%s\", which is not shared with them.", personName, albumTitle)),
+		notifications.Paragraph("Review the request, then grant access in the album if you agree."),
+		notifications.Button{Label: "Review the request", URL: strings.TrimRight(publicURL, "/") + "/curator/requests"},
+	}.Render()
+	return notifications.Message{Kind: "access_request", Subject: fmt.Sprintf("%s asked to see %s", personName, albumTitle), Body: text, HTML: html}
 }
 
 // alertCurators emails every active Curator with a selected email once per
 // new Access Request. Missing SMTP is not an error: the Curator's badge remains.
-func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body string) error {
+func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, message notifications.Message) error {
 	if m.Mail == nil {
 		return nil
 	}
@@ -103,7 +120,8 @@ func (m *Module) alertCurators(ctx context.Context, tx bun.Tx, subject, body str
 		return errorstack.CaptureContext(ctx, err)
 	}
 	for _, recipient := range recipients {
-		_, err := m.Mail.Enqueue(ctx, tx, notifications.Message{Kind: "access_request", To: recipient, Subject: subject, Body: body})
+		message.To = recipient
+		_, err := m.Mail.Enqueue(ctx, tx, message)
 		if errors.Is(err, notifications.ErrMailUnconfigured) {
 			return nil
 		}
@@ -181,11 +199,7 @@ func (m *Module) RequestAlbumAccess(ctx context.Context, token, albumID string) 
 		if open {
 			return nil
 		}
-		return m.alertCurators(ctx, tx, fmt.Sprintf("%s asked to see %s", person.DisplayName, current.AlbumTitle), fmt.Sprintf(`%s asked to see the album "%s", which is not shared with them.
-
-Review the request, then grant access in the album if you agree:
-%s/curator/requests
-`, person.DisplayName, current.AlbumTitle, strings.TrimRight(m.PublicURL, "/")))
+		return m.alertCurators(ctx, tx, AlbumRequestMessage(m.PublicURL, person.DisplayName, current.AlbumTitle))
 	})
 	return result, err
 }

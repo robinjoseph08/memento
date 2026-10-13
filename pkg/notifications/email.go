@@ -68,11 +68,11 @@ func mediaLabel(photos, videos int) string {
 	}
 }
 
-// renderUpdateEmail writes the plain-text email for an approved summary. It
-// lists the Person's own Albums with their status and counts, then "New
-// albums you can view", never individual photos or videos. One Album links
-// straight to it; several link to the Album list.
-func renderUpdateEmail(publicURL, personName string, update payload, unsubscribeToken string) (subject, body string) {
+// UpdateEmail writes the email for an approved summary. It lists the
+// Person's own Albums with their status and counts, then "New albums you can
+// view", never individual photos or videos. One Album links straight to it;
+// several link to the Album list.
+func UpdateEmail(publicURL, personName string, update UpdateContent, unsubscribeToken string) (subject string, email Email) {
 	origin := strings.TrimRight(publicURL, "/")
 	albums, offered, note := update.Albums, update.OfferedAlbums, update.Note
 	allOffered := len(offered) + update.MoreOfferedAlbums
@@ -99,46 +99,50 @@ func renderUpdateEmail(publicURL, personName string, update payload, unsubscribe
 	default:
 		subject = fmt.Sprintf("New %s in %s on Memento", mediaKind(photos, videos), plural(len(albums), "album", "albums"))
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "Hi %s,\n\n", personName)
+	email = Email{Greeting(personName)}
 	if total == 1 {
-		b.WriteString("There is something new for you to see on Memento.\n\n")
+		email = append(email, Paragraph("There is something new for you to see on Memento."))
 	} else {
-		fmt.Fprintf(&b, "There is something new for you to see in %s on Memento.\n\n", plural(total, "album", "albums"))
+		email = append(email, Paragraph(fmt.Sprintf("There is something new for you to see in %s on Memento.", plural(total, "album", "albums"))))
 	}
-	for _, album := range albums {
-		status := "updated"
-		if album.Status == AlbumNew {
-			status = "new album"
+	if len(albums) > 0 {
+		list := AlbumList{}
+		for _, album := range albums {
+			status := "updated"
+			if album.Status == AlbumNew {
+				status = "new album"
+			}
+			list.Albums = append(list.Albums, AlbumLine{Title: album.Title, Status: status, Counts: mediaLabel(album.PhotoCount, album.VideoCount)})
 		}
-		fmt.Fprintf(&b, "%s (%s)\n%s\n\n", album.Title, status, mediaLabel(album.PhotoCount, album.VideoCount))
+		email = append(email, list)
 	}
 	if len(offered) > 0 {
-		b.WriteString("New albums you can view:\n\n")
+		list := AlbumList{Heading: "New albums you can view"}
 		for _, album := range offered {
-			fmt.Fprintf(&b, "%s\n%s\n\n", album.Title, mediaLabel(album.PhotoCount, album.VideoCount))
+			list.Albums = append(list.Albums, AlbumLine{Title: album.Title, Counts: mediaLabel(album.PhotoCount, album.VideoCount)})
 		}
 		if update.MoreOfferedAlbums > 0 {
-			fmt.Fprintf(&b, "And %s.\n\n", plural(update.MoreOfferedAlbums, "more album", "more albums"))
+			list.More = fmt.Sprintf("And %s.", plural(update.MoreOfferedAlbums, "more album", "more albums"))
 		}
+		email = append(email, list)
 	}
 	if note != "" {
-		fmt.Fprintf(&b, "A note from your Curator:\n%s\n\n", note)
+		email = append(email, Note{Label: "A note from your Curator", Text: note})
 	}
 	// An Album new to view opens its preview, which shows the Album itself
 	// once the Person has joined it.
 	switch {
 	case len(albums) == 1 && allOffered == 0:
-		fmt.Fprintf(&b, "See them on Memento:\n%s/albums/%s/photos\n\n", origin, albums[0].ID)
+		email = append(email, Button{Label: "See them on Memento", URL: fmt.Sprintf("%s/albums/%s/photos", origin, albums[0].ID)})
 	case len(albums) == 0 && allOffered == 1:
-		fmt.Fprintf(&b, "See them on Memento:\n%s/albums/%s/preview/photos\n\n", origin, offered[0].ID)
+		email = append(email, Button{Label: "See them on Memento", URL: fmt.Sprintf("%s/albums/%s/preview/photos", origin, offered[0].ID)})
 	default:
-		fmt.Fprintf(&b, "See them on Memento:\n%s/albums\n\n", origin)
+		email = append(email, Button{Label: "See them on Memento", URL: origin + "/albums"})
 	}
 	// The token travels as a query value so access logs, which record the
 	// request path, never see it.
-	fmt.Fprintf(&b, "You chose to get these emails. To stop them, open this link and confirm:\n%s/unsubscribe?token=%s\n", origin, unsubscribeToken)
-	return subject, b.String()
+	email = append(email, Footer{Text: "You chose to get these emails. To stop them,", Link: "open this link and confirm", URL: fmt.Sprintf("%s/unsubscribe?token=%s", origin, unsubscribeToken)})
+	return subject, email
 }
 
 func mediaKind(photos, videos int) string {
@@ -185,7 +189,7 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 	case !emailEligible(person):
 		return "This person's email address is not valid.", nil
 	}
-	var body payload
+	var body UpdateContent
 	if err := json.Unmarshal(notification.Payload, &body); err != nil {
 		return "", errorstack.Capture(err)
 	}
@@ -219,7 +223,9 @@ func (m *Module) prepareUpdate(ctx context.Context, tx bun.Tx, row *models.MailD
 		return "", err
 	}
 	row.Recipient = person.UpdateEmail
-	row.Subject, row.Body = renderUpdateEmail(m.PublicURL, person.DisplayName, body, token)
+	subject, email := UpdateEmail(m.PublicURL, person.DisplayName, body, token)
+	row.Subject = subject
+	row.Body, row.HTML = email.Render()
 	return "", nil
 }
 
