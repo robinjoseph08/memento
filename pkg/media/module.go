@@ -68,9 +68,8 @@ func (m *Module) SourceAssetThumbnail(ctx context.Context, sourceID string) (imm
 
 // EntryThumbnail resolves a content-versioned entry only after verifying active
 // membership in a completed Album. A stale URL must never serve different bytes.
-func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (string, error) {
-	item, err := m.entryMedia(ctx, id, version, "Thumbnail")
-	return item.SourceID, err
+func (m *Module) EntryThumbnail(ctx context.Context, id, version string) (EntryMedia, error) {
+	return m.entryMedia(ctx, id, version, "Thumbnail")
 }
 
 // EntryOriginal resolves the source asset and filename behind a photo or
@@ -89,12 +88,17 @@ func (m *Module) EntryPlayback(ctx context.Context, id, version string) (EntryMe
 	return item, err
 }
 
-// EntryMedia is the imported source identity behind one Album Entry.
+// EntryMedia is the imported source identity behind one Album Entry, with the
+// facts that tell whether Immich still shows the same content.
 type EntryMedia struct {
 	SourceID   string
 	Filename   string
 	Kind       string
 	CapturedAt time.Time
+	Checksum   string
+	Edited     *bool
+	Width      *int
+	Height     *int
 }
 
 func (m *Module) entryMedia(ctx context.Context, id, version, resource string) (EntryMedia, error) {
@@ -102,7 +106,7 @@ func (m *Module) entryMedia(ctx context.Context, id, version, resource string) (
 	if _, err := uuid.Parse(id); err != nil {
 		return item, errcodes.NotFound(resource)
 	}
-	err := m.db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, item.filename, item.kind, item.captured_at").
+	err := m.db.NewSelect().TableExpr("album_entries AS entry").ColumnExpr("item.source_id, item.filename, item.kind, item.captured_at, item.checksum, item.edited, item.width, item.height").
 		Join("JOIN albums AS album ON album.id = entry.album_id").Join("JOIN media_items AS item ON item.id = entry.media_item_id").
 		Where("entry.id = ? AND entry.removed_at IS NULL AND album.import_status = 'complete'", id).
 		Where("item.content_version = ? AND NOT item.offline AND NOT item.trashed", version).Scan(ctx, &item)
@@ -164,33 +168,33 @@ func (m *Module) personThumbnail(ctx context.Context, sourceID string) (immich.T
 
 // viewerImage preserves diagnostic causes for local logs while keeping
 // installation details out of ordinary and preview media responses.
-func (m *Module) viewerImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
-	image, err := m.generatedImage(ctx, sourceID, version, large)
+func (m *Module) viewerImage(ctx context.Context, item EntryMedia, large bool) (immich.Thumbnail, error) {
+	image, err := m.generatedImage(ctx, item, large)
 	return image, redactUpstream(ctx, err)
 }
 
 // viewerOriginal opens the uploaded file behind an authorized photo or video
 // with the same version check and redaction as generated variants.
-func (m *Module) viewerOriginal(ctx context.Context, sourceID, version string) (immich.Original, error) {
-	if err := m.checkVersion(ctx, sourceID, version, "Download"); err != nil {
+func (m *Module) viewerOriginal(ctx context.Context, item EntryMedia) (immich.Original, error) {
+	if err := m.checkVersion(ctx, item, "Download"); err != nil {
 		return immich.Original{}, redactUpstream(ctx, err)
 	}
-	original, err := m.source.Original(ctx, sourceID)
+	original, err := m.source.Original(ctx, item.SourceID)
 	return original, redactUpstream(ctx, err)
 }
 
 // checkOriginal answers a HEAD download: the same version check, no stream.
-func (m *Module) checkOriginal(ctx context.Context, sourceID, version string) error {
-	return redactUpstream(ctx, m.checkVersion(ctx, sourceID, version, "Download"))
+func (m *Module) checkOriginal(ctx context.Context, item EntryMedia) error {
+	return redactUpstream(ctx, m.checkVersion(ctx, item, "Download"))
 }
 
 // viewerPlayback opens Immich's playback stream for an authorized video after
 // the same version check, forwarding at most one byte range.
-func (m *Module) viewerPlayback(ctx context.Context, sourceID, version string, request immich.PlaybackRequest) (immich.Playback, error) {
-	if err := m.checkVersion(ctx, sourceID, version, "Video"); err != nil {
+func (m *Module) viewerPlayback(ctx context.Context, item EntryMedia, request immich.PlaybackRequest) (immich.Playback, error) {
+	if err := m.checkVersion(ctx, item, "Video"); err != nil {
 		return immich.Playback{}, redactUpstream(ctx, err)
 	}
-	playback, err := m.source.Playback(ctx, sourceID, request)
+	playback, err := m.source.Playback(ctx, item.SourceID, request)
 	return playback, redactUpstream(ctx, err)
 }
 
@@ -205,30 +209,31 @@ func redactUpstream(ctx context.Context, err error) error {
 	return errors.Join(public, err)
 }
 
-func (m *Module) generatedThumbnail(ctx context.Context, sourceID, version string) (immich.Thumbnail, error) {
-	return m.generatedImage(ctx, sourceID, version, false)
+func (m *Module) generatedThumbnail(ctx context.Context, item EntryMedia) (immich.Thumbnail, error) {
+	return m.generatedImage(ctx, item, false)
 }
 
 // generatedImage serves a fixed Immich variant only while the asset still
-// matches the requested content version.
-func (m *Module) generatedImage(ctx context.Context, sourceID, version string, large bool) (immich.Thumbnail, error) {
-	if err := m.checkVersion(ctx, sourceID, version, "Thumbnail"); err != nil {
+// shows the imported content.
+func (m *Module) generatedImage(ctx context.Context, item EntryMedia, large bool) (immich.Thumbnail, error) {
+	if err := m.checkVersion(ctx, item, "Thumbnail"); err != nil {
 		return immich.Thumbnail{}, err
 	}
 	if large {
-		return m.source.Preview(ctx, sourceID)
+		return m.source.Preview(ctx, item.SourceID)
 	}
-	return m.source.Thumbnail(ctx, sourceID)
+	return m.source.Thumbnail(ctx, item.SourceID)
 }
 
-// checkVersion confirms the live asset still matches the requested content
-// version, so an edited or removed source never serves under an old URL.
-func (m *Module) checkVersion(ctx context.Context, sourceID, version, resource string) error {
-	asset, err := m.source.GetAsset(ctx, sourceID)
+// checkVersion confirms the live asset still shows what the entry's content
+// version was issued for, so an edited or removed source never serves under
+// an old URL.
+func (m *Module) checkVersion(ctx context.Context, item EntryMedia, resource string) error {
+	asset, err := m.source.GetAsset(ctx, item.SourceID)
 	if err != nil {
 		return err
 	}
-	if asset.ID != sourceID || asset.Offline || asset.Trashed || ContentVersion(asset) != version {
+	if asset.ID != item.SourceID || asset.Offline || asset.Trashed || !sameContent(item, asset) {
 		return errcodes.NotFound(resource)
 	}
 	return nil

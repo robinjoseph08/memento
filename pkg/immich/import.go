@@ -134,7 +134,7 @@ func (c *Client) ListMembers(ctx context.Context, id string, page int) ([]Asset,
 
 func decodeAsset(data json.RawMessage) (Asset, error) {
 	var asset Asset
-	fields, ok := objectFields(data, &asset, "id", "checksum", "originalFileName", "type", "visibility", "localDateTime", "fileCreatedAt", "updatedAt", "isOffline", "isTrashed")
+	fields, ok := objectFields(data, &asset, "id", "checksum", "originalFileName", "type", "visibility", "localDateTime", "fileCreatedAt", "updatedAt", "isOffline", "isTrashed", "isEdited")
 	if !ok || asset.ID == "" || asset.Filename == "" || !timestamp(asset.LocalDateTime) || !timestamp(asset.FileCreatedAt) || !timestamp(asset.UpdatedAt) {
 		return Asset{}, unreadable("asset metadata")
 	}

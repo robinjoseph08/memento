@@ -198,9 +198,9 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.NotContains(t, failed.Body.String(), "Immich")
 	require.NotContains(t, failed.Body.String(), "asset.view")
 	upstream.playback = fakeStream("0123456789abcdef", &seen)
-	upstream.asset.UpdatedAt = "2026-07-06T00:00:00Z"
+	upstream.asset.Checksum = "Yw=="
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, url, nil).Code, "a changed source never serves new bytes under an old URL")
-	upstream.asset.UpdatedAt = "2026-07-05T00:00:00Z"
+	upstream.asset.Checksum = "Yg=="
 
 	// Cancelling the browser request stops the copy instead of draining Immich.
 	released := make(chan struct{})

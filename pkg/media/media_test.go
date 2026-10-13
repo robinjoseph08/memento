@@ -204,8 +204,77 @@ func TestImportedThumbnailUsesPrivateVersionAndMementoValidator(t *testing.T) {
 	allowed = false
 	require.Equal(t, 403, request(imageURL, etag).Code)
 	allowed = true
-	upstream.asset.UpdatedAt = "2026-07-06T00:00:00Z"
+	upstream.asset.Checksum = "Yw=="
 	require.Equal(t, 404, request(imageURL, "").Code, "a changed source must not serve new bytes under an old URL")
+}
+
+func TestThumbnailRebuildInImmichKeepsServingWhileEditsDoNot(t *testing.T) {
+	t.Parallel()
+	hash, width, height := "2ecFHYaucnxwl4iTqVhndmWfWvaa", 3088, 2316
+	upstream := &source{asset: immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "photo.jpg", Kind: "IMAGE", LocalDateTime: "2026-07-04T23:59:00Z",
+		FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z", Thumbhash: &hash, Width: &width, Height: &height}}
+	db := testdb.New(t)
+	imports := publishing.New(db, upstream, func(context.Context, bun.Tx, string) error { return nil })
+	album, err := imports.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, imports.ExecuteImport(t.Context(), album.ID))
+	album, err = imports.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	imageURL := album.Moments[0].Entries[0].ThumbnailURL
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	allow := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	media.RegisterRoutes(e, media.New(db, upstream), allow, allow)
+	status := func() int {
+		r := httptest.NewRecorder()
+		e.ServeHTTP(r, httptest.NewRequest(http.MethodGet, imageURL, nil))
+		return r.Code
+	}
+	require.Equal(t, 200, status())
+
+	// Immich rebuilding its thumbnails touches the asset and re-encodes the
+	// thumbhash without changing the photo.
+	rebuilt := "2ecFHYaucnxwl4iTmVhndmWfWvaa"
+	upstream.asset.UpdatedAt, upstream.asset.Thumbhash = "2026-10-13T20:19:52.713Z", &rebuilt
+	require.Equal(t, 200, status(), "a thumbnail rebuild is not a content change")
+
+	live := upstream.asset
+	for name, change := range map[string]func(*immich.Asset){
+		"crop":       func(a *immich.Asset) { cropped := 1943; a.Edited, a.Width = true, &cropped },
+		"re-crop":    func(a *immich.Asset) { cropped := 1943; a.Width = &cropped },
+		"first edit": func(a *immich.Asset) { a.Edited = true },
+		"new file":   func(a *immich.Asset) { a.Checksum = "Yg==" },
+	} {
+		upstream.asset = live
+		change(&upstream.asset)
+		require.Equal(t, 404, status(), "a %s must not serve new bytes under an old URL", name)
+	}
+}
+
+func TestMediaImportedBeforeEditTrackingServesWhateverEditStateImmichReports(t *testing.T) {
+	t.Parallel()
+	db := testdb.New(t)
+	imports := publishing.New(db, &source{asset: immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "photo.jpg", Kind: "IMAGE",
+		LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}}, func(context.Context, bun.Tx, string) error { return nil })
+	album, err := imports.StartImport(t.Context(), "source")
+	require.NoError(t, err)
+	require.NoError(t, imports.ExecuteImport(t.Context(), album.ID))
+	album, err = imports.GetAlbum(t.Context(), album.ID)
+	require.NoError(t, err)
+	imageURL := strings.Split(album.Moments[0].Entries[0].ThumbnailURL, "?")[0] + "?v=thumbnail-v1"
+	// Rows written before Memento read Immich's edit state do not know it, and
+	// carry a content version from an earlier formula.
+	_, err = db.NewUpdate().Table("media_items").Set("edited = NULL").Set("content_version = 'thumbnail-v1'").Where("source_id = 'asset'").Exec(t.Context())
+	require.NoError(t, err)
+
+	upstream := &source{asset: immich.Asset{ID: "asset", Checksum: "YQ==", Edited: true, UpdatedAt: "2026-10-13T00:00:00Z"}}
+	e := echo.New()
+	e.HTTPErrorHandler = errcodes.NewHandler().Handle
+	allow := func(next echo.HandlerFunc) echo.HandlerFunc { return next }
+	media.RegisterRoutes(e, media.New(db, upstream), allow, allow)
+	r := httptest.NewRecorder()
+	e.ServeHTTP(r, httptest.NewRequest(http.MethodGet, imageURL, nil))
+	require.Equal(t, 200, r.Code, "a photo already edited when it was imported keeps serving")
 }
 
 func TestFaceAndAvatarThumbnailsRequireKnownAuthorizedRecords(t *testing.T) {
@@ -432,6 +501,6 @@ func TestViewerOriginalDownloadsAuthorizedPhotosAndVideosWithoutRanges(t *testin
 	require.NotContains(t, failed.Body.String(), "Immich")
 	require.NotContains(t, failed.Body.String(), "asset.download")
 	upstream.originalError = nil
-	upstream.asset.UpdatedAt = "2026-07-06T00:00:00Z"
+	upstream.asset.Checksum = "Yw=="
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, url, nil).Code, "a changed source never serves new bytes under an old URL")
 }

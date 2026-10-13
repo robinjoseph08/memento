@@ -228,7 +228,7 @@ func (m *Module) progress(ctx context.Context, id, status string, processed int,
 
 func importItem(asset immich.Asset) (models.MediaItem, error) {
 	item := models.MediaItem{ID: models.NewUUIDv7(), SourceID: asset.ID, Checksum: asset.Checksum, Filename: asset.Filename, Kind: asset.Kind,
-		Offline: asset.Offline, Trashed: asset.Trashed, Width: asset.Width, Height: asset.Height, Duration: asset.Duration,
+		Offline: asset.Offline, Trashed: asset.Trashed, Edited: &asset.Edited, Width: asset.Width, Height: asset.Height, Duration: asset.Duration,
 		Thumbhash: asset.Thumbhash, LivePhotoVideoID: asset.LivePhotoVideoID, EXIF: asset.EXIF}
 	if asset.Stack != nil {
 		item.SourceStackID = &asset.Stack.ID
@@ -265,7 +265,7 @@ func (m *Module) upsertMediaItem(ctx context.Context, tx bun.Tx, item *models.Me
 	_, err := tx.NewInsert().Model(item).On("CONFLICT (source_id) DO UPDATE").
 		Set("checksum = EXCLUDED.checksum").Set("filename = EXCLUDED.filename").Set("kind = EXCLUDED.kind").
 		Set("captured_at = EXCLUDED.captured_at").Set("source_created_at = EXCLUDED.source_created_at").Set("source_updated_at = EXCLUDED.source_updated_at").
-		Set("offline = EXCLUDED.offline").Set("trashed = EXCLUDED.trashed").Set("width = EXCLUDED.width").Set("height = EXCLUDED.height").Set("duration = EXCLUDED.duration").
+		Set("offline = EXCLUDED.offline").Set("trashed = EXCLUDED.trashed").Set("edited = EXCLUDED.edited").Set("width = EXCLUDED.width").Set("height = EXCLUDED.height").Set("duration = EXCLUDED.duration").
 		Set("thumbhash = EXCLUDED.thumbhash").Set("live_photo_video_id = EXCLUDED.live_photo_video_id").
 		Set("source_stack_id = EXCLUDED.source_stack_id").Set("source_stack_primary_id = EXCLUDED.source_stack_primary_id").Set("source_stack_count = EXCLUDED.source_stack_count").
 		Set("exif = EXCLUDED.exif").Set("content_version = EXCLUDED.content_version").

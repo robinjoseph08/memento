@@ -106,5 +106,7 @@ func TestAdditionalCasesThroughPublishingAndMedia(t *testing.T) {
 	t.Cleanup(server.Close)
 	source := immich.New(server.URL, "read-key")
 	source.Probe = ffprobe.Command{}
-	require.NoError(t, verifyCaseImport(t.Context(), db, library, source, source))
+	published, err := verifyCaseImport(t.Context(), db, library, source, source)
+	require.NoError(t, err)
+	assert.NotEmpty(t, published.thumbnailURL)
 }

@@ -69,7 +69,7 @@ func streamPlayback(c *echo.Context, m *Module, id string) error {
 	if !singleByteRange.MatchString(byteRange) || !ifRangeAllows(c.Request().Header.Get("If-Range"), tag) {
 		byteRange = ""
 	}
-	playback, err := m.viewerPlayback(ctx, item.SourceID, version, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})
+	playback, err := m.viewerPlayback(ctx, item, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})
 	if err != nil {
 		return err
 	}

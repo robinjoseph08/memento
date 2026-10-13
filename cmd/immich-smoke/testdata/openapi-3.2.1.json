@@ -501,6 +501,9 @@
           "id": {
             "type": "string"
           },
+          "isEdited": {
+            "type": "boolean"
+          },
           "isOffline": {
             "type": "boolean"
           },

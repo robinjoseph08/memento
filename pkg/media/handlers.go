@@ -50,12 +50,12 @@ func (h *viewerHandlers) image(c *echo.Context, preview, large bool) error {
 // Entry's thumbnail or large preview at the version named in the query.
 func serveEntryImage(c *echo.Context, m *Module, id string, large bool) error {
 	version := c.QueryParam("v")
-	sourceID, err := m.EntryThumbnail(c.Request().Context(), id, version)
+	item, err := m.EntryThumbnail(c.Request().Context(), id, version)
 	if err != nil {
 		return err
 	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return m.viewerImage(c.Request().Context(), sourceID, version, large)
+		return m.viewerImage(c.Request().Context(), item, large)
 	})
 }
 
@@ -82,12 +82,12 @@ func (h *viewerHandlers) entryOriginal(c *echo.Context) error {
 	// HEAD confirms the photo is still downloadable without asking Immich to
 	// start sending the file.
 	if c.Request().Method == http.MethodHead {
-		if err := h.module.checkOriginal(c.Request().Context(), item.SourceID, version); err != nil {
+		if err := h.module.checkOriginal(c.Request().Context(), item); err != nil {
 			return err
 		}
 		return c.NoContent(http.StatusOK)
 	}
-	original, err := h.module.viewerOriginal(c.Request().Context(), item.SourceID, version)
+	original, err := h.module.viewerOriginal(c.Request().Context(), item)
 	if err != nil {
 		return err
 	}
@@ -181,12 +181,12 @@ func (h *handlers) personAvatar(c *echo.Context) error {
 
 func (h *handlers) entryThumbnail(c *echo.Context) error {
 	version := c.QueryParam("v")
-	sourceID, err := h.module.EntryThumbnail(c.Request().Context(), c.Param("id"), version)
+	item, err := h.module.EntryThumbnail(c.Request().Context(), c.Param("id"), version)
 	if err != nil {
 		return err
 	}
 	return serveVersioned(c, version, func() (immich.Thumbnail, error) {
-		return h.module.generatedThumbnail(c.Request().Context(), sourceID, version)
+		return h.module.generatedThumbnail(c.Request().Context(), item)
 	})
 }
 
