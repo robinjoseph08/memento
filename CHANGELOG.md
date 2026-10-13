@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-13
+
+- [Fix] Keep media serving when Immich touches a photo without changing it (#129)
+
 ## [0.6.0] - 2026-10-13
 
 - [Feature] Send emails as HTML and preview them without the app (#128)
