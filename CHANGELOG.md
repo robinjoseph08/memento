@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-13
+
+- [Feature] Send emails as HTML and preview them without the app (#128)
+- [Frontend] Set a Moment cover from photo details (#127)
+- [Fix] Fill gallery rows that a wide photo used to leave short (#126)
+- [Feature] Support Immich 3.3 and test only the two latest minors (#125)
+
 ## [0.5.0] - 2026-10-10
 
 - [Feature] Let People turn off hearing about Albums they can join (#124)
