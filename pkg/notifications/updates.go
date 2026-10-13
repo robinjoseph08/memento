@@ -39,10 +39,10 @@ const (
 	payloadVersion = 1
 )
 
-// payload is the immutable body of one Update Notification. The offered
+// UpdateContent is the immutable body of one Update Notification. The offered
 // section is stored already collapsed to what the Person is shown. Its fields
 // are optional so rows written before it existed still decode as version 1.
-type payload struct {
+type UpdateContent struct {
 	Albums            []NotificationAlbum `json:"albums"`
 	OfferedAlbums     []NotificationAlbum `json:"offered_albums,omitempty"`
 	MoreOfferedAlbums int                 `json:"more_offered_albums,omitempty"`
@@ -378,7 +378,7 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 	for _, id := range row.ExcludedOfferedAlbumIDs {
 		excludedOffers[id] = true
 	}
-	body := payload{Albums: []NotificationAlbum{}, Note: note}
+	body := UpdateContent{Albums: []NotificationAlbum{}, Note: note}
 	notification := models.UpdateNotification{ID: models.NewUUIDv7(), PersonID: person.ID, Version: payloadVersion, CreatedAt: now}
 	var notificationID *models.UUID
 	if !dismiss {
@@ -461,7 +461,7 @@ func (m *Module) resolvePerson(ctx context.Context, tx bun.Tx, row ApprovePerson
 
 // createNotification stores the Update Notification and queues optional email in
 // the same transaction as the baseline change.
-func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person models.Person, body payload, notification *models.UpdateNotification, outcome *PersonResult, now time.Time) error {
+func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person models.Person, body UpdateContent, notification *models.UpdateNotification, outcome *PersonResult, now time.Time) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return errorstack.Capture(err)
@@ -472,8 +472,9 @@ func (m *Module) createNotification(ctx context.Context, tx bun.Tx, person model
 		if err != nil {
 			return err
 		}
-		subject, text := renderUpdateEmail(m.PublicURL, person.DisplayName, body, token)
-		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text})
+		subject, email := UpdateEmail(m.PublicURL, person.DisplayName, body, token)
+		text, html := email.Render()
+		delivery, err := m.Enqueue(ctx, tx, Message{Kind: KindUpdate, To: person.UpdateEmail, Subject: subject, Body: text, HTML: html})
 		if err != nil {
 			return err
 		}
@@ -495,7 +496,7 @@ func projectNotification(row models.UpdateNotification) (Notification, error) {
 	if row.Version != payloadVersion {
 		return result, errorstack.Capture(fmt.Errorf("notification %s has unsupported payload version %d", row.ID, row.Version))
 	}
-	var body payload
+	var body UpdateContent
 	if err := json.Unmarshal(row.Payload, &body); err != nil {
 		return result, errorstack.Capture(err)
 	}

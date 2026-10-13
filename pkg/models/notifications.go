@@ -15,6 +15,7 @@ type MailDelivery struct {
 	Recipient     string
 	Subject       string
 	Body          string
+	HTML          string `bun:"html"`
 	Status        string
 	Attempts      int
 	Message       string

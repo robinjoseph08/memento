@@ -115,7 +115,7 @@ func (m *Module) RequestSignInCode(ctx context.Context, request RequestSignInCod
 	}
 	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), signInCodeSendTimeout)
 	defer cancel()
-	if err := m.Sender.Send(sendCtx, signInCodeMessage(email, code)); err != nil {
+	if err := m.Sender.Send(sendCtx, SignInCodeMessage(email, code)); err != nil {
 		// A code that never went out neither replaces the previous one nor
 		// holds back an immediate retry.
 		if deleteErr := m.change(context.WithoutCancel(ctx), func(ctx context.Context, tx bun.Tx) error {
@@ -150,15 +150,15 @@ func newSignInCode() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-// signInCodeMessage puts the code in the subject, so it shows in a
+// SignInCodeMessage puts the code in the subject, so it shows in a
 // notification without opening the email.
-func signInCodeMessage(email, code string) notifications.Message {
-	return notifications.Message{Kind: "sign_in_code", To: email, Subject: code + " is your Memento sign-in code", Body: fmt.Sprintf(`Your Memento sign-in code is:
-
-%s
-
-It expires in 10 minutes. If you didn't try to sign in to Memento, you can ignore this email.
-`, code)}
+func SignInCodeMessage(email, code string) notifications.Message {
+	text, html := notifications.Email{
+		notifications.Paragraph("Your Memento sign-in code is:"),
+		notifications.Code(code),
+		notifications.Paragraph("It expires in 10 minutes. If you didn't try to sign in to Memento, you can ignore this email."),
+	}.Render()
+	return notifications.Message{Kind: "sign_in_code", To: email, Subject: code + " is your Memento sign-in code", Body: text, HTML: html}
 }
 
 // VerifySignInCode checks the newest code sent to the address and resolves it

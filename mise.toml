@@ -59,6 +59,10 @@ run = "go run ./cmd/dev start api"
 description = "Start the Mobile App for Expo Go, pointed at this worktree's running dev servers"
 run = "go run ./cmd/dev start mobile"
 
+[tasks."preview:email"]
+description = "Serve every email with sample data, rebuilding on change"
+run = "go run ./cmd/dev preview-email"
+
 [tasks."start:qa"]
 description = "Build and start an empty installation with controlled Immich"
 depends = ["build", "build:fixture"]

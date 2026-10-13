@@ -105,6 +105,33 @@ func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	assert.Contains(t, messages[0].Data, "\r\n.Sign in at https://memento.example.test/sign-in\r\n")
 	assert.Contains(t, messages[0].Data, "Content-Type: text/plain; charset=utf-8")
 
+	// With HTML, the text stays readable as-is and the HTML rides beside it,
+	// carrying only the inline images it references.
+	styled := message
+	styled.HTML = `<img src="cid:mark@memento"><p>` + strings.Repeat("Hello Alex ", 200) + "</p>"
+	require.NoError(t, mailer.Send(t.Context(), styled))
+	data := server.Messages()[1].Data
+	assert.Contains(t, data, "Content-Type: multipart/alternative; boundary=")
+	assert.Contains(t, data, "\r\n.Sign in at https://memento.example.test/sign-in\r\n")
+	assert.Contains(t, data, "Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable")
+	assert.Less(t, strings.Index(data, "text/plain"), strings.Index(data, "text/html"), "clients prefer the last alternative they can show")
+	assert.Contains(t, data, "Content-Type: multipart/related; type=\"text/html\"; boundary=")
+	assert.Contains(t, data, "Content-ID: <mark@memento>\r\nContent-Disposition: inline\r\n")
+	assert.Less(t, strings.Index(data, "text/html"), strings.Index(data, "image/png"), "the HTML comes first in its related part")
+	for line := range strings.SplitSeq(data, "\r\n") {
+		assert.LessOrEqual(t, len(line), 998, "SMTP limits line length")
+	}
+
+	// A text line past SMTP's limit, such as a long Curator note, is encoded.
+	long := message
+	long.Body = "A note from your Curator:\n" + strings.Repeat("Enjoy! 🌅 ", 150) + "\n"
+	require.NoError(t, mailer.Send(t.Context(), long))
+	data = server.Messages()[2].Data
+	assert.Contains(t, data, "Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable")
+	for line := range strings.SplitSeq(data, "\r\n") {
+		assert.LessOrEqual(t, len(line), 998, "SMTP limits line length")
+	}
+
 	var failure *notifications.DeliveryError
 	server.SetMode(smtptest.ModeTransient)
 	err = mailer.Send(t.Context(), message)
@@ -117,7 +144,7 @@ func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	require.ErrorAs(t, err, &failure)
 	assert.Equal(t, notifications.OutcomePermanent, failure.Outcome)
 	assert.Equal(t, "The mail server replied 550.", failure.Summary)
-	assert.Len(t, server.Messages(), 1, "rejected messages are not recorded")
+	assert.Len(t, server.Messages(), 3, "rejected messages are not recorded")
 
 	// The server records the message but never replies; cancelling the send is uncertain.
 	server.SetMode(smtptest.ModeHold)
@@ -134,7 +161,7 @@ func TestSMTPMailerContractAgainstLocalServer(t *testing.T) {
 	assert.Equal(t, notifications.OutcomeUncertain, failure.Outcome)
 	assert.Contains(t, failure.Summary, "may have accepted")
 	server.SetMode(smtptest.ModeAccept)
-	assert.Len(t, server.Messages(), 2)
+	assert.Len(t, server.Messages(), 4)
 
 	// An unavailable server is a safe transient failure.
 	unavailable, err := notifications.NewSMTPMailer("smtp://127.0.0.1:1", "memento@example.test")

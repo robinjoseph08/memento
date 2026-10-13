@@ -40,7 +40,7 @@ func projectDelivery(row models.MailDelivery) Delivery {
 
 // deliveryClaimColumns are rewritten when an attempt starts. Update email
 // also refreshes its destination and content at that moment.
-var deliveryClaimColumns = []string{"status", "attempts", "message", "updated_at", "recipient", "subject", "body"}
+var deliveryClaimColumns = []string{"status", "attempts", "message", "updated_at", "recipient", "subject", "body", "html"}
 
 // Enqueue stores the complete message and commits its durable work with the
 // caller's transaction. Preferences are the caller's concern: transactional
@@ -54,7 +54,7 @@ func (m *Module) Enqueue(ctx context.Context, tx bun.Tx, message Message) (Deliv
 		return Delivery{}, errorstack.Capture(fmt.Errorf("mail message requires a kind, subject, and valid recipient"))
 	}
 	now := m.now().UTC()
-	row := models.MailDelivery{ID: models.NewUUIDv7(), Kind: message.Kind, Recipient: recipient.Address, Subject: message.Subject, Body: message.Body,
+	row := models.MailDelivery{ID: models.NewUUIDv7(), Kind: message.Kind, Recipient: recipient.Address, Subject: message.Subject, Body: message.Body, HTML: message.HTML,
 		Status: StatusQueued, CreatedAt: now, UpdatedAt: now}
 	if _, err := tx.NewInsert().Model(&row).Exec(ctx); err != nil {
 		return Delivery{}, errorstack.CaptureContext(ctx, err)
@@ -196,7 +196,7 @@ func (m *Module) Execute(ctx context.Context, deliveryID string, final bool) err
 	if m.mailer == nil {
 		sendErr = &DeliveryError{Outcome: OutcomePermanent, Summary: "Email is not configured for this installation."}
 	} else {
-		sendErr = m.mailer.Send(ctx, Message{Kind: row.Kind, To: row.Recipient, Subject: row.Subject, Body: row.Body})
+		sendErr = m.mailer.Send(ctx, Message{Kind: row.Kind, To: row.Recipient, Subject: row.Subject, Body: row.Body, HTML: row.HTML})
 	}
 	return m.recordOutcome(ctx, row, sendErr, final)
 }

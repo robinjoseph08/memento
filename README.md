@@ -725,6 +725,26 @@ their details current and reports ones that left Immich.
 Use separate browser profiles to try multiple people. Ordinary tabs share the
 same session cookie. Never expose fake development sign-in publicly.
 
+### Preview emails
+
+```sh
+mise preview:email
+```
+
+Open the printed URL to see every email Memento sends, rendered from sample
+data in light and dark, at phone and desktop widths, beside its plain text. It
+needs no database or Immich, and the page reloads itself when a Go file
+changes. Add samples in `cmd/emailpreview`.
+
+Browsers render HTML more generously than mail clients, so check a design in
+real inboxes before shipping it. This sends each sample once through any SMTP
+server, such as the one in your deployment:
+
+```sh
+SMTP_URL=smtps://user:pass@smtp.example.com SMTP_FROM='Memento <memento@example.com>' \
+  go run ./cmd/emailpreview -send-to you@example.com
+```
+
 ## Run checks
 
 ```sh

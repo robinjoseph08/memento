@@ -21,12 +21,14 @@ const (
 	OutcomeUncertain Outcome = "uncertain"
 )
 
-// Message is one transactional email. Bodies are plain text.
+// Message is one transactional email. Body is plain text; HTML, when set, is
+// the same content as a styled alternative from Email.Render.
 type Message struct {
 	Kind    string
 	To      string
 	Subject string
 	Body    string
+	HTML    string
 }
 
 // Mailer is the adapter seam for SMTP and its recording test counterpart.
