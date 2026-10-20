@@ -4,6 +4,7 @@ import {
   useChapterStatus,
   useEmailStatus,
 } from "../../hooks/queries/connection";
+import { useIdentityStatus } from "../../hooks/queries/identity";
 import { ConnectionDetails } from "../connection/connection-status";
 import { headingClass, SectionHeading } from "../people/form-fields";
 import { PageTitle } from "../shell/page-title";
@@ -12,6 +13,7 @@ import { IntegrationStatus, type Verdict } from "./integration-status";
 // Installation-level checks live here rather than on the dashboard, which
 // only reports an Immich problem when there is one.
 export function SettingsPage() {
+  const version = useIdentityStatus().data?.version;
   return (
     <>
       <PageTitle title="Settings" />
@@ -35,6 +37,9 @@ export function SettingsPage() {
           </SectionHeading>
           <ChapterDetails />
         </section>
+        {version && (
+          <p className="mt-12 text-xs text-muted">Memento {version}</p>
+        )}
       </div>
     </>
   );

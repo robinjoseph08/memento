@@ -39,6 +39,7 @@ function serveSettings(email: () => unknown, ffprobe: () => unknown) {
           claimed: true,
           person: curator,
           sign_in_methods: ["fake"],
+          version: "v0.6.1",
         });
       if (path === "/api/curator/connection") {
         checks.connection += 1;
@@ -101,6 +102,7 @@ it("shows email as quietly not configured and re-checks one integration at a tim
       "Connected",
     ),
   ).toBeInTheDocument();
+  expect(screen.getByText("Memento v0.6.1")).toBeInTheDocument();
 
   await user.click(email.getByRole("button", { name: "Check again" }));
   await email.findByText("Not configured");
