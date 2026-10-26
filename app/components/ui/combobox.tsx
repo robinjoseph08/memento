@@ -1,5 +1,5 @@
 import { Check, ChevronDown } from "lucide-react";
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "../../lib/utils";
 import {
@@ -21,8 +21,10 @@ export type ComboboxOption = {
 };
 
 // The one selection control. Every choice between records or enumerations uses
-// this instead of a native select. Search is always present so people never
-// have to guess whether typing will work.
+// this instead of a native select. Search is present so people never have to
+// guess whether typing will work; search={false} leaves it out where raising
+// a phone's keyboard would only get in the way. listClassName sizes the list,
+// which never runs past the edge of the screen.
 export function Combobox({
   value,
   onChange,
@@ -31,7 +33,9 @@ export function Combobox({
   placeholder = "Choose…",
   searchPlaceholder = "Search…",
   emptyText = "No matches.",
+  search = true,
   className,
+  listClassName,
   disabled,
   ...triggerProps
 }: {
@@ -43,7 +47,9 @@ export function Combobox({
   placeholder?: string;
   searchPlaceholder?: string;
   emptyText?: string;
+  search?: boolean;
   className?: string;
+  listClassName?: string;
   disabled?: boolean;
   id?: string;
   "aria-label"?: string;
@@ -54,6 +60,20 @@ export function Combobox({
   const [open, setOpen] = useState(false);
   const listID = useId();
   const commandRef = useRef<HTMLDivElement>(null);
+  // The list renders at the end of the page, so it takes the theme of a part
+  // of the page that sets its own, as the lightbox does. Inside a modal
+  // dialog it is modal too, since the dialog keeps touches and the wheel from
+  // scrolling anything outside itself.
+  const [place, setPlace] = useState({ theme: "", modal: false });
+  const findPlace = useCallback((trigger: HTMLButtonElement | null) => {
+    if (!trigger) return;
+    setPlace({
+      theme:
+        trigger.closest<HTMLElement>(":not(html)[data-theme]")?.dataset.theme ??
+        "",
+      modal: !!trigger.closest("[role=dialog]"),
+    });
+  }, []);
   const selected =
     options.find((option) => option.value === value) ??
     (action?.value === value ? action : undefined);
@@ -87,7 +107,7 @@ export function Combobox({
     </CommandItem>
   );
   return (
-    <Popover onOpenChange={setOpen} open={open}>
+    <Popover modal={place.modal} onOpenChange={setOpen} open={open}>
       <PopoverTrigger
         aria-controls={open ? listID : undefined}
         aria-expanded={open}
@@ -96,6 +116,7 @@ export function Combobox({
           className,
         )}
         disabled={disabled}
+        ref={findPlace}
         role="combobox"
         type="button"
         {...triggerProps}
@@ -111,6 +132,7 @@ export function Combobox({
       </PopoverTrigger>
       <PopoverContent
         className="w-(--radix-popover-trigger-width) min-w-56 p-0"
+        data-theme={place.theme || undefined}
         // Keyboard handling lives on the command root, so focus lands there
         // (or on its search box) rather than on the popover wrapper.
         onOpenAutoFocus={(event) => {
@@ -125,18 +147,26 @@ export function Combobox({
           tabIndex={-1}
           // cmdk matches on the item value by default; labels and descriptions
           // are the searchable text here, values are opaque IDs.
-          filter={(itemValue, search, keywords) => {
+          filter={(itemValue, query, keywords) => {
             const option =
               options.find((candidate) => candidate.value === itemValue) ??
               (action?.value === itemValue ? action : undefined);
             const haystack = [option?.label ?? itemValue, ...(keywords ?? [])]
               .join(" ")
               .toLowerCase();
-            return haystack.includes(search.trim().toLowerCase()) ? 1 : 0;
+            return haystack.includes(query.trim().toLowerCase()) ? 1 : 0;
           }}
         >
-          <CommandInput placeholder={searchPlaceholder} />
-          <CommandList id={listID}>
+          {search && <CommandInput placeholder={searchPlaceholder} />}
+          <CommandList
+            className={cn(
+              search
+                ? "max-h-[min(18rem,calc(var(--radix-popover-content-available-height)-3rem))]"
+                : "max-h-[min(18rem,var(--radix-popover-content-available-height))]",
+              listClassName,
+            )}
+            id={listID}
+          >
             <CommandEmpty>{emptyText}</CommandEmpty>
             <CommandGroup>{options.map(item)}</CommandGroup>
             {action && (

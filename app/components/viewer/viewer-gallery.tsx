@@ -365,13 +365,13 @@ function GalleryEntries({
             const count = dayCount(day, tab);
             return (
               <section
-                aria-label={captureDate(day.date, true)}
+                aria-label={captureDate(day.date, "weekday")}
                 className="pt-10"
                 data-date={day.date.slice(0, 10)}
                 key={day.date}
               >
                 <h2 className="font-heading text-[27px]/[1.2] tracking-[-0.35px]">
-                  {captureDate(day.date, true)}{" "}
+                  {captureDate(day.date, "weekday")}{" "}
                   <span className="ml-3 font-sans text-xs tracking-normal whitespace-nowrap text-muted">
                     {tab === "photos"
                       ? countLabel(count, "photo", "photos")

@@ -7,6 +7,8 @@ Element.prototype.hasPointerCapture = () => false;
 Element.prototype.setPointerCapture = () => {};
 Element.prototype.releasePointerCapture = () => {};
 Element.prototype.scrollIntoView = () => {};
+// jsdom cannot load media; playback is exercised in Playwright.
+HTMLMediaElement.prototype.load = () => {};
 
 // cmdk measures its list with ResizeObserver, which jsdom does not implement.
 // Assigned directly so tests that unstub globals keep it.

@@ -1,5 +1,13 @@
 import { ZoomIn, ZoomOut } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type Ref,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { cn } from "../../lib/utils";
@@ -19,37 +27,65 @@ function distance(points: Point[]) {
   return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
 }
 
-// Mount a new stage for each photo. Gestures belong here so panning and
-// pinching cannot also trigger the lightbox's next-photo swipe. The zoom
-// button renders into the header without lifting per-frame pan state there.
+// PhotoZoom lets the lightbox's pager zoom the photo on a double tap, since
+// the pager is what tells a double tap from two taps.
+export type PhotoZoom = { toggleAt: (point: Point) => void };
+
+// One photo in the lightbox. The pager keeps a stage mounted while its photo
+// moves between neighbour and open, so the image is never decoded again on
+// arrival; only the active stage takes focus and offers the zoom button, and
+// a stage that stops being active returns to fitted. Pinching, panning a
+// zoomed photo, wheel, keyboard zoom, and a mouse's double click belong
+// here; a one-finger swipe at fitted size and a double tap belong to the
+// pager, which onZoomChange tells when it must stand aside. The zoom button
+// renders into the header without lifting per-frame pan state there, and
+// only on screens without touch, which pinch instead.
 export function PhotoStage({
   src,
   alt,
-  onStep,
+  active = true,
   actionsTarget,
+  onZoomChange,
+  ref,
 }: {
   actionsTarget: HTMLElement | null;
   src: string;
   alt: string;
-  onStep: (delta: number) => void;
+  active?: boolean;
+  onZoomChange?: (zoomed: boolean) => void;
+  ref?: Ref<PhotoZoom>;
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const imageSizeRef = useRef<{ width: number; height: number } | null>(null);
   const viewRef = useRef(fittedPhoto);
   const pointersRef = useRef(new Map<number, Point>());
-  const swipeRef = useRef<Point | null>(null);
+  // Some phones also report a double tap as a double click, which the pager
+  // has already handled.
+  const touchedRef = useRef(false);
   const [view, setView] = useState(fittedPhoto);
+  // A double tap, the zoom button, and keys glide to the new zoom; pinching,
+  // panning, and the wheel follow the hand exactly.
+  const [gliding, setGliding] = useState(false);
   const [ready, setReady] = useState(false);
   const instructionsId = useId();
   const zoomed = view.scale > 1;
+  const [wasActive, setWasActive] = useState(active);
+  if (wasActive !== active) {
+    setWasActive(active);
+    if (!active) setView(fittedPhoto);
+  }
+  useEffect(() => {
+    if (!active) viewRef.current = fittedPhoto;
+  }, [active]);
 
-  const update = useCallback((next: typeof fittedPhoto) => {
+  const update = useCallback((next: typeof fittedPhoto, glide = false) => {
     const viewport = viewportRef.current;
     const image = imageSizeRef.current;
     if (!viewport || !image) return;
     const bounded = boundPhoto(next, viewport.getBoundingClientRect(), image);
     viewRef.current = bounded;
     setView(bounded);
+    setGliding(glide);
   }, []);
 
   function localPoint(point: Point) {
@@ -60,6 +96,21 @@ export function PhotoStage({
     };
   }
 
+  useImperativeHandle(ref, () => ({
+    toggleAt(point) {
+      if (!imageSizeRef.current) return;
+      update(
+        viewRef.current.scale > 1
+          ? fittedPhoto
+          : zoomPhoto(viewRef.current, 2, localPoint(point)),
+        true,
+      );
+    },
+  }));
+  useEffect(() => {
+    onZoomChange?.(zoomed);
+  }, [onZoomChange, zoomed]);
+
   useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport) return;
@@ -69,7 +120,6 @@ export function PhotoStage({
       if (!imageSizeRef.current) return;
       event.preventDefault();
       viewport!.focus({ preventScroll: true });
-      swipeRef.current = null;
       const rect = viewport!.getBoundingClientRect();
       const unit =
         event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? rect.height : 1;
@@ -95,7 +145,6 @@ export function PhotoStage({
 
   function cancelPointer(id: number) {
     pointersRef.current.delete(id);
-    swipeRef.current = null;
   }
 
   return (
@@ -109,8 +158,7 @@ export function PhotoStage({
             (zoomed ? "cursor-grab active:cursor-grabbing" : "cursor-default"),
         )}
         onDoubleClick={(event) => {
-          if (!ready) return;
-          swipeRef.current = null;
+          if (!ready || touchedRef.current) return;
           update(
             zoomed
               ? fittedPhoto
@@ -119,17 +167,24 @@ export function PhotoStage({
                   2,
                   localPoint({ x: event.clientX, y: event.clientY }),
                 ),
+            true,
           );
         }}
         onDragStart={(event) => event.preventDefault()}
         onKeyDown={(event) => {
           if (!ready || event.ctrlKey || event.metaKey || event.altKey) return;
           if (event.key === "+" || event.key === "=") {
-            update(zoomPhoto(viewRef.current, viewRef.current.scale * 1.5));
+            update(
+              zoomPhoto(viewRef.current, viewRef.current.scale * 1.5),
+              true,
+            );
           } else if (event.key === "-") {
-            update(zoomPhoto(viewRef.current, viewRef.current.scale / 1.5));
+            update(
+              zoomPhoto(viewRef.current, viewRef.current.scale / 1.5),
+              true,
+            );
           } else if (event.key === "0") {
-            update(fittedPhoto);
+            update(fittedPhoto, true);
           } else return;
           event.preventDefault();
           event.stopPropagation();
@@ -137,20 +192,19 @@ export function PhotoStage({
         onLostPointerCapture={(event) => cancelPointer(event.pointerId)}
         onPointerCancel={(event) => cancelPointer(event.pointerId)}
         onPointerDown={(event) => {
+          touchedRef.current = event.pointerType !== "mouse";
           if (event.button !== 0) return;
-          event.stopPropagation();
-          event.currentTarget.focus({ preventScroll: true });
+          // A click focuses the photo for its zoom keys. A touch does not,
+          // since there are no keys, and phones draw the focus ring for it.
+          if (event.pointerType !== "touch")
+            event.currentTarget.focus({ preventScroll: true });
           // Touch pointers already have implicit capture on their target.
           if (event.pointerType !== "touch")
             event.currentTarget.setPointerCapture(event.pointerId);
-          const point = { x: event.clientX, y: event.clientY };
-          pointersRef.current.set(event.pointerId, point);
-          swipeRef.current =
-            pointersRef.current.size === 1 &&
-            event.pointerType === "touch" &&
-            viewRef.current.scale === 1
-              ? point
-              : null;
+          pointersRef.current.set(event.pointerId, {
+            x: event.clientX,
+            y: event.clientY,
+          });
         }}
         onPointerMove={(event) => {
           const pointers = pointersRef.current;
@@ -184,23 +238,20 @@ export function PhotoStage({
           }
         }}
         onPointerUp={(event) => {
-          event.stopPropagation();
-          const start = swipeRef.current;
           cancelPointer(event.pointerId);
           if (event.currentTarget.hasPointerCapture(event.pointerId))
             event.currentTarget.releasePointerCapture(event.pointerId);
-          if (!start) return;
-          const dx = event.clientX - start.x;
-          const dy = event.clientY - start.y;
-          if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy))
-            onStep(dx < 0 ? 1 : -1);
         }}
         ref={viewportRef}
         role="group"
-        tabIndex={0}
+        tabIndex={active ? 0 : -1}
       >
         <div
-          className="flex h-full w-full shrink-0 items-center justify-center"
+          className={cn(
+            "flex h-full w-full shrink-0 items-center justify-center",
+            gliding &&
+              "transition-transform duration-250 ease-[cubic-bezier(0.2,0.8,0.2,1)] motion-reduce:transition-none",
+          )}
           style={{
             transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
           }}
@@ -209,6 +260,7 @@ export function PhotoStage({
             alt={alt}
             className="pointer-events-none h-full w-full bg-transparent object-contain"
             fallback="Media unavailable"
+            loading="eager"
             onError={() => {
               imageSizeRef.current = null;
               viewRef.current = fittedPhoto;
@@ -228,19 +280,23 @@ export function PhotoStage({
         </div>
       </div>
       <p className="sr-only" id={instructionsId}>
-        Double-click, scroll, or pinch to zoom. Drag to pan. Use + and - to zoom
-        and 0 to fit the photo. Left and right arrow keys change photos.
+        Double-click, double-tap, scroll, or pinch to zoom. Drag to pan. Use +
+        and - to zoom and 0 to fit the photo. Left and right arrow keys change
+        photos.
       </p>
       {src &&
+        active &&
         actionsTarget &&
         createPortal(
           <Button
             aria-label={zoomed ? "Reset zoom" : "Zoom in"}
-            className="size-11 rounded-full p-0"
+            className="size-11 rounded-full p-0 hover:bg-white/15 pointer-coarse:hidden"
             disabled={!ready}
             onClick={() => {
-              swipeRef.current = null;
-              update(zoomed ? fittedPhoto : zoomPhoto(viewRef.current, 2));
+              update(
+                zoomed ? fittedPhoto : zoomPhoto(viewRef.current, 2),
+                true,
+              );
               viewportRef.current?.focus({ preventScroll: true });
             }}
             title={zoomed ? "Reset zoom" : "Zoom in"}

@@ -12,16 +12,23 @@ export function aspectRatio(entry: ViewerEntry) {
     : 1.5;
 }
 
-export function captureDate(value: string, weekday = false) {
+// captureDate names a capture day: "June 14, 2025", with the weekday as
+// "Saturday, June 14, 2025", or short enough to share a line with the
+// lightbox's position as "Sat, Jun 14, 2025".
+export function captureDate(
+  value: string,
+  style: "plain" | "weekday" | "short" = "plain",
+) {
   if (!value) return "";
   const date = new Date(`${value.slice(0, 10)}T12:00:00Z`);
   if (Number.isNaN(date.getTime())) return "";
+  const length = style === "short" ? "short" : "long";
   return new Intl.DateTimeFormat("en-US", {
     timeZone: "UTC",
-    month: "long",
+    month: length,
     day: "numeric",
     year: "numeric",
-    ...(weekday ? ({ weekday: "long" } as const) : {}),
+    ...(style === "plain" ? {} : { weekday: length }),
   }).format(date);
 }
 
