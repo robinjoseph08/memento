@@ -423,10 +423,11 @@ it("navigates photos inside the preview with the identity notice and no download
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
   expect(new URLSearchParams(window.location.search).get("entry")).toBeNull();
+  // Closing lands on the photo that was open last, not the one opened.
   await waitFor(() =>
     expect(
       screen.getByRole("link", {
-        name: "Open photo taken June 14, 2025 at 12:00 PM",
+        name: "Open photo taken June 14, 2025 at 1:00 PM",
       }),
     ).toHaveFocus(),
   );

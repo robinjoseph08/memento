@@ -22,7 +22,8 @@
   --font-heading: "Slabo 13px", Georgia, serif;
 }
 
-:root {
+:root,
+[data-theme="dark"] {
   --background: #101112;
   --foreground: #edeeed;
   --muted: #a8aaa9;

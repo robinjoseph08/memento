@@ -7,6 +7,8 @@ type AlbumImageProps = {
   alt: string;
   fallback: string;
   className?: string;
+  // Images load lazily unless something offscreen must be ready in advance.
+  loading?: "eager" | "lazy";
   onLoad?: ComponentProps<"img">["onLoad"];
   onError?: ComponentProps<"img">["onError"];
 };
@@ -20,6 +22,7 @@ function Image({
   alt,
   fallback,
   className,
+  loading = "lazy",
   onLoad,
   onError,
 }: AlbumImageProps) {
@@ -43,7 +46,7 @@ function Image({
         className,
       )}
       decoding="async"
-      loading="lazy"
+      loading={loading}
       onError={(event) => {
         setFailed(true);
         onError?.(event);

@@ -105,7 +105,9 @@
   and focus backgrounds have room around the label.
 - Choose between records or options with the shared `Combobox`, never a native
   select or the Radix `Select`. It always offers search, even for short lists,
-  so typing works the same everywhere.
+  so typing works the same everywhere. The one exception is the video chapter
+  picker on touch screens, where search would only raise the keyboard over a
+  short list beside the video.
 
 ## Testing
 

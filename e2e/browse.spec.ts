@@ -50,6 +50,43 @@ async function swipe(stage: Locator, from: number, to: number) {
   });
 }
 
+// A touch that drags down the stage, which closes the lightbox.
+async function pullDown(stage: Locator, x: number, from: number, to: number) {
+  const touch = { pointerType: "touch", pointerId: 1, isPrimary: true };
+  await stage.dispatchEvent("pointerdown", {
+    ...touch,
+    clientX: x,
+    clientY: from,
+  });
+  await stage.dispatchEvent("pointermove", {
+    ...touch,
+    clientX: x,
+    clientY: (from + to) / 2,
+  });
+  await stage.dispatchEvent("pointerup", { ...touch, clientX: x, clientY: to });
+}
+
+// A touch that lands and lifts in place.
+async function tap(stage: Locator, x: number, y: number) {
+  const touch = { pointerType: "touch", pointerId: 1, isPrimary: true };
+  await stage.dispatchEvent("pointerdown", {
+    ...touch,
+    clientX: x,
+    clientY: y,
+  });
+  await stage.dispatchEvent("pointerup", { ...touch, clientX: x, clientY: y });
+}
+
+// How visible an element is once its ancestors' fading is counted in.
+function opacity(locator: Locator) {
+  return locator.evaluate((element) => {
+    let value = 1;
+    for (let node: Element | null = element; node; node = node.parentElement)
+      value *= Number(getComputedStyle(node).opacity);
+    return value;
+  });
+}
+
 async function readAllPhotos(page: Page, albumID: string) {
   const entries: ViewerEntry[] = [];
   let cursor = "";
@@ -239,7 +276,7 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
         }),
     );
     await expect(dialog).toContainText("Workbench - Browse");
-    await expect(dialog).toContainText("Monday, May 11, 2026");
+    await expect(dialog).toContainText("Mon, May 11, 2026");
     await captureLayouts(member, "browse-lightbox");
 
     // Zoom changes the rendered photo, and dragging pans without navigating.
@@ -262,8 +299,14 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(
       actions.getByRole("link", { name: "Download photo" }),
     ).toBeVisible();
+    // The photo fills the window and its controls float over it.
+    expect((await zoom.boundingBox())!.height).toBe(
+      member.viewportSize()!.height,
+    );
+    const header = (await dialog.locator("header").boundingBox())!;
+    expect(header.y).toBe((await zoom.boundingBox())!.y);
     expect((await zoomIn.boundingBox())!.y).toBeLessThan(
-      (await zoom.boundingBox())!.y,
+      header.y + header.height,
     );
     await expect(zoom).toHaveCSS("cursor", "default");
     await zoomIn.click();
@@ -277,10 +320,13 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       .poll(async () => (await photo.boundingBox())!.width)
       .toBeCloseTo(fitted.width);
 
+    // A double click glides to the new zoom rather than jumping.
     await zoom.dblclick();
     await expect(resetZoom).toBeVisible();
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeCloseTo(fitted.width * 2);
     const enlarged = (await photo.boundingBox())!;
-    expect(enlarged.width).toBeCloseTo(fitted.width * 2);
     const viewport = (await zoom.boundingBox())!;
     const start = {
       x: viewport.x + viewport.width / 2,
@@ -336,9 +382,10 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(resetZoom).toBeVisible();
     await expect(zoom).toHaveCSS("overflow-x", "hidden");
     await expect(zoom).toHaveCSS("overflow-y", "hidden");
-    expect((await photo.boundingBox())!.width).toBeGreaterThan(
-      (await zoom.boundingBox())!.width,
-    );
+    const stageWidth = (await zoom.boundingBox())!.width;
+    await expect
+      .poll(async () => (await photo.boundingBox())!.width)
+      .toBeGreaterThan(stageWidth);
     expect(
       await member.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -382,6 +429,19 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await expect(zoomIn).toBeEnabled();
     await member.setViewportSize({ width: 1280, height: 900 });
 
+    // Clicking the photo focuses it for its zoom keys, and the arrow keys
+    // keep working after it steps out of view.
+    await dialog
+      .getByRole("group", { name: "Photo zoom", exact: true })
+      .click({ position: { x: 200, y: 200 } });
+    await member.keyboard.press("ArrowRight");
+    await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
+    await member.keyboard.press("ArrowRight");
+    await expect(dialog).toHaveAccessibleName("Photo 153 of 221");
+    await member.keyboard.press("ArrowLeft");
+    await member.keyboard.press("ArrowLeft");
+    await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+
     // Keys, swipe, and the filmstrip move through the page boundary.
     await member.keyboard.press("ArrowRight");
     await expect(dialog).toHaveAccessibleName("Photo 152 of 221");
@@ -395,8 +455,17 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       name: "Photo zoom",
       exact: true,
     });
+    // A swiped photo arrives as the image already on screen beside the open
+    // one, not a new one that flashes black while it decodes.
+    await stage.evaluate((element) => {
+      for (const image of element
+        .closest("[role=dialog]")!
+        .querySelectorAll("img"))
+        image.dataset.seen = "true";
+    });
     await swipe(stage, 400, 200);
     await expect(dialog).toHaveAccessibleName("Photo 151 of 221");
+    await expect(stage.getByRole("img")).toHaveAttribute("data-seen", "true");
     await swipe(stage, 200, 420);
     await expect(dialog).toHaveAccessibleName("Photo 150 of 221");
     const filmstrip = dialog.getByRole("navigation", {
@@ -420,6 +489,32 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
       new RegExp(`${viewerPath}/${photos[100].id}$`),
     );
 
+    // The controls fade while the photo is just being looked at. A tap in
+    // the middle brings them back and another hides them; a tap on either
+    // side steps without them.
+    const photoStage = dialog.getByRole("group", {
+      name: "Photo stage",
+      exact: true,
+    });
+    const closeButton = dialog.getByRole("button", {
+      name: "Close photo",
+      exact: true,
+    });
+    const size = member.viewportSize()!;
+    await member.mouse.move(size.width / 2, size.height / 2);
+    await expect.poll(() => opacity(closeButton), { timeout: 6000 }).toBe(0);
+    await tap(photoStage, size.width / 2, size.height / 2);
+    await expect.poll(() => opacity(closeButton)).toBe(1);
+    await tap(photoStage, size.width / 2, size.height / 2);
+    await expect.poll(() => opacity(closeButton)).toBe(0);
+    await tap(photoStage, size.width - 20, size.height / 2);
+    await expect(dialog).toHaveAccessibleName("Photo 102 of 221");
+    await tap(photoStage, 20, size.height / 2);
+    await expect(dialog).toHaveAccessibleName("Photo 101 of 221");
+    expect(await opacity(closeButton)).toBe(0);
+    await member.mouse.move(size.width / 2 + 10, size.height / 2);
+    await expect.poll(() => opacity(closeButton)).toBe(1);
+
     // Download the original as the authorized member.
     const downloadURL = photos[100].download_url;
     expect(downloadURL).toContain(`/entries/${photos[100].id}/original?v=`);
@@ -435,15 +530,17 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     expect(original.headers()["content-disposition"]).toContain("attachment");
     expect((await original.body()).byteLength).toBeGreaterThan(0);
 
-    // Closing a directly opened photo returns to the gallery and focuses it;
-    // opening from the grid returns focus to that grid item and steps history
-    // back to the gallery.
+    // Closing returns to the gallery at the photo that was open last and
+    // focuses it there. Opening from the grid steps history back to the
+    // gallery; a direct link replaces the lightbox with it.
     await member.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(member).toHaveURL(new RegExp(`${viewerPath}$`));
-    await expect(
-      member.locator(`[data-entry-id="${photos[100].id}"]`),
-    ).toBeFocused();
+    const directlyOpened = member.locator(
+      `[data-entry-id="${photos[100].id}"]`,
+    );
+    await expect(directlyOpened).toBeFocused();
+    await expect(directlyOpened).toBeInViewport();
     const opener = member.locator(`[data-entry-id="${photos[2].id}"]`);
     await opener.click();
     await expect(dialog).toHaveAccessibleName("Photo 3 of 221");
@@ -459,14 +556,22 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await member.goBack();
     await expect(dialog).toHaveCount(0);
     await expect(member).toHaveURL(new RegExp(`${viewerPath}$`));
-    await expect(opener).toBeFocused();
+    await expect(
+      member.locator(`[data-entry-id="${photos[3].id}"]`),
+    ).toBeFocused();
     await member.goForward();
     await expect(dialog).toHaveAccessibleName("Photo 4 of 221");
-    await member
-      .getByRole("button", { name: "Close photo", exact: true })
+    await dialog
+      .getByRole("navigation", { name: "Photos filmstrip" })
+      .getByRole("button", { name: "Go to photo 80", exact: true })
       .click();
+    await expect(dialog).toHaveAccessibleName("Photo 80 of 221");
+    // Pulling the photo down closes it like the close button.
+    await pullDown(photoStage, 600, 300, 500);
     await expect(dialog).toHaveCount(0);
-    await expect(opener).toBeFocused();
+    const lastOpen = member.locator(`[data-entry-id="${photos[79].id}"]`);
+    await expect(lastOpen).toBeFocused();
+    await expect(lastOpen).toBeInViewport();
 
     // The Curator's preview navigates the same way without downloads.
     await outline

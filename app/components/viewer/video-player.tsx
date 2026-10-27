@@ -1,15 +1,18 @@
 import { Airplay } from "lucide-react";
-import { useEffect, useId, type RefObject } from "react";
+import { useEffect, useId, useLayoutEffect, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 import { useAirPlay } from "../../hooks/use-airplay";
+import { useMediaQuery } from "../../hooks/use-media-query";
 import type { Chapter, ViewerEntry } from "../../types/generated/publishing";
 import { Button } from "../ui/button";
 import { Combobox } from "../ui/combobox";
-import { clock } from "./labels";
+import { aspectRatio, clock } from "./labels";
 
-// The lightbox stage for one video: the native player filling the stage, so a
-// small clip is enlarged to the screen instead of sitting at its pixel size.
+// The lightbox stage for one video: the native player as large as the stage
+// allows at the video's own shape, so a small clip is enlarged to the screen
+// instead of sitting at its pixel size, and the player's controls sit on the
+// video rather than at the bottom of the screen.
 // With airPlay, Safari may hand the video to an Apple TV, and its button
 // joins the header actions in actionsTarget while a target is on the network.
 export function VideoStage({
@@ -36,6 +39,19 @@ export function VideoStage({
   // Tell the browser what is playing. Without this, an Apple TV, the lock
   // screen, and the browser's media controls name the web page instead.
   const title = entry.available ? entry.title || "Video" : "";
+  // A video opened by a tap, key, or swipe renders while that gesture is
+  // still being handled, and asking it to play now lets it start with sound
+  // in browsers that would otherwise wait for another tap, even when its
+  // source arrives a moment later. The player stays mounted from video to
+  // video, so this runs for each one. Taking away a source does not stop
+  // what was playing, so a player still waiting for this video's address
+  // lets go of the last one first.
+  useLayoutEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!video.getAttribute("src")) video.load();
+    if (autoPlay) void video.play()?.catch(() => {});
+  }, [autoPlay, entry.id, videoRef]);
   useEffect(() => {
     if (!title || !("mediaSession" in navigator)) return;
     navigator.mediaSession.metadata = new MediaMetadata({ title });
@@ -45,22 +61,29 @@ export function VideoStage({
   }, [title]);
   if (!entry.available)
     return (
-      <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
-        Media unavailable
-      </p>
+      <div className="flex h-full w-full items-center justify-center">
+        <p className="rounded-sm bg-surface px-6 py-10 text-center text-xs text-muted">
+          Media unavailable
+        </p>
+      </div>
     );
+  const ratio = aspectRatio(entry);
   return (
-    <div className="relative h-full w-full">
+    <div className="[container-type:size] relative flex h-full w-full items-center justify-center">
       <video
         aria-label={entry.title || "Video"}
         autoPlay={autoPlay}
-        className="h-full w-full rounded-sm bg-black object-contain"
+        className="max-h-full max-w-full bg-black object-contain"
         controls
         onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
         playsInline
         preload="metadata"
         ref={videoRef}
         src={target.src || undefined}
+        style={{
+          aspectRatio: ratio,
+          width: `min(100cqw, ${ratio} * 100cqh)`,
+        }}
         x-webkit-airplay={airPlay ? "allow" : "deny"}
       />
       {target.failed && (
@@ -77,7 +100,7 @@ export function VideoStage({
         createPortal(
           <Button
             aria-label="AirPlay"
-            className="size-11 rounded-full p-0"
+            className="size-11 rounded-full p-0 hover:bg-white/15"
             onClick={target.showPicker}
             variant="ghost"
           >
@@ -89,9 +112,11 @@ export function VideoStage({
   );
 }
 
-// The chapter picker under the player. It names the chapter that is playing,
+// The chapter picker above the player. It names the chapter that is playing,
 // follows the video as it plays, and seeks when another one is chosen. A video
-// without chapters, whatever the reason, simply has no picker.
+// without chapters, whatever the reason, simply has no picker. Its list stops
+// partway through a chapter so it plainly scrolls. On a phone it has no
+// search, so choosing never raises the keyboard.
 export function ChapterSelect({
   entry,
   activeIndex,
@@ -104,6 +129,7 @@ export function ChapterSelect({
 }) {
   const chapters = entry.chapters;
   const labelId = useId();
+  const touch = useMediaQuery("(pointer: coarse)");
   if (chapters.length === 0) return null;
   return (
     <div className="flex max-w-full items-center gap-2">
@@ -113,6 +139,13 @@ export function ChapterSelect({
       <Combobox
         aria-labelledby={labelId}
         className="min-h-9 w-56 max-w-full"
+        // Four and a half two-line rows, and no more than the screen holds
+        // below the search box when there is one.
+        listClassName={
+          touch
+            ? "max-h-[min(13.75rem,var(--radix-popover-content-available-height))]"
+            : "max-h-[min(13.75rem,calc(var(--radix-popover-content-available-height)-3rem))]"
+        }
         onChange={(value) => onSeek(chapters[Number(value)])}
         options={chapters.map((chapter, index) => ({
           value: String(index),
@@ -120,6 +153,7 @@ export function ChapterSelect({
           description: clock(chapter.start),
         }))}
         placeholder="Choose a chapter"
+        search={!touch}
         searchPlaceholder="Search chapters…"
         value={activeIndex >= 0 ? String(activeIndex) : ""}
       />

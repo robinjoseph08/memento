@@ -6,10 +6,10 @@ import {
   screen,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState, type ComponentProps } from "react";
+import { createRef, useState, type ComponentProps } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 
-import { PhotoStage } from "./photo-stage";
+import { PhotoStage, type PhotoZoom } from "./photo-stage";
 
 function PhotoWithActions(
   props: Omit<ComponentProps<typeof PhotoStage>, "actionsTarget">,
@@ -26,9 +26,15 @@ function PhotoWithActions(
 }
 
 function setup() {
-  const onStep = vi.fn();
+  const onZoomChange = vi.fn();
+  const zoom = createRef<PhotoZoom>();
   const result = render(
-    <PhotoWithActions alt="Lake" onStep={onStep} src="/lake.jpg" />,
+    <PhotoWithActions
+      alt="Lake"
+      onZoomChange={onZoomChange}
+      ref={zoom}
+      src="/lake.jpg"
+    />,
   );
   const stage = screen.getByRole("group", { name: "Photo zoom" });
   const image = screen.getByRole("img", { name: "Lake" });
@@ -65,7 +71,8 @@ function setup() {
     ...result,
     stage,
     image,
-    onStep,
+    onZoomChange,
+    zoom,
     transform: () => image.parentElement!.style.transform,
   };
 }
@@ -86,10 +93,12 @@ it("zooms with an accessible button and resets to the fitted photo", async () =>
   expect(transform()).toBe("translate(0px, 0px) scale(1)");
 });
 
-it("double-clicks around the cursor and drags without changing photos", () => {
-  const { stage, onStep, transform } = setup();
-  fireEvent.doubleClick(stage, { clientX: 500, clientY: 350 });
+it("zooms around a double tap, tells the lightbox, and drags the zoomed photo", () => {
+  const { stage, zoom, onZoomChange, transform } = setup();
+  expect(onZoomChange).toHaveBeenLastCalledWith(false);
+  act(() => zoom.current!.toggleAt({ x: 500, y: 350 }));
   expect(transform()).toBe("translate(-100px, -50px) scale(2)");
+  expect(onZoomChange).toHaveBeenLastCalledWith(true);
   fireEvent.pointerDown(stage, {
     pointerId: 1,
     pointerType: "mouse",
@@ -109,8 +118,21 @@ it("double-clicks around the cursor and drags without changing photos", () => {
     clientY: 340,
   });
   expect(transform()).toBe("translate(-20px, -10px) scale(2)");
-  expect(onStep).not.toHaveBeenCalled();
+  act(() => zoom.current!.toggleAt({ x: 0, y: 0 }));
+  expect(transform()).toBe("translate(0px, 0px) scale(1)");
+  expect(onZoomChange).toHaveBeenLastCalledWith(false);
+});
+
+it("zooms on a mouse's double click but leaves a touch double tap to the pager", () => {
+  const { stage, transform } = setup();
+  fireEvent.doubleClick(stage, { clientX: 500, clientY: 350 });
+  expect(transform()).toBe("translate(-100px, -50px) scale(2)");
   fireEvent.doubleClick(stage);
+  expect(transform()).toBe("translate(0px, 0px) scale(1)");
+  // Some phones report a double tap as a double click too.
+  fireEvent.pointerDown(stage, { pointerId: 1, clientX: 400, clientY: 300 });
+  fireEvent.pointerUp(stage, { pointerId: 1, clientX: 400, clientY: 300 });
+  fireEvent.doubleClick(stage, { clientX: 500, clientY: 350 });
   expect(transform()).toBe("translate(0px, 0px) scale(1)");
 });
 
@@ -130,13 +152,12 @@ it("consumes wheel zoom, clamps its scale, and leaves the page unzoomed", () => 
   expect(transform()).toBe("translate(0px, 0px) scale(1)");
 });
 
-it("keeps single-finger swipes at fitted size but never navigates after a pinch", () => {
-  const { stage, onStep, transform } = setup();
+it("leaves a one-finger drag at fitted size alone and pinches around the fingers", () => {
+  const { stage, transform } = setup();
   fireEvent.pointerDown(stage, { pointerId: 1, clientX: 400, clientY: 300 });
   fireEvent.pointerMove(stage, { pointerId: 1, clientX: 250, clientY: 300 });
   fireEvent.pointerUp(stage, { pointerId: 1, clientX: 250, clientY: 300 });
-  expect(onStep).toHaveBeenCalledExactlyOnceWith(1);
-  onStep.mockClear();
+  expect(transform()).toBe("translate(0px, 0px) scale(1)");
 
   fireEvent.pointerDown(stage, { pointerId: 1, clientX: 300, clientY: 300 });
   fireEvent.pointerDown(stage, { pointerId: 2, clientX: 500, clientY: 300 });
@@ -147,20 +168,6 @@ it("keeps single-finger swipes at fitted size but never navigates after a pinch"
   fireEvent.pointerMove(stage, { pointerId: 1, clientX: 100, clientY: 300 });
   fireEvent.pointerUp(stage, { pointerId: 1, clientX: 100, clientY: 300 });
   expect(transform()).toBe("translate(-100px, 0px) scale(2)");
-  expect(onStep).not.toHaveBeenCalled();
-});
-
-it("does not swipe after cancellation or when dragging a zoomed photo with one finger", () => {
-  const { stage, onStep } = setup();
-  fireEvent.pointerDown(stage, { pointerId: 1, clientX: 400, clientY: 300 });
-  fireEvent.pointerCancel(stage, { pointerId: 1 });
-  fireEvent.pointerUp(stage, { pointerId: 1, clientX: 100, clientY: 300 });
-  expect(onStep).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
-  fireEvent.pointerDown(stage, { pointerId: 1, clientX: 400, clientY: 300 });
-  fireEvent.pointerMove(stage, { pointerId: 1, clientX: 100, clientY: 300 });
-  fireEvent.pointerUp(stage, { pointerId: 1, clientX: 100, clientY: 300 });
-  expect(onStep).not.toHaveBeenCalled();
 });
 
 it("supports keyboard zoom without taking arrow keys at any zoom level", () => {
@@ -214,7 +221,7 @@ it("reclamps panning when the viewport changes size", () => {
 });
 
 it("disables zoom until a photo loads and after an image failure", () => {
-  render(<PhotoWithActions alt="Lake" onStep={vi.fn()} src="/lake.jpg" />);
+  render(<PhotoWithActions alt="Lake" src="/lake.jpg" />);
   expect(screen.getByRole("button", { name: "Zoom in" })).toBeDisabled();
   fireEvent.error(screen.getByRole("img", { name: "Lake" }));
   expect(screen.getByText("Media unavailable")).toBeVisible();

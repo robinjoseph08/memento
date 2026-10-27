@@ -15,6 +15,7 @@ import type {
   ViewerAlbum,
   ViewerEntry,
 } from "../../types/generated/publishing";
+import { aspectRatio } from "./labels";
 
 const album: ViewerAlbum = {
   id: "lake",
@@ -94,6 +95,7 @@ function mockViewer(handler: (path: string, init?: RequestInit) => Response) {
 }
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   window.history.replaceState(null, "", "/");
@@ -646,7 +648,7 @@ it("loads each run of days at once, keeps loaded days after one run fails, and r
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
 });
 
-it("opens a routed lightbox from the grid, moves with keys and the filmstrip, and returns focus to the opening photo", async () => {
+it("opens a routed lightbox from the grid, moves with keys and the filmstrip, and closes onto the photo open last", async () => {
   mockViewer((path) => {
     if (path === "/api/albums/lake")
       return Response.json({ ...album, photo_count: 3 });
@@ -670,7 +672,7 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
     }),
   ).toHaveAttribute("src", cabin.preview_url);
   expect(within(dialog).getByText(album.title)).toBeVisible();
-  expect(within(dialog).getByText("Saturday, June 14, 2025")).toBeVisible();
+  expect(within(dialog).getByText("Sat, Jun 14, 2025")).toBeVisible();
   expect(within(dialog).queryByText(/9:00/)).not.toBeInTheDocument();
   const download = within(dialog).getByRole("link", {
     name: "Download photo",
@@ -703,18 +705,88 @@ it("opens a routed lightbox from the grid, moves with keys and the filmstrip, an
   expect(
     await screen.findByRole("dialog", { name: "Photo 2 of 3" }),
   ).toBeVisible();
+  await user.keyboard("{ArrowRight}");
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 3 of 3" }),
+  ).toBeVisible();
   await user.keyboard("{Escape}");
   await waitFor(() =>
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
   );
   expect(window.location.pathname).toBe("/albums/lake/photos");
+  // Focus lands on the photo open last, not the one opened from the grid.
   await waitFor(() =>
     expect(
       screen.getByRole("link", {
-        name: "Open photo taken June 14, 2025 at 9:00 AM",
+        name: "Open photo taken June 14, 2025 at 6:30 PM",
       }),
     ).toHaveFocus(),
   );
+});
+
+it("fades the lightbox controls when idle, toggles them from the middle, and steps from either side without them", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  // jsdom has no PointerEvent constructor with coordinates.
+  vi.stubGlobal(
+    "PointerEvent",
+    class extends MouseEvent {
+      pointerId = 1;
+      isPrimary = true;
+      pointerType: string;
+      constructor(type: string, init: PointerEventInit = {}) {
+        super(type, init);
+        this.pointerType = init.pointerType ?? "touch";
+      }
+    },
+  );
+  mockViewer((path) => {
+    if (path === "/api/albums/lake") return Response.json(album);
+    if (path === "/api/albums/lake/photos")
+      return Response.json({ entries: [photo, cabin], next_cursor: "" });
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  window.history.replaceState(null, "", "/albums/lake/photos/photo-1");
+  render(<App />);
+  await screen.findByRole("dialog", { name: "Photo 1 of 2" });
+  const stage = screen.getByRole("group", { name: "Photo stage" });
+  vi.spyOn(stage, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, 0, 400, 800),
+  );
+  const faded = () =>
+    !!screen
+      .getByRole("button", { name: "Close photo" })
+      .closest("[data-idle]");
+  const tap = (x: number) => {
+    fireEvent.pointerDown(stage, { clientX: x, clientY: 400 });
+    fireEvent.pointerUp(stage, { clientX: x, clientY: 400 });
+  };
+
+  expect(faded()).toBe(false);
+  act(() => vi.advanceTimersByTime(3000));
+  expect(faded()).toBe(true);
+  // Showing waits out a double tap; hiding does not.
+  tap(200);
+  expect(faded()).toBe(true);
+  act(() => vi.advanceTimersByTime(300));
+  expect(faded()).toBe(false);
+  act(() => vi.advanceTimersByTime(400));
+  tap(200);
+  expect(faded()).toBe(true);
+
+  tap(380);
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 2 of 2" }),
+  ).toBeVisible();
+  expect(faded()).toBe(true);
+  tap(20);
+  expect(
+    await screen.findByRole("dialog", { name: "Photo 1 of 2" }),
+  ).toBeVisible();
+  expect(faded()).toBe(true);
+
+  // On a computer, moving the mouse brings them back.
+  fireEvent.pointerMove(stage, { pointerType: "mouse" });
+  expect(faded()).toBe(false);
 });
 
 it("resets photo zoom when navigating or reopening the lightbox", async () => {
@@ -1032,22 +1104,21 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
   expect(video).toHaveAttribute("src", party.playback_url);
   expect(video).toHaveAttribute("controls");
   expect(within(dialog).getByText("Birthday party")).toBeVisible();
-  expect(video).toHaveClass("h-full", "w-full", "object-contain");
+  // The player takes the video's own shape, so its controls sit on the video.
+  expect(video).toHaveStyle({ aspectRatio: String(aspectRatio(party)) });
   expect(
     within(dialog).getByRole("link", { name: "Download video" }),
   ).toHaveAttribute("href", party.download_url);
-  const filmstrip = within(dialog).getByRole("navigation", {
-    name: "Videos filmstrip",
-  });
+  // Videos have no filmstrip, which would cover the player's controls.
   expect(
-    within(filmstrip).getByRole("button", { name: "Go to video 1" }),
-  ).toHaveAttribute("aria-current", "true");
+    within(dialog).queryByRole("navigation", { name: "Videos filmstrip" }),
+  ).not.toBeInTheDocument();
 
-  // The chapter picker sits between the title and the date, names the playing
-  // chapter, and seeks when another is chosen.
+  // The chapter picker sits under the title, names the playing chapter, and
+  // seeks when another is chosen.
   const picker = within(dialog).getByRole("combobox", { name: "Chapter" });
   expect(picker).toHaveTextContent("Arrival");
-  expect(within(dialog).getByText("Saturday, June 14, 2025")).toBeVisible();
+  expect(within(dialog).getByText("Sat, Jun 14, 2025")).toBeVisible();
   await user.click(picker);
   const options = screen.getAllByRole("option");
   expect(options.map((option) => option.textContent)).toEqual([
@@ -1075,13 +1146,18 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
     await screen.findByRole("dialog", { name: "Video 2 of 3" }),
   ).toBeVisible();
   expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
-  // Space plays and pauses without the player itself being focused.
+  // The next video plays on arrival, as the first did on opening, and Space
+  // pauses and plays without the player itself being focused.
   const next = screen.getByLabelText<HTMLVideoElement>("DSC_0123");
-  expect(next.paused).toBe(true);
-  await user.keyboard(" ");
+  // One player plays each video in turn, since a phone lets a player that
+  // has started once start again without another tap.
+  expect(next).toBe(video);
+  expect(next).toHaveAttribute("src", plain.playback_url);
   expect(next.paused).toBe(false);
   await user.keyboard(" ");
   expect(next.paused).toBe(true);
+  await user.keyboard(" ");
+  expect(next.paused).toBe(false);
   expect(window.location.pathname).toBe("/albums/lake/videos/video-2");
   expect(screen.queryByText(/chapter/i)).not.toBeInTheDocument();
   expect(
@@ -1099,7 +1175,12 @@ it("opens a video in the routed lightbox, seeks by chapter, and shows no picker 
   );
   expect(window.location.pathname).toBe("/albums/lake/videos");
   expect(document.querySelector("video")).toBeNull();
-  await waitFor(() => expect(opener).toHaveFocus());
+  // Closing lands on the video that was open last, not the one opened.
+  await waitFor(() =>
+    expect(
+      screen.getByRole("link", { name: "Open video DSC_0124" }),
+    ).toHaveFocus(),
+  );
 });
 
 it("reloads a stable video link and hides downloads in preview-style entries", async () => {
@@ -1125,9 +1206,12 @@ it("reloads a stable video link and hides downloads in preview-style entries", a
   expect(
     within(dialog).queryByRole("link", { name: "Download video" }),
   ).not.toBeInTheDocument();
-  expect(
-    await within(dialog).findByRole("button", { name: "Go to video 3" }),
-  ).toBeVisible();
+  // The later page arrives in the background, and the next video opens from
+  // it. Pressing again once there changes nothing, since it is the last.
+  await waitFor(() => {
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(window.location.pathname).toBe("/albums/lake/videos/video-3");
+  });
 });
 
 // jsdom has no layout, so a long album is 4000px tall with December at 500px
