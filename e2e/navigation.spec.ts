@@ -84,7 +84,11 @@ test("Immich search keeps focus, clears immediately, and follows browser history
   await expect(search).toBeFocused();
   await expect(page).toHaveURL(/q=Fixture\+Album&page=1$/);
   await expect(page.getByRole("article")).toHaveCount(2);
-  for (const width of [1440, 390]) {
+  // Narrow cards, such as two columns on a phone, tighten their padding.
+  for (const [width, padding] of [
+    [1440, 16],
+    [390, 12],
+  ]) {
     await page.setViewportSize({ width, height: 900 });
     for (const cover of await page
       .getByRole("article")
@@ -120,7 +124,7 @@ test("Immich search keeps focus, clears immediately, and follows browser history
       });
       expect(positions.coverBottom).toBeLessThan(positions.titleTop);
       // The cover fills the card's width; the title sits inside its padding.
-      expect(positions.titleLeft - positions.coverLeft).toBeCloseTo(16, 0);
+      expect(positions.titleLeft - positions.coverLeft).toBeCloseTo(padding, 0);
     }
   }
   await search.fill("Coast");

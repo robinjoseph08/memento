@@ -200,11 +200,14 @@ function sourceDates(source: SourceAlbum) {
 }
 
 const cardClass =
-  "flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-surface";
+  "@container flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-surface";
 // Each footer action is its own small form so it owns its error and its
-// accessible name. Forms sit side by side and an error wraps under its button.
+// accessible name. Forms sit side by side; one showing an error takes a row
+// of its own so the message has room.
+// On a card too narrow for both labels, such as two columns on a phone,
+// Import fills the footer and Ignore keeps only its icon.
 const actionClass =
-  "flex min-w-0 flex-col justify-center [&>p]:mx-1 [&>p]:my-2 [&>p]:text-pretty";
+  "flex min-w-0 flex-col justify-center has-[>p]:basis-full [&>p]:mx-1 [&>p]:my-2 [&>p]:text-pretty";
 
 // One Immich album as a card: cover, title, size and dates, and a footer
 // that says where it stands. An album already in Memento is a link to it; one
@@ -224,8 +227,10 @@ function SourceCard({
         fallback="No cover available"
         src={source.cover_url}
       />
-      <div className="min-w-0 flex-1 px-4 pt-3 pb-4">
-        <h2 className="font-heading text-lg break-words">{source.title}</h2>
+      <div className="min-w-0 flex-1 px-4 pt-3 pb-4 @max-[12rem]:px-3">
+        <h2 className="font-heading text-lg break-words @max-[12rem]:text-base">
+          {source.title}
+        </h2>
         {sourceDates(source) && (
           <p className="mt-1 flex items-start gap-1 text-xs/5 text-muted">
             <CalendarDays
@@ -280,7 +285,7 @@ function SourceCard({
   return (
     <article className={cn(cardClass, "h-full")}>
       {details}
-      <div className="flex min-h-12 items-start justify-between gap-2 border-t border-border px-3 py-2">
+      <div className="flex min-h-12 flex-wrap items-start justify-between gap-2 border-t border-border px-3 py-2">
         {children}
       </div>
     </article>
@@ -303,7 +308,7 @@ function ImportAction({
     <Form
       aria-busy={importing.isPending}
       aria-label={`Import ${source.title}`}
-      className={actionClass}
+      className={cn(actionClass, "@max-[12rem]:flex-1")}
       error={importing.error}
       onSubmit={(event) => {
         event.preventDefault();
@@ -314,7 +319,12 @@ function ImportAction({
         );
       }}
     >
-      <Button disabled={disabled} size="sm" type="submit">
+      <Button
+        className="@max-[12rem]:w-full"
+        disabled={disabled}
+        size="sm"
+        type="submit"
+      >
         {importing.isPending ? "Importing…" : "Import"}
       </Button>
     </Form>
@@ -350,7 +360,9 @@ function IgnoreAction({
         variant="ghost"
       >
         <EyeOff aria-hidden="true" className="size-4" strokeWidth={1.5} />
-        {ignoring.isPending ? "Ignoring…" : "Ignore"}
+        <span className="@max-[12rem]:hidden">
+          {ignoring.isPending ? "Ignoring…" : "Ignore"}
+        </span>
       </Button>
     </Form>
   );
