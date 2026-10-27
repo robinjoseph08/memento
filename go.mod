@@ -5,7 +5,7 @@ go 1.27.0
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/creasty/defaults v1.11.0
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/go-playground/mold/v4 v4.5.1
 	github.com/go-playground/validator/v10 v10.30.5
 	github.com/gorilla/schema v1.4.1
@@ -14,19 +14,19 @@ require (
 	github.com/knadh/koanf/parsers/yaml v1.1.1
 	github.com/knadh/koanf/providers/env v1.1.0
 	github.com/knadh/koanf/providers/file v1.2.1
-	github.com/knadh/koanf/v2 v2.3.7
-	github.com/labstack/echo/v5 v5.4.0
+	github.com/knadh/koanf/v2 v2.4.1
+	github.com/labstack/echo/v5 v5.4.2
 	github.com/pkg/errors v0.9.1
-	github.com/riverqueue/river v0.47.0
-	github.com/riverqueue/river/riverdriver/riverdatabasesql v0.47.0
-	github.com/riverqueue/river/rivertype v0.47.0
+	github.com/riverqueue/river v0.49.0
+	github.com/riverqueue/river/riverdriver/riverdatabasesql v0.49.0
+	github.com/riverqueue/river/rivertype v0.49.0
 	github.com/robinjoseph08/golib v0.6.0
 	github.com/stretchr/testify v1.12.1
-	github.com/uptrace/bun v1.2.18
-	github.com/uptrace/bun/dialect/pgdialect v1.2.18
+	github.com/uptrace/bun v1.3.0
+	github.com/uptrace/bun/dialect/pgdialect v1.3.0
 	github.com/urfave/cli/v2 v2.27.7
 	golang.org/x/oauth2 v0.37.0
-	golang.org/x/sync v0.23.0
+	golang.org/x/sync v0.24.0
 )
 
 require (
@@ -51,9 +51,9 @@ require (
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/riverqueue/river/riverdriver v0.47.0 // indirect
-	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.47.0 // indirect
-	github.com/riverqueue/river/rivershared v0.47.0 // indirect
+	github.com/riverqueue/river/riverdriver v0.49.0 // indirect
+	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.49.0 // indirect
+	github.com/riverqueue/river/rivershared v0.49.0 // indirect
 	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
