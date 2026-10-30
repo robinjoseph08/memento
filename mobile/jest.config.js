@@ -4,6 +4,10 @@ const preset = require("jest-expo/jest-preset");
 module.exports = {
   preset: "jest-expo",
   setupFiles: ["./jest.setup.js"],
+  // The first test in each screen file pays for transforming React Native and
+  // Expo and for the first render, which takes longer than Jest's default five
+  // seconds on CI runners.
+  testTimeout: 15_000,
   moduleNameMapper: { "^@/(.*)$": "<rootDir>/src/$1" },
   // The icon package ships ES modules as .mjs files, so Babel must transform
   // it the way it does the Expo packages the preset already lists.
