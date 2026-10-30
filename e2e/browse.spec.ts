@@ -232,14 +232,26 @@ test("a member browses a published Album, opens photos by link, key, swipe and f
     await member.setViewportSize({ width: 390, height: 900 });
     await member.evaluate(() => window.scrollTo({ top: 300 }));
     const handle = timeline.locator("span.pointer-events-auto");
-    const grip = (await handle.boundingBox())!;
+    // The handle follows the page once it has seen the scroll, which WebKit
+    // reports a frame later, so it is grabbed only after it stops moving.
+    let grip = { x: 0, y: -1, width: 0, height: 0 };
+    await expect
+      .poll(async () => {
+        const box = await handle.boundingBox();
+        const settled = !!box && box.y === grip.y;
+        if (box) grip = box;
+        return settled;
+      })
+      .toBe(true);
     const centre = { x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 };
     await member.mouse.move(centre.x, centre.y);
     await member.mouse.down();
     expect(await member.evaluate(() => window.scrollY)).toBe(300);
     await member.mouse.move(centre.x, centre.y + 200, { steps: 8 });
     await member.mouse.up();
-    expect(await member.evaluate(() => window.scrollY)).toBeGreaterThan(1000);
+    await expect
+      .poll(() => member.evaluate(() => window.scrollY))
+      .toBeGreaterThan(1000);
     await member.evaluate(() => window.scrollTo({ top: 0 }));
     await captureLayouts(member, "browse-album");
     for (const width of [1440, 390]) {

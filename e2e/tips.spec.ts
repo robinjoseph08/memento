@@ -84,6 +84,21 @@ async function press(page: Page, target: Locator, touch: boolean) {
   else await page.mouse.click(x, y);
 }
 
+// restingScroll waits out a smooth scroll, which WebKit animates for a mouse
+// wheel, and returns where the page came to rest.
+async function restingScroll(page: Page) {
+  let last = -1;
+  await expect
+    .poll(async () => {
+      const now = await page.evaluate(() => window.scrollY);
+      const resting = now === last;
+      last = now;
+      return resting;
+    })
+    .toBe(true);
+  return last;
+}
+
 async function capture(page: Page, name: string) {
   if (process.env.QA_CAPTURES !== "1") return;
   await mkdir("tmp/qa-captures", { recursive: true });
@@ -257,7 +272,7 @@ test("viewers on a desktop and a phone meet each Tip once, pointing at the thing
           .poll(() => member.evaluate(() => window.scrollY))
           .toBeGreaterThan(before + 300);
         await expect(tab).not.toBeInViewport();
-        const scrolled = await member.evaluate(() => window.scrollY);
+        const scrolled = await restingScroll(member);
         await expect
           .poll(() =>
             member.evaluate(() =>
