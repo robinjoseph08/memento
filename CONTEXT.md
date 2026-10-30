@@ -109,3 +109,7 @@ _Avoid_: Mobile sign-in code, Exchange code
 
 **Onboarding**:
 The first-time introduction completed by every Person who gains login access. Completion establishes that Person's notification baseline from everything currently visible or offered to them.
+
+**Tip**:
+A one-time, eye-catching note shown to a viewer the first time they meet a part of Memento that works differently from other photo apps, such as the separate Videos tab, Joining an offered Album, or a video's Chapters. Dismissing a Tip or using what it points at retires it for that Person everywhere they sign in. Tips change no access and no notification baseline, and are separate from Onboarding.
+_Avoid_: Hint, Tour, Coach mark, Tooltip

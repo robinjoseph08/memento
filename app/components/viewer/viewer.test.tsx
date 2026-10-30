@@ -85,6 +85,7 @@ function mockViewer(handler: (path: string, init?: RequestInit) => Response) {
             id: "jamie",
             display_name: "Jamie",
             is_curator: false,
+            retired_tips: ["videos", "join", "chapters"],
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
           sign_in_methods: ["fake"],
@@ -185,7 +186,7 @@ it("lists offered Albums under More albums and opens their preview", async () =>
   render(<App />);
   const more = await screen.findByRole("region", { name: "More albums" });
   expect(more).toHaveTextContent(
-    "You may not be in these albums, but you might enjoy looking through them.",
+    "These albums are shared with you but aren't in your albums yet. Open one to look around, or join it to keep it within your library.",
   );
   const card = within(more).getByRole("link", { name: /Family reunion/ });
   expect(card).toHaveAttribute("href", "/albums/reunion/preview/photos");

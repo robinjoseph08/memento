@@ -21,7 +21,10 @@ type Person struct {
 	OfferedAlbumUpdates bool `bun:",default:true"`
 	AvatarFaceID        *string
 	AvatarVersion       string `bun:",scanonly"`
-	CreatedAt           time.Time
+	// RetiredTips inserts as the column default, empty, because nil is Go's
+	// zero value.
+	RetiredTips []string `bun:",array,default:'{}'"`
+	CreatedAt   time.Time
 }
 
 // LinkedEmail is a verified, lowercased address that signs its Person in.

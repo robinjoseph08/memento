@@ -8,6 +8,12 @@ import {
   type Page,
 } from "@playwright/test";
 
+import {
+  TipChapters,
+  TipJoin,
+  TipVideos,
+  type Tip,
+} from "../app/types/generated/identity";
 import type { ViewerEntry } from "../app/types/generated/publishing";
 
 type Installation = { apiURL: string; fixtureURL: string };
@@ -191,10 +197,23 @@ export const test = base.extend<{
 });
 
 // Every Person completes Onboarding once after their first sign-in. Journeys
-// that start elsewhere call this right after claiming or signing in.
-export async function finishOnboarding(page: Page, tap = false) {
+// that start elsewhere call this right after claiming or signing in. Tips
+// would dim the page in journeys about something else, so every Tip is
+// retired first, except those a journey names in keepTips.
+export async function finishOnboarding(
+  page: Page,
+  { tap = false, keepTips = [] }: { tap?: boolean; keepTips?: Tip[] } = {},
+) {
   const button = page.getByRole("button", { name: "Continue to Memento" });
   await expect(button).toBeVisible();
+  for (const tip of [TipVideos, TipJoin, TipChapters]) {
+    if (keepTips.includes(tip)) continue;
+    const response = await page.request.post(
+      `/api/identity/tips/${tip}/retire`,
+      { headers: { Origin: new URL(page.url()).origin }, data: {} },
+    );
+    expect(response.status()).toBe(200);
+  }
   if (tap) await button.tap();
   else await button.click();
   await expect(page).not.toHaveURL(/\/welcome$/);

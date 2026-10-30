@@ -69,6 +69,8 @@ type ProfileUseCases interface {
 	Sessions(context.Context, string) ([]BrowserSession, error)
 	SignOutEverywhere(context.Context, string) error
 	UnlinkEmail(context.Context, string, string, string) error
+	RetireTip(context.Context, string, Tip) (Person, error)
+	ResetTips(context.Context, string) (Person, error)
 }
 
 type Handlers struct {

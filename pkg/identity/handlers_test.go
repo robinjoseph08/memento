@@ -409,3 +409,25 @@ func TestFakeSignInIsOnlyAvailableInDevelopmentAndTest(t *testing.T) {
 		})
 	}
 }
+
+func TestTipResetIsOnlyAvailableInDevelopmentAndTest(t *testing.T) {
+	t.Parallel()
+	for _, environment := range []string{"production", "development", "test", ""} {
+		t.Run(environment, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.NewForTest()
+			cfg.AppEnv = environment
+			e := identityHTTP(t, cfg, &fakeIdentity{claimed: true})
+			req := httptest.NewRequest(http.MethodPost, "/api/identity/tips/reset", strings.NewReader(`{}`))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			e.ServeHTTP(recorder, req)
+			// The route asks for a signed-in Person where it exists.
+			if environment == "development" || environment == "test" {
+				require.Equal(t, http.StatusUnauthorized, recorder.Code, recorder.Body.String())
+			} else {
+				require.Equal(t, http.StatusNotFound, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}

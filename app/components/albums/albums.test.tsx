@@ -2225,6 +2225,7 @@ it("links an Immich face to an existing Person and derives a suggestion", async 
     id: "alex",
     display_name: "Alex",
     is_curator: false,
+    retired_tips: ["videos", "join", "chapters"],
     onboarding_completed_at: "2026-01-01T00:00:00Z",
     deactivated_at: null,
     update_email: "",

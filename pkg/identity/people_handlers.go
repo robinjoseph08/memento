@@ -122,6 +122,24 @@ func (h *Handlers) updateProfile(c *echo.Context) error {
 	return jsonResult(c, result, err)
 }
 
+func (h *Handlers) retireTip(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.RetireTip(c.Request().Context(), h.browserToken(c), Tip(c.Param("tip")))
+	return jsonResult(c, result, err)
+}
+
+func (h *Handlers) resetTips(c *echo.Context) error {
+	var request struct{}
+	if err := c.Bind(&request); err != nil {
+		return err
+	}
+	result, err := h.module.ResetTips(c.Request().Context(), h.browserToken(c))
+	return jsonResult(c, result, err)
+}
+
 func (h *Handlers) sessions(c *echo.Context) error {
 	result, err := h.module.Sessions(c.Request().Context(), h.browserToken(c))
 	return jsonResult(c, result, err)

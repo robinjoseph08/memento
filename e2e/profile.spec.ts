@@ -13,7 +13,7 @@ test("a touch user clears their update email, stops hearing about albums they ca
     const page = await context.newPage();
     await page.goto("/setup");
     await page.getByRole("button", { name: "Claim installation" }).tap();
-    await finishOnboarding(page, true);
+    await finishOnboarding(page, { tap: true });
     await expect(page.getByRole("heading", { name: /^Hi, / })).toBeVisible();
     await page.goto("/profile");
     const email = page.getByRole("combobox", { name: "Email for updates" });

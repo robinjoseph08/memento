@@ -114,6 +114,7 @@ async function openVideo(refuse: boolean) {
             id: "jamie",
             display_name: "Jamie",
             is_curator: false,
+            retired_tips: ["videos", "join", "chapters"],
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
           sign_in_methods: ["fake"],

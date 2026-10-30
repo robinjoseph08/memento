@@ -13,6 +13,7 @@ import type {
   SignInCodeResult,
   SignInRequest,
   Status,
+  Tip,
   VerifySignInCodeRequest,
 } from "../../types/generated/identity";
 
@@ -62,6 +63,53 @@ export function useSignOut(everywhere = false) {
         version: data?.version ?? "",
       });
     },
+  });
+}
+
+// useRetireTip hides a Tip at once and records it for every device. A Tip
+// retired twice, or by two requests at once, stays retired once. The status
+// is read again afterwards, so a refresh that raced the retire, or a retire
+// that failed, ends up showing what the server holds.
+export function useRetireTip() {
+  const client = useQueryClient();
+  const retire = (person: Person, tips: Tip[]) => {
+    client.setQueryData<Status>(statusKey, (status) =>
+      status?.person?.id === person.id
+        ? {
+            ...status,
+            person: {
+              ...person,
+              retired_tips: [
+                ...new Set([...status.person.retired_tips, ...tips]),
+              ],
+            },
+          }
+        : status,
+    );
+  };
+  return useMutation({
+    mutationFn: (tip: Tip) =>
+      request<Person>(`/api/identity/tips/${tip}/retire`, { body: {} }),
+    onMutate: async (tip) => {
+      await client.cancelQueries({ queryKey: statusKey });
+      const person = client.getQueryData<Status>(statusKey)?.person;
+      if (person) retire(person, [tip]);
+    },
+    onSuccess: (person) => retire(person, person.retired_tips),
+    onSettled: () => client.invalidateQueries({ queryKey: statusKey }),
+  });
+}
+
+// useResetTips brings back every Tip for the signed-in Person. Only
+// development installations offer it.
+export function useResetTips() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => request<Person>("/api/identity/tips/reset", { body: {} }),
+    onSuccess: (person) =>
+      client.setQueryData<Status>(statusKey, (status) =>
+        status?.person?.id === person.id ? { ...status, person } : status,
+      ),
   });
 }
 

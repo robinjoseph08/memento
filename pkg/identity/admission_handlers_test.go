@@ -24,6 +24,14 @@ func (m *admissionIdentity) CompleteOnboarding(_ context.Context, _ string, requ
 	m.record("onboarding:" + request.DisplayName)
 	return identity.Person{DisplayName: request.DisplayName}, m.err
 }
+func (m *admissionIdentity) RetireTip(_ context.Context, _ string, tip identity.Tip) (identity.Person, error) {
+	m.record("tip:" + string(tip))
+	return identity.Person{RetiredTips: []identity.Tip{tip}}, m.err
+}
+func (m *admissionIdentity) ResetTips(context.Context, string) (identity.Person, error) {
+	m.record("reset tips")
+	return identity.Person{RetiredTips: []identity.Tip{}}, m.err
+}
 func (m *admissionIdentity) SendInvitation(_ context.Context, _ string, personID string, request identity.SendInvitationRequest) (identity.Invitation, error) {
 	m.record("invite:" + personID + ":" + request.PreauthorizationID)
 	return identity.Invitation{ID: "invitation"}, m.err
@@ -64,6 +72,8 @@ func TestAdmissionHTTPRoutesBindAndAuthorize(t *testing.T) {
 	}{
 		"member completes onboarding":       {http.MethodPost, "/api/identity/onboarding", `{"display_name":"Alex","update_email":"alex@example.test","email_updates":true}`, false, 200, "onboarding:Alex", `"display_name":"Alex"`},
 		"onboarding validates name":         {http.MethodPost, "/api/identity/onboarding", `{"display_name":" ","update_email":"","email_updates":false}`, false, 422, "", "Enter a display name."},
+		"member retires a tip":              {http.MethodPost, "/api/identity/tips/videos/retire", `{}`, false, 200, "tip:videos", `"retired_tips":["videos"]`},
+		"member resets tips in development": {http.MethodPost, "/api/identity/tips/reset", `{}`, false, 200, "reset tips", `"retired_tips":[]`},
 		"member requests album access":      {http.MethodPost, "/api/albums/album-1/request-access", `{}`, false, 200, "request:album-1", `"album_id":"album-1"`},
 		"member cannot list requests":       {http.MethodGet, "/api/access-requests", "", false, 403, "", "access_denied"},
 		"curator lists requests":            {http.MethodGet, "/api/access-requests", "", true, 200, "list", "stranger@example.test"},

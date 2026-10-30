@@ -10,6 +10,7 @@ import {
 import { useLocation, useNavigate, type To } from "react-router-dom";
 
 import { useCast } from "../../hooks/use-cast";
+import { useTip } from "../../hooks/use-tip";
 import { mediaLabel } from "../../lib/media-labels";
 import { cn } from "../../lib/utils";
 import type { ViewerEntry } from "../../types/generated/publishing";
@@ -19,6 +20,7 @@ import { useIdleControls } from "./idle-controls";
 import { aspectRatio, captureDate } from "./labels";
 import { DOUBLE_TAP_MS, Pager } from "./pager";
 import { PhotoStage, type PhotoZoom } from "./photo-stage";
+import { Tip } from "./tip";
 import { ChapterSelect, VideoStage } from "./video-player";
 
 // The routed full-screen viewer for one gallery: photos or videos. It composes
@@ -115,7 +117,20 @@ export function Lightbox({
   const castStatus = !cast.showingID
     ? `Connected to ${cast.receiver}`
     : `Showing ${cast.showing || (onTV ? "this photo" : "a photo")} on ${cast.receiver}`;
+  // Few players split a video into chapters, so the first video that has them
+  // points at the picker. It holds the video still until the Tip is gone,
+  // so the Tip is not talking over it, and starts it while the tap that
+  // dismissed the Tip is still being handled, which phones require for sound.
+  const [picker, setPicker] = useState<HTMLDivElement | null>(null);
+  const chaptersTip = useTip("chapters", {
+    ready: kind === "video" && !!entry?.available && entry.chapters.length > 0,
+  });
+  function chaptersSeen() {
+    chaptersTip.retire();
+    if (castID !== currentID) void videoRef.current?.play()?.catch(() => {});
+  }
   function seek(chapter: { start: number }) {
+    chaptersTip.retire();
     if (casting) {
       if (onTV) cast.seek(chapter.start);
       return;
@@ -312,7 +327,7 @@ export function Lightbox({
             <VideoStage
               actionsTarget={stageActions}
               airPlay={!personName}
-              autoPlay={castID !== item.id}
+              autoPlay={castID !== item.id && !chaptersTip.showing}
               entry={item}
               onTime={trackChapter}
               videoRef={videoRef}
@@ -543,13 +558,23 @@ export function Lightbox({
                 )}
                 {kind === "video" && entry && entry.chapters.length > 0 && (
                   <div className="order-last flex basis-full justify-center [text-shadow:none] min-[601px]:order-none min-[601px]:basis-auto">
-                    <div className={interactive}>
+                    <div className={interactive} ref={setPicker}>
                       <ChapterSelect
                         activeIndex={chapterIndex}
                         entry={entry}
                         onSeek={seek}
                       />
                     </div>
+                    {chaptersTip.showing && picker && (
+                      <Tip
+                        onDone={chaptersSeen}
+                        target={picker}
+                        title="This video has chapters"
+                      >
+                        Use them to jump around to the parts of the video that
+                        you care most about.
+                      </Tip>
+                    )}
                   </div>
                 )}
                 <div
