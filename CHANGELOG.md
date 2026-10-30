@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+- [Feature] Point viewers at the Videos tab, joining, and chapters with one-time Tips (#141)
+- [Frontend] Fit the import album cards on phone screens (#140)
+- [Frontend] Make the photo viewer full screen with fading controls and swipe paging (#136)
+- [Frontend] Show the Memento version on the Settings page (#134)
+
 ## [0.6.1] - 2026-10-13
 
 - [Fix] Keep media serving when Immich touches a photo without changing it (#129)

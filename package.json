@@ -1,6 +1,6 @@
 {
   "name": "memento",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "description": "Memento is a full-stack web application",
   "type": "module",
