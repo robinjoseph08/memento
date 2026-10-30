@@ -20,6 +20,7 @@ const member = {
   id: "alex",
   display_name: "Alex",
   is_curator: false,
+  retired_tips: ["videos", "join", "chapters"],
   onboarding_completed_at: "2026-01-01T00:00:00Z",
   update_email: "alex@example.test",
   email_updates: true,

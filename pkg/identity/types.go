@@ -57,7 +57,20 @@ type Person struct {
 	// OfferedAlbumUpdates is "Tell me about albums I can join".
 	OfferedAlbumUpdates bool   `json:"offered_album_updates"`
 	AvatarURL           string `json:"avatar_url"`
+	// RetiredTips are the Tips this Person has dismissed or used, so the
+	// viewer never shows them again on any device.
+	RetiredTips []Tip `json:"retired_tips"`
 }
+
+// Tip names a one-time note pointing a viewer at something Memento does
+// differently from other photo apps.
+type Tip string
+
+const (
+	TipVideos   Tip = "videos"
+	TipJoin     Tip = "join"
+	TipChapters Tip = "chapters"
+)
 
 // PersonSummary is a People list row: the Person plus where they stand on
 // signing in, so a Curator can see who still needs an email, an approval, or

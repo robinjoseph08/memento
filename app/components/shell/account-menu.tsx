@@ -2,6 +2,7 @@ import {
   CircleUser,
   Crown,
   Eye,
+  Lightbulb,
   LogOut,
   Moon,
   Settings,
@@ -10,7 +11,11 @@ import {
 import { use, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { useSignOut } from "../../hooks/queries/identity";
+import {
+  useIdentityStatus,
+  useResetTips,
+  useSignOut,
+} from "../../hooks/queries/identity";
 import type { useTheme } from "../../hooks/use-theme";
 import { UnsavedChangesContext } from "../../lib/forms";
 import { errorMessage } from "../../lib/http";
@@ -41,6 +46,11 @@ export function AccountMenu({
   onboarded?: boolean;
 } & ReturnType<typeof useTheme>) {
   const signOut = useSignOut();
+  // Development installations let a viewer see the Tips again, the same way
+  // they offer fake sign-in.
+  const development =
+    !!useIdentityStatus().data?.sign_in_methods?.includes("fake");
+  const resetTips = useResetTips();
   const viewing = inViewerArea(useLocation().pathname);
   const unsavedRef = use(UnsavedChangesContext);
   const [signOutOpen, setSignOutOpen] = useState(false);
@@ -103,6 +113,15 @@ export function AccountMenu({
             <MenuIcon icon={Moon} />
             Dark mode
           </DropdownMenuCheckboxItem>
+          {development && !person.is_curator && onboarded && (
+            <DropdownMenuItem
+              disabled={preview || resetTips.isPending}
+              onSelect={() => resetTips.mutate()}
+            >
+              <MenuIcon icon={Lightbulb} />
+              Show tips again
+            </DropdownMenuItem>
+          )}
           <DropdownMenuSeparator />
           {person.is_curator && onboarded && (
             <>

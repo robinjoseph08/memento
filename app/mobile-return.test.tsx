@@ -16,6 +16,7 @@ const member = {
   id: "alex",
   display_name: "Alex",
   is_curator: false,
+  retired_tips: ["videos", "join", "chapters"],
   update_email: "alex@example.test",
   email_updates: false,
   avatar_url: "",

@@ -1,5 +1,5 @@
 import { Image, Play, SquarePlay } from "lucide-react";
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, type To } from "react-router-dom";
 
 import {
@@ -10,6 +10,7 @@ import {
   type ViewerTab,
 } from "../../hooks/queries/viewer";
 import { useMediaQuery } from "../../hooks/use-media-query";
+import { useTip } from "../../hooks/use-tip";
 import { HTTPError } from "../../lib/http";
 import { disambiguatePhotoLabels, mediaLabel } from "../../lib/media-labels";
 import { cn } from "../../lib/utils";
@@ -29,6 +30,7 @@ import { Lightbox } from "./lightbox";
 import { photoRows } from "./photo-rows";
 import { RequestAccess } from "./request-access";
 import { Timeline } from "./timeline";
+import { Tip } from "./tip";
 
 // Shared presentation for the library, an Album, an offered Album's preview,
 // and Curator preview. personName is set only in Curator preview so empty
@@ -71,6 +73,19 @@ export function ViewerGallery({
           : "Album";
   const noAccess =
     query.error instanceof HTTPError && query.error.status === 404;
+  // Videos sit in a tab of their own, which people coming from other photo
+  // apps walk past. Opening that tab, or landing on it, counts as finding it.
+  const [videosTab, setVideosTab] = useState<HTMLAnchorElement | null>(null);
+  const videosTip = useTip("videos", {
+    ready:
+      tab === "photos" &&
+      !entryID &&
+      !!videosTab &&
+      (query.data?.video_count ?? 0) > 0,
+    used: query.isSuccess && tab === "videos",
+  });
+  // Looking through an offered Album is what the Join Tip asks for.
+  useTip("join", { used: !!context.offered && query.isSuccess });
   const tabs = [
     { key: "photos", label: "Photos", icon: Image },
     { key: "videos", label: "Videos", icon: SquarePlay },
@@ -138,6 +153,7 @@ export function ViewerGallery({
                     : "border-transparent text-muted hover:text-foreground",
                 )}
                 key={item.key}
+                ref={item.key === "videos" ? setVideosTab : undefined}
                 to={tabLinks[item.key]}
               >
                 <item.icon
@@ -157,6 +173,16 @@ export function ViewerGallery({
               </Link>
             ))}
           </nav>
+          {videosTip.showing && videosTab && (
+            <Tip
+              onDone={videosTip.retire}
+              target={videosTab}
+              title="Videos have their own tab"
+            >
+              Videos are kept separate so that you can watch all of them
+              together instead of mixed in with the photos.
+            </Tip>
+          )}
           <GalleryEntries
             context={context}
             entryID={entryID}

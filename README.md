@@ -589,6 +589,10 @@ reach, such as `PUBLIC_URL=http://192.168.1.20:5173 mise start`, using the web
 port the command prints. Chrome only offers Cast on `localhost` or HTTPS, so
 keep browsing at `http://localhost:PORT` there; Safari can use either address.
 
+Each viewer sees a Tip only once. To see them again while working on one,
+choose Show tips again in a viewer's account menu. It appears only where fake
+sign-in does.
+
 The following commands start one process when needed:
 
 ```sh

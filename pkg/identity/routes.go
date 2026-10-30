@@ -15,6 +15,7 @@ func RegisterRoutes(e *echo.Echo, cfg *config.Config, module UseCases) *Handlers
 	e.GET("/api/identity/me", h.me, h.RequirePerson)
 	e.GET("/api/identity/profile", h.profile, h.RequirePerson)
 	e.POST("/api/identity/profile", h.updateProfile, h.RequirePerson)
+	e.POST("/api/identity/tips/:tip/retire", h.retireTip, h.RequirePerson)
 	e.GET("/api/identity/sessions", h.sessions, h.RequirePerson)
 	e.POST("/api/identity/sign-out-everywhere", h.signOutEverywhere, h.RequirePerson)
 	e.POST("/api/identity/emails/:emailID/unlink", h.unlinkEmail, h.RequirePerson)
@@ -48,6 +49,7 @@ func RegisterRoutes(e *echo.Echo, cfg *config.Config, module UseCases) *Handlers
 	e.POST(MobileExchangePath, h.mobileExchange)
 	if cfg.FakeSignInAvailable() {
 		e.POST("/api/identity/fake-sign-in", h.fakeSignIn)
+		e.POST("/api/identity/tips/reset", h.resetTips, h.RequirePerson)
 	}
 	return h
 }

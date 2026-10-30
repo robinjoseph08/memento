@@ -1,12 +1,15 @@
 import { Images } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { useMoreAlbums, useViewerAlbums } from "../../hooks/queries/viewer";
+import { useTip } from "../../hooks/use-tip";
 import type { ViewerAlbum } from "../../types/generated/publishing";
 import { EmptyState } from "../shell/empty-state";
 import { PageTitle } from "../shell/page-title";
 import { Button } from "../ui/button";
 import { AlbumCard } from "./album-card";
+import { Tip } from "./tip";
 
 export function ViewerAlbumList() {
   const query = useViewerAlbums();
@@ -15,6 +18,12 @@ export function ViewerAlbumList() {
   // With none of their own, a viewer's page waits for More albums before
   // saying there is nothing to see.
   const empty = query.data?.length === 0;
+  // Offered Albums stay out of the viewer's own until they join one, which
+  // other photo apps never ask of them.
+  const [moreHeading, setMoreHeading] = useState<HTMLHeadingElement | null>(
+    null,
+  );
+  const joinTip = useTip("join", { ready: offered && !!moreHeading });
   return (
     <div className="pt-4 min-[761px]:pt-11">
       <PageTitle title="Albums" />
@@ -80,13 +89,24 @@ export function ViewerAlbumList() {
           <h2
             className="font-heading text-[clamp(26px,3vw,34px)] leading-[1.2] tracking-[-0.5px]"
             id="more-albums"
+            ref={setMoreHeading}
           >
             More albums
           </h2>
           <p className="mt-3 text-sm text-muted">
-            You may not be in these albums, but you might enjoy looking through
-            them.
+            These albums are shared with you but aren't in your albums yet. Open
+            one to look around, or join it to keep it within your library.
           </p>
+          {joinTip.showing && moreHeading && (
+            <Tip
+              onDone={joinTip.retire}
+              target={moreHeading}
+              title="Albums you can join"
+            >
+              You're not in these albums, but you can poke around in them if
+              you're interested.
+            </Tip>
+          )}
           <AlbumGrid
             albums={more.data}
             link={(id) => `/albums/${encodeURIComponent(id)}/preview/photos`}

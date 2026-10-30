@@ -132,6 +132,7 @@ it("keeps successfully saved Person values when the following refresh fails", as
     id: "alex",
     display_name: "Alex",
     is_curator: false,
+    retired_tips: ["videos", "join", "chapters"],
     onboarding_completed_at: "2026-01-01T00:00:00Z",
   };
   let saved = false;
@@ -207,6 +208,7 @@ it("creates a person without losing a rejected display name and opens their acce
           id: "alex",
           display_name: "Alex",
           is_curator: false,
+          retired_tips: ["videos", "join", "chapters"],
           onboarding_completed_at: "2026-01-01T00:00:00Z",
         });
       }
@@ -216,6 +218,7 @@ it("creates a person without losing a rejected display name and opens their acce
             id: "alex",
             display_name: "Alex",
             is_curator: false,
+            retired_tips: ["videos", "join", "chapters"],
             onboarding_completed_at: "2026-01-01T00:00:00Z",
           },
           emails: [],
@@ -290,6 +293,7 @@ it("asks before discarding a new person and keeps the name when the Curator chan
 it("shows where each person stands on signing in", async () => {
   const member = {
     is_curator: false,
+    retired_tips: ["videos", "join", "chapters"],
     update_email: "",
     email_updates: false,
     avatar_url: "",
