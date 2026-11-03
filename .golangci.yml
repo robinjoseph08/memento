@@ -1,4 +1,9 @@
 version: "2"
+run:
+  # Skip the machine-wide lock in the system temp directory, so a lint in
+  # another project can't fail this one with "parallel golangci-lint is
+  # running". The lock also guards --fix, so don't run --fix twice at once.
+  allow-parallel-runners: true
 linters:
   default: none
   enable:
