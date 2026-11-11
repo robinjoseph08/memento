@@ -54,7 +54,7 @@ jobs:
           --health-interval 1s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - name: Install ffprobe
         # A mirror outage otherwise hangs apt until the whole job times out.
         timeout-minutes: 5
@@ -80,7 +80,7 @@ jobs:
           --health-interval 1s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - name: Install ffprobe
         # A mirror outage otherwise hangs apt until the whole job times out.
         timeout-minutes: 5
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: mise tygo
       - run: mise lint:js
@@ -118,7 +118,7 @@ jobs:
           --health-interval 1s --health-timeout 5s --health-retries 30
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
 
       - name: Read Playwright version
@@ -171,7 +171,7 @@ jobs:
           --health-retries 30
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
       - run: pnpm install --frozen-lockfile
       - run: mise build
       - run: mise docker
