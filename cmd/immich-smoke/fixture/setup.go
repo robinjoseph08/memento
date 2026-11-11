@@ -20,7 +20,7 @@ import (
 	"github.com/robinjoseph08/memento/pkg/immich"
 )
 
-const Release = "v3.3.1"
+const Release = "v3.4.1"
 
 var readPermissions = []string{"album.read", "asset.download", "asset.read", "asset.view", "face.read", "person.read"}
 

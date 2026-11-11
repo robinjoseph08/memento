@@ -45,19 +45,19 @@ func TestSmokeScriptSelection(t *testing.T) {
 		badChecksum            bool
 		goFailure              bool
 	}{
-		{name: "default", release: "v3.3.1"},
-		{name: "previous minor", release: "v3.2.4", args: []string{"--version", "v3.2.4"}},
+		{name: "default", release: "v3.4.1"},
+		{name: "previous minor", release: "v3.3.6", args: []string{"--version", "v3.3.6"}},
 		{name: "unpinned patch", release: "v3.2.5", args: []string{"--version", "v3.2.5"}},
 		{name: "floating", args: []string{"--version", "release"}, failure: "exact stable tag"},
-		{name: "prerelease", args: []string{"--version", "v3.3.0-rc.1"}, failure: "exact stable tag"},
+		{name: "prerelease", args: []string{"--version", "v3.4.0-rc.1"}, failure: "exact stable tag"},
 		{name: "leading zero", args: []string{"--version", "v3.03.0"}, failure: "exact stable tag"},
-		{name: "probe", release: "v3.4.0", args: []string{"--version", "v3.4.0", "--probe"}},
-		{name: "ML", release: "v3.3.1", args: []string{"--ml"}},
-		{name: "permission diagnostic", release: "v3.3.1", args: []string{"--permission-failure", "asset.read"}},
-		{name: "failed smoke retains evidence", release: "v3.3.1", goFailure: true, failure: "fixture failed"},
+		{name: "probe", release: "v3.5.0", args: []string{"--version", "v3.5.0", "--probe"}},
+		{name: "ML", release: "v3.4.1", args: []string{"--ml"}},
+		{name: "permission diagnostic", release: "v3.4.1", args: []string{"--permission-failure", "asset.read"}},
+		{name: "failed smoke retains evidence", release: "v3.4.1", goFailure: true, failure: "fixture failed"},
 		{name: "missing", args: []string{"--version"}, failure: "Missing value"},
 		{name: "unknown", args: []string{"--other"}, failure: "Unknown argument"},
-		{name: "checksum", release: "v3.2.4", args: []string{"--version", "v3.2.4"}, badChecksum: true, failure: "checksum mismatch"},
+		{name: "checksum", release: "v3.3.6", args: []string{"--version", "v3.3.6"}, badChecksum: true, failure: "checksum mismatch"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -77,8 +77,8 @@ case "${0##*/}" in
     ;;
   shasum)
     if [[ $SMOKE_TEST_BAD_CHECKSUM == true ]]; then printf 'wrong\n'
-    elif [[ $IMMICH_VERSION == v3.3.1 ]]; then printf '2601c893aa3217d3c0c7284c23aaa1699aac75b533c84c0315fd16b7889fd552  compose.yaml\n'
-    elif [[ $IMMICH_VERSION == v3.2.4 ]]; then printf 'fa98c3eb0884b0b88aaee11a9c9acb8cfb17a0f495d12c21358deb6d3e8a546b  compose.yaml\n'
+    elif [[ $IMMICH_VERSION == v3.4.1 ]]; then printf '1455e3f474687cb96ecb2eab23a0a7268ac5515b094022c66f3902ceb7f0a564  compose.yaml\n'
+    elif [[ $IMMICH_VERSION == v3.3.6 ]]; then printf '2601c893aa3217d3c0c7284c23aaa1699aac75b533c84c0315fd16b7889fd552  compose.yaml\n'
     else printf 'unpinned  compose.yaml\n'; fi
     ;;
   docker)
