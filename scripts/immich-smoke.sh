@@ -126,10 +126,18 @@ printf '%s\n' "IMMICH_VERSION=$release" 'UPLOAD_LOCATION=smoke-upload' \
 # Core smoke uses manual faces. The separate ML run enables actual recognition.
 printf '%s\n' "{\"machineLearning\":{\"enabled\":$ml},\"metadata\":{\"faces\":{\"import\":true}},\"reverseGeocoding\":{\"enabled\":false}}" > "$work/immich-config.json"
 printf 'Starting disposable %s with Immich %s\n' "$COMPOSE_PROJECT_NAME" "$IMMICH_VERSION"
-phase=startup
-started=true
 services=(immich-server memento-db)
 if $ml; then services+=(immich-machine-learning); fi
+# The registry rate-limits shared CI runners, so a pull failure is retried
+# rather than reported as an Immich problem.
+phase=pull
+for attempt in 1 2 3; do
+  if run_logged "${compose[@]}" pull --quiet --include-deps "${services[@]}"; then break; fi
+  (( attempt < 3 )) || exit 1
+  sleep $(( attempt * 30 ))
+done
+phase=startup
+started=true
 run_logged "${compose[@]}" up --detach --wait --wait-timeout 600 "${services[@]}"
 immich_address=$("${compose[@]}" port immich-server 2283)
 db_address=$("${compose[@]}" port memento-db 5432)

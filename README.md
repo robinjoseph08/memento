@@ -892,8 +892,11 @@ minor, the tested pair moves up by one and the gate's upper bound follows.
 Pull requests run the pinned current version in a separate parallel CI job.
 Nightly and pre-release workflows test both declared minors. Nightly recognition
 is a separate slower job. The release detector probes a newly released stable tag
-and reports success in its run summary or opens a diagnostic issue on failure.
-It never changes the declaration or production gate automatically.
+and reports success in its run summary or opens a diagnostic issue when Immich fails
+to start or fails a compatibility check. A failure before that, such as an apt
+mirror outage or a registry rate limit, only fails the run, since the next
+nightly run probes the same release again. It never changes the declaration or production
+gate automatically.
 
 To evaluate a new tag locally, run `mise test:immich --version vX.Y.Z --probe`.
 Inspect `request.txt`, `images.txt`, `checksums.txt`, `result.txt`, `run.log`, and

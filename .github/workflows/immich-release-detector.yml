@@ -52,6 +52,7 @@ jobs:
     timeout-minutes: 30
     outputs:
       outcome: ${{ steps.smoke.outcome }}
+      phase: ${{ steps.phase.outputs.phase }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,13 +60,21 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@v4
       - name: Install ffprobe
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+        # A mirror outage otherwise hangs apt until the whole job times out.
+        timeout-minutes: 5
+        run: sudo apt-get -o Acquire::Retries=3 update && sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends ffmpeg
       - name: Probe stable release without expanding support
         id: smoke
         continue-on-error: true
         env:
           IMMICH_SMOKE_VERSION: ${{ needs.discover.outputs.version }}
         run: mise test:immich --version "$IMMICH_SMOKE_VERSION" --probe
+      # The smoke script records where it stopped. A stop while starting the
+      # pulled containers or running the checks means Immich itself failed.
+      - name: Record the phase the probe stopped in
+        id: phase
+        if: always()
+        run: echo "phase=$(sed -n 's/^phase=//p' tmp/immich-smoke.*/artifacts/result.txt 2>/dev/null | head -n 1 || true)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -91,15 +100,21 @@ jobs:
           IMMICH_SMOKE_VERSION: ${{ needs.discover.outputs.version }}
           PROBE_OUTCOME: ${{ needs.probe.outputs.outcome }}
           PROBE_JOB_RESULT: ${{ needs.probe.result }}
+          PROBE_PHASE: ${{ needs.probe.outputs.phase }}
         with:
           script: |
             const version = process.env.IMMICH_SMOKE_VERSION;
             if (!/^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(version)) throw new Error('Invalid tag');
             const passed = process.env.PROBE_OUTCOME === 'success' && process.env.PROBE_JOB_RESULT === 'success';
+            // Failures before the images are pulled (apt, downloads, registry rate
+            // limits) are CI infrastructure, not Immich. The next nightly run probes
+            // the same release again, so they leave a failed run without an issue.
+            const reachedChecks = ['startup', 'test'].includes(process.env.PROBE_PHASE);
             const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `Core compatibility probe for Immich ${version}: ${passed ? 'PASS' : 'FAIL'}.\n\nRun and redacted evidence: ${run}\n\nThe probe bypasses only the test command import policy. It does not change Memento's supported-version declaration.\n\nInspect the requested version, Compose checksum, running image digests, logs, and result in the run artifacts before changing support.`;
-            await core.summary.addRaw(body).write();
-            if (!passed) {
+            const setupNote = passed || reachedChecks ? '' : '\n\nThe probe stopped before Immich started, so no issue was filed. The next nightly run probes this release again.';
+            await core.summary.addRaw(body + setupNote).write();
+            if (!passed && reachedChecks) {
               const title = `[Compatibility] Immich ${version} core probe failed`;
               const issues = await github.paginate(github.rest.issues.listForRepo, {...context.repo, state: 'open', creator: 'github-actions[bot]', per_page: 100});
               const existing = issues.find(issue => !issue.pull_request && issue.title === title);
