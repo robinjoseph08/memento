@@ -24,13 +24,8 @@ type fakeDatabase struct {
 	calls  []databaseCall
 }
 
-func (db *fakeDatabase) Start(context.Context, Environment) error {
-	db.calls = append(db.calls, databaseCall{operation: "start"})
-	return nil
-}
-
-func (db *fakeDatabase) RequireRunning(context.Context, Environment) error {
-	db.calls = append(db.calls, databaseCall{operation: "require-running"})
+func (db *fakeDatabase) Ensure(context.Context, Environment) error {
+	db.calls = append(db.calls, databaseCall{operation: "ensure"})
 	return nil
 }
 
@@ -134,7 +129,7 @@ func TestSetupMainStartsPostgresAndPreservesExistingData(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
 	assert.Equal(t, []databaseCall{
-		{operation: "start"},
+		{operation: "ensure"},
 		{operation: "exists", target: "memento"},
 		{operation: "migrate", target: "memento"},
 	}, db.calls)
@@ -151,7 +146,7 @@ func TestSetupLinkedWorktreeClonesMissingDataFromMain(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
 	assert.Equal(t, []databaseCall{
-		{operation: "require-running"},
+		{operation: "ensure"},
 		{operation: "exists", target: env.CurrentDatabase},
 		{operation: "exists", target: "memento"},
 		{operation: "clone", source: "memento", target: env.CurrentDatabase},
@@ -170,10 +165,85 @@ func TestSetupLinkedWorktreeDoesNotReplaceExistingData(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
 	assert.Equal(t, []databaseCall{
-		{operation: "require-running"},
+		{operation: "ensure"},
 		{operation: "exists", target: env.CurrentDatabase},
 		{operation: "migrate", target: env.CurrentDatabase},
 	}, db.calls)
+}
+
+func TestSetupLinkedWorktreeStartsEmptyWithoutMainData(t *testing.T) {
+	t.Parallel()
+
+	mainRoot := t.TempDir()
+	currentRoot := t.TempDir()
+	env := testEnvironment(mainRoot, currentRoot)
+	db := &fakeDatabase{exists: map[string]bool{}}
+	app := testApp(env, db)
+
+	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
+	assert.Equal(t, []databaseCall{
+		{operation: "ensure"},
+		{operation: "exists", target: env.CurrentDatabase},
+		{operation: "exists", target: "memento"},
+		{operation: "create", target: env.CurrentDatabase},
+		{operation: "migrate", target: env.CurrentDatabase},
+	}, db.calls)
+}
+
+func TestSetupMainCreatesMissingDatabase(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	env := testEnvironment(root, root)
+	db := &fakeDatabase{exists: map[string]bool{}}
+	app := testApp(env, db)
+
+	require.NoError(t, app.Run(context.Background(), []string{"setup"}))
+	assert.Equal(t, []databaseCall{
+		{operation: "ensure"},
+		{operation: "exists", target: "memento"},
+		{operation: "create", target: "memento"},
+		{operation: "migrate", target: "memento"},
+	}, db.calls)
+}
+
+func TestParsePublishedPort(t *testing.T) {
+	t.Parallel()
+
+	for output, want := range map[string]int{
+		"127.0.0.1:5433\n":          5433,
+		"[::]:5434\n0.0.0.0:5434\n": 5434,
+	} {
+		port, err := parsePublishedPort(output)
+		require.NoError(t, err, output)
+		assert.Equal(t, want, port, output)
+	}
+	for _, output := range []string{"", "no port", "127.0.0.1:0", "127.0.0.1:99999"} {
+		_, err := parsePublishedPort(output)
+		assert.Error(t, err, output)
+	}
+}
+
+func TestLockFileWaitsForTheHolder(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "tmp", "database.lock")
+	unlock, err := lockFile(context.Background(), path, func() { t.Error("the first holder should not wait") })
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waits := 0
+	_, err = lockFile(ctx, path, func() {
+		waits++
+		cancel()
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, waits, "a blocked caller says it is waiting once")
+
+	unlock()
+	again, err := lockFile(context.Background(), path, func() { t.Error("a released lock should not wait") })
+	require.NoError(t, err)
+	again()
 }
 
 func TestCloneToMainAlwaysRequiresConfirmation(t *testing.T) {
@@ -234,7 +304,7 @@ func TestResetRecreatesCurrentDatabaseAfterConfirmation(t *testing.T) {
 
 	require.NoError(t, app.Run(context.Background(), []string{"db", "reset"}))
 	assert.Equal(t, []databaseCall{
-		{operation: "require-running"},
+		{operation: "ensure"},
 		{operation: "exists", target: env.CurrentDatabase},
 		{operation: "reset", target: env.CurrentDatabase},
 		{operation: "migrate", target: env.CurrentDatabase},
@@ -431,11 +501,15 @@ func TestStartMobileNeedsTheDevelopmentServers(t *testing.T) {
 }
 
 func testEnvironment(mainRoot, currentRoot string) Environment {
+	currentDatabase := "memento_feature_12345678"
+	if mainRoot == currentRoot {
+		currentDatabase = "memento"
+	}
 	return Environment{
 		MainRoot:        mainRoot,
 		CurrentRoot:     currentRoot,
 		MainDatabase:    "memento",
-		CurrentDatabase: "memento_feature_12345678",
+		CurrentDatabase: currentDatabase,
 		PostgresPort:    5432,
 		ProjectName:     "memento_test",
 	}

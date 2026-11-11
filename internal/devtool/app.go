@@ -42,8 +42,8 @@ func (e Environment) DatabaseURL(name string) string {
 
 // DatabaseManager owns the shared PostgreSQL process and its worktree databases.
 type DatabaseManager interface {
-	Start(context.Context, Environment) error
-	RequireRunning(context.Context, Environment) error
+	// Ensure starts the shared PostgreSQL unless it is already running.
+	Ensure(context.Context, Environment) error
 	Exists(context.Context, Environment, string) (bool, error)
 	Create(context.Context, Environment, string) error
 	Clone(context.Context, Environment, string, string) error
@@ -96,7 +96,7 @@ func NewApp() *App {
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,
 		Resolve:   ResolveEnvironment,
-		Database:  &DockerDatabase{},
+		Database:  &DockerDatabase{Stdout: os.Stdout},
 		Ports:     &FilePortAllocator{},
 		Processes: &OSProcesses{},
 
@@ -132,27 +132,11 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	}
 }
 
+// setup gives this worktree a migrated database. A linked worktree's first
+// database is copied from the main worktree's when that exists, and starts
+// empty otherwise. An existing database is only migrated.
 func (a *App) setup(ctx context.Context, env Environment) error {
-	if env.IsMain() {
-		if err := a.Database.Start(ctx, env); err != nil {
-			return err
-		}
-		exists, err := a.Database.Exists(ctx, env, env.MainDatabase)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			if err := a.Database.Create(ctx, env, env.MainDatabase); err != nil {
-				return err
-			}
-		}
-		if err := a.Database.Migrate(ctx, env, env.MainDatabase); err != nil {
-			return err
-		}
-		return a.printf("Main worktree is ready with database %s.\n", env.MainDatabase)
-	}
-
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
 	exists, err := a.Database.Exists(ctx, env, env.CurrentDatabase)
@@ -160,15 +144,22 @@ func (a *App) setup(ctx context.Context, env Environment) error {
 		return err
 	}
 	if !exists {
-		mainExists, err := a.Database.Exists(ctx, env, env.MainDatabase)
-		if err != nil {
+		mainExists := false
+		if !env.IsMain() {
+			mainExists, err = a.Database.Exists(ctx, env, env.MainDatabase)
+			if err != nil {
+				return err
+			}
+		}
+		if mainExists {
+			if err := a.printf("Copying the main worktree's database into %s...\n", env.CurrentDatabase); err != nil {
+				return err
+			}
+			if err := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase); err != nil {
+				return fmt.Errorf("clone main database: %w", err)
+			}
+		} else if err := a.Database.Create(ctx, env, env.CurrentDatabase); err != nil {
 			return err
-		}
-		if !mainExists {
-			return fmt.Errorf("main database %s does not exist; run mise setup in %s", env.MainDatabase, env.MainRoot)
-		}
-		if err := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase); err != nil {
-			return fmt.Errorf("clone main database: %w", err)
 		}
 	}
 	if err := a.Database.Migrate(ctx, env, env.CurrentDatabase); err != nil {
@@ -188,7 +179,7 @@ func (a *App) clone(ctx context.Context, env Environment, args []string) error {
 	if env.IsMain() {
 		return errors.New("clone must be run from a linked worktree")
 	}
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
 
@@ -227,7 +218,7 @@ func (a *App) database(ctx context.Context, env Environment, args []string) erro
 	if len(args) != 1 {
 		return errors.New("database command must be migrate, reset, or rollback")
 	}
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
 
@@ -274,7 +265,7 @@ func (a *App) start(ctx context.Context, env Environment, args []string) error {
 		return fmt.Errorf("unknown start mode %q", mode)
 	}
 	if mode != "web" {
-		if err := a.Database.RequireRunning(ctx, env); err != nil {
+		if err := a.Database.Ensure(ctx, env); err != nil {
 			return err
 		}
 	}

@@ -533,42 +533,34 @@ Install `ffmpeg` as well (`brew install ffmpeg` on macOS, `apt install ffmpeg`
 on Debian and Ubuntu). Memento runs its `ffprobe` binary to read video
 chapters, and the adapter tests and browser tests skip or fail without it.
 
-## Set up the main worktree
+## Set up a worktree
 
-Run setup from the main Git worktree first:
+Run setup in the main Git worktree and in each linked worktree, in any order:
 
 ```sh
 mise setup
 ```
 
 This command installs the pinned tools, JavaScript dependencies, Chromium,
-Firefox, and WebKit. It starts PostgreSQL with Docker Compose, creates a
-database named after the repository if needed, runs migrations, and generates
+Firefox, and WebKit, gives the worktree a migrated database, and generates
 TypeScript types.
 
 PostgreSQL is shared by every worktree, but each worktree receives a separate
-database. Shared PostgreSQL data lives in a Docker volume owned by the main
-worktree's Compose project, so `docker compose down --volumes` deletes it. Its
-selected host port is stored in `tmp/database.env`. Setup prefers port
-`5432` and uses the next available port when necessary.
+database. The main worktree's database is named after the repository. A linked
+worktree's first setup clones the main database, or creates an empty one when
+the main worktree has no database yet. Later setup runs preserve an existing
+worktree database. Linked worktree database names use the repository name,
+worktree directory, and a path hash.
 
-Only setup in the main worktree starts PostgreSQL. Do not run `docker compose
+Shared PostgreSQL data lives in a Docker volume owned by the main worktree's
+Compose project, so `docker compose down --volumes` deletes it. Its selected
+host port is stored in the main worktree's `tmp/database.env`. PostgreSQL
+prefers port `5432` and uses the next available port when necessary.
+
+Setup, `mise clone`, `mise db:migrate`, `mise db:rollback`, `mise db:reset`,
+and every `mise start` mode that runs the API start the PostgreSQL container
+from any worktree when it is not already running. Do not run `docker compose
 down` while another worktree is using the database.
-
-## Set up a linked worktree
-
-Run the same command after creating a linked worktree:
-
-```sh
-mise setup
-```
-
-Linked-worktree setup requires the PostgreSQL container started by the main
-worktree. The first setup clones the main database into the linked worktree.
-Later setup runs preserve an existing worktree database.
-
-Worktree database names use the repository name, worktree directory, and a path
-hash.
 
 ## Start development
 

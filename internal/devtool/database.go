@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/robinjoseph08/memento/pkg/config"
@@ -20,20 +22,55 @@ import (
 )
 
 // DockerDatabase manages PostgreSQL through the main worktree's Compose service.
-type DockerDatabase struct{}
+type DockerDatabase struct {
+	// Stdout receives progress messages, like when the container is started.
+	Stdout io.Writer
+}
 
-func (d *DockerDatabase) Start(ctx context.Context, env Environment) error {
-	if !env.IsMain() {
-		return errors.New("the shared PostgreSQL container may only be started from the main worktree")
-	}
-	if err := os.MkdirAll(filepath.Join(env.MainRoot, "tmp", "ports"), 0o755); err != nil {
-		return fmt.Errorf("create port lock directory: %w", err)
-	}
-	if err := d.preparePostgresEnvironment(ctx, env); err != nil {
+// Ensure starts the shared PostgreSQL container unless it is already running.
+// Any worktree may call it, since the Compose project is always the main
+// worktree's. A file lock keeps worktrees from starting it at the same time.
+func (d *DockerDatabase) Ensure(ctx context.Context, env Environment) error {
+	unlock, err := lockFile(ctx, filepath.Join(env.MainRoot, "tmp", "database.lock"), func() {
+		d.printf("Waiting for another worktree to finish starting PostgreSQL...\n")
+	})
+	if err != nil {
 		return err
+	}
+	defer unlock()
+
+	// A running container is the source of truth for its port, so a lost or
+	// stale tmp/database.env can't move it while it starts up or point
+	// connections at some other PostgreSQL.
+	published, running, err := d.publishedPort(ctx, env)
+	if err != nil {
+		return err
+	}
+	if running {
+		recorded, err := readPostgresPort(env.MainRoot)
+		if err != nil || recorded != published {
+			if err := writePostgresPort(env.MainRoot, published); err != nil {
+				return err
+			}
+		}
+		if d.postgresReady(ctx, env) {
+			return nil
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Join(env.MainRoot, "tmp", "ports"), 0o755); err != nil {
+			return fmt.Errorf("create port lock directory: %w", err)
+		}
+		if err := preparePostgresEnvironment(env); err != nil {
+			return err
+		}
 	}
 
 	for attempt := range 10 {
+		port, err := readPostgresPort(env.MainRoot)
+		if err != nil {
+			return err
+		}
+		d.printf("Starting PostgreSQL on port %d...\n", port)
 		command, err := d.composeCommand(ctx, env, "up", "-d", "--wait", "postgres")
 		if err != nil {
 			return err
@@ -42,9 +79,8 @@ func (d *DockerDatabase) Start(ctx context.Context, env Environment) error {
 		if startErr == nil {
 			return nil
 		}
-		port, err := readPostgresPort(env.MainRoot)
-		if err != nil {
-			return err
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if !postgresPortConflict(output) || attempt == 9 {
 			return fmt.Errorf("start PostgreSQL: %w: %s", startErr, strings.TrimSpace(string(output)))
@@ -63,23 +99,6 @@ func (d *DockerDatabase) Start(ctx context.Context, env Environment) error {
 func postgresPortConflict(output []byte) bool {
 	message := strings.ToLower(string(output))
 	return strings.Contains(message, "port is already allocated") || strings.Contains(message, "address already in use")
-}
-
-func (d *DockerDatabase) RequireRunning(ctx context.Context, env Environment) error {
-	if _, err := os.Stat(postgresEnvironmentPath(env.MainRoot)); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("PostgreSQL is not configured; run mise setup in the main worktree at %s", env.MainRoot)
-		}
-		return fmt.Errorf("read PostgreSQL configuration: %w", err)
-	}
-	command, err := d.composeCommand(ctx, env, "exec", "-T", "postgres", "pg_isready", "-U", "postgres")
-	if err != nil {
-		return err
-	}
-	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("PostgreSQL is not running; run mise setup in the main worktree at %s: %w: %s", env.MainRoot, err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }
 
 func (d *DockerDatabase) Exists(ctx context.Context, env Environment, name string) (bool, error) {
@@ -312,7 +331,10 @@ func (d *DockerDatabase) composeCommand(ctx context.Context, env Environment, ar
 	return command, nil
 }
 
-func (d *DockerDatabase) preparePostgresEnvironment(ctx context.Context, env Environment) error {
+// preparePostgresEnvironment picks the port for a container that is about to
+// start: the recorded one while it is free, otherwise the first free one from
+// 5432.
+func preparePostgresEnvironment(env Environment) error {
 	path := postgresEnvironmentPath(env.MainRoot)
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		port, portErr := firstAvailablePort(5432)
@@ -328,11 +350,7 @@ func (d *DockerDatabase) preparePostgresEnvironment(ctx context.Context, env Env
 	if err != nil {
 		return err
 	}
-	running, err := d.postgresRunning(ctx, env)
-	if err != nil {
-		return err
-	}
-	if running || portAvailable(port) {
+	if portAvailable(port) {
 		return nil
 	}
 	nextPort, err := firstAvailablePort(5432)
@@ -342,15 +360,102 @@ func (d *DockerDatabase) preparePostgresEnvironment(ctx context.Context, env Env
 	return writePostgresPort(env.MainRoot, nextPort)
 }
 
-func (d *DockerDatabase) postgresRunning(ctx context.Context, env Environment) (bool, error) {
+// publishedPort reports the host port of the PostgreSQL container, and
+// whether the container is running at all.
+func (d *DockerDatabase) publishedPort(ctx context.Context, env Environment) (int, bool, error) {
+	command, err := d.composeCommand(ctx, env, "ps", "--status", "running", "--quiet", "postgres")
+	if err != nil {
+		return 0, false, err
+	}
+	output, err := command.Output()
+	if err != nil {
+		return 0, false, fmt.Errorf("check PostgreSQL container: %w", err)
+	}
+	if strings.TrimSpace(string(output)) == "" {
+		return 0, false, nil
+	}
+	command, err = d.composeCommand(ctx, env, "port", "postgres", "5432")
+	if err != nil {
+		return 0, false, err
+	}
+	output, err = command.Output()
+	if err != nil {
+		return 0, false, fmt.Errorf("find PostgreSQL port: %w", err)
+	}
+	port, err := parsePublishedPort(string(output))
+	if err != nil {
+		return 0, false, err
+	}
+	return port, true, nil
+}
+
+// parsePublishedPort reads the port from `docker compose port` output, like
+// "127.0.0.1:5433". The first line is enough, and IPv6 forms like
+// "[::]:5433" work too.
+func parsePublishedPort(output string) (int, error) {
+	line, _, _ := strings.Cut(strings.TrimSpace(output), "\n")
+	index := strings.LastIndex(line, ":")
+	if index < 0 {
+		return 0, fmt.Errorf("unexpected docker compose port output %q", output)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(line[index+1:]))
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("unexpected docker compose port output %q", output)
+	}
+	return port, nil
+}
+
+// postgresReady reports whether a running container accepts connections. Any
+// failure counts as not ready, and compose up then waits for it.
+func (d *DockerDatabase) postgresReady(ctx context.Context, env Environment) bool {
 	command, err := d.composeCommand(ctx, env, "exec", "-T", "postgres", "pg_isready", "-U", "postgres")
 	if err != nil {
-		return false, err
+		return false
 	}
-	if err := command.Run(); err != nil {
-		return false, nil
+	return command.Run() == nil
+}
+
+func (d *DockerDatabase) printf(format string, values ...any) {
+	if d.Stdout != nil {
+		_, _ = fmt.Fprintf(d.Stdout, format, values...)
 	}
-	return true, nil
+}
+
+// lockFile holds an exclusive lock on path until the returned function is
+// called, calling onWait once if another process holds it first.
+func lockFile(ctx context.Context, path string, onWait func()) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create lock directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock %s: %w", path, err)
+	}
+	waited := false
+	for {
+		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = file.Close()
+			return nil, fmt.Errorf("lock %s: %w", path, err)
+		}
+		if !waited {
+			onWait()
+			waited = true
+		}
+		select {
+		case <-ctx.Done():
+			_ = file.Close()
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return func() {
+		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+		_ = file.Close()
+	}, nil
 }
 
 func writePostgresPort(mainRoot string, port int) error {
