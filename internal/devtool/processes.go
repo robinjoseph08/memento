@@ -94,17 +94,26 @@ func requireMemento(ctx context.Context, installationURL string) error {
 
 func (p *OSProcesses) E2E(ctx context.Context, env Environment, project string, webPort int) error {
 	childEnv := webEnvironment(webPort)
-	if os.Getenv("TEST_DATABASE_URL") == "" {
-		if os.Getenv("CI") == "true" {
-			return errors.New("TEST_DATABASE_URL is required in CI")
+	if localTestDatabase() {
+		url, err := env.DatabaseURL(env.CurrentDatabase)
+		if err != nil {
+			return err
 		}
-		childEnv = append(childEnv, "TEST_DATABASE_URL="+env.DatabaseURL(env.CurrentDatabase))
+		childEnv = append(childEnv, "TEST_DATABASE_URL="+url)
+	} else if os.Getenv("TEST_DATABASE_URL") == "" {
+		return errors.New("TEST_DATABASE_URL is required in CI")
 	}
 	args := []string{"exec", "playwright", "test"}
 	if project != "" {
 		args = append(args, "--project="+project)
 	}
 	return runSingleProcess(ctx, env.CurrentRoot, childEnv, "pnpm", args...)
+}
+
+// localTestDatabase reports whether browser tests use this worktree's
+// database. TEST_DATABASE_URL points them elsewhere, and CI must set it.
+func localTestDatabase() bool {
+	return os.Getenv("TEST_DATABASE_URL") == "" && os.Getenv("CI") != "true"
 }
 
 func webEnvironment(webPort int) []string {
@@ -116,13 +125,13 @@ func webEnvironment(webPort int) []string {
 }
 
 func developmentEnvironment(env Environment, apiPort, webPort int) ([]string, error) {
-	port, err := readPostgresPort(env.MainRoot)
+	url, err := env.DatabaseURL(env.CurrentDatabase)
 	if err != nil {
 		return nil, err
 	}
 	values := append([]string{}, os.Environ()...)
 	values = append(values,
-		"DATABASE_URL="+fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, env.CurrentDatabase),
+		"DATABASE_URL="+url,
 		"CONFIG_FILE="+filepath.Join(env.CurrentRoot, "app.dev.yaml"),
 		"COOKIE_NAMESPACE="+env.CurrentDatabase,
 	)

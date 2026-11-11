@@ -50,7 +50,8 @@ func TestE2EDatabaseEnvironment(t *testing.T) {
 	t.Setenv("E2E_TEST_OUTPUT", output)
 	t.Setenv("TEST_DATABASE_URL", "")
 	t.Setenv("CI", "")
-	env := Environment{CurrentRoot: root, CurrentDatabase: "memento_worktree", PostgresPort: 5544}
+	require.NoError(t, writePostgresPort(root, 5544))
+	env := Environment{MainRoot: root, CurrentRoot: root, CurrentDatabase: "memento_worktree"}
 	processes := &OSProcesses{}
 	require.NoError(t, processes.E2E(context.Background(), env, "chromium", 5177))
 	actual, err := os.ReadFile(output)

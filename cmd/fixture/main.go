@@ -47,7 +47,10 @@ func run(ctx context.Context, binary string, offline, withSMTP bool) error {
 		if err != nil {
 			return fmt.Errorf("set TEST_DATABASE_URL or run mise setup: %w", err)
 		}
-		baseURL = environment.DatabaseURL(environment.MainDatabase)
+		baseURL, err = environment.DatabaseURL(environment.MainDatabase)
+		if err != nil {
+			return fmt.Errorf("set TEST_DATABASE_URL or run mise setup: %w", err)
+		}
 	}
 	setupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

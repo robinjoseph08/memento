@@ -28,7 +28,6 @@ type Environment struct {
 	CurrentRoot     string
 	MainDatabase    string
 	CurrentDatabase string
-	PostgresPort    int
 	ProjectName     string
 }
 
@@ -36,14 +35,20 @@ func (e Environment) IsMain() bool {
 	return samePath(e.MainRoot, e.CurrentRoot)
 }
 
-func (e Environment) DatabaseURL(name string) string {
-	return fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", e.PostgresPort, name)
+// DatabaseURL connects to a database in the shared PostgreSQL, at the port
+// recorded in the main worktree's tmp/database.env.
+func (e Environment) DatabaseURL(name string) (string, error) {
+	port, err := readPostgresPort(e.MainRoot)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, name), nil
 }
 
 // DatabaseManager owns the shared PostgreSQL process and its worktree databases.
 type DatabaseManager interface {
-	Start(context.Context, Environment) error
-	RequireRunning(context.Context, Environment) error
+	// Ensure starts the shared PostgreSQL unless it is already running.
+	Ensure(context.Context, Environment) error
 	Exists(context.Context, Environment, string) (bool, error)
 	Create(context.Context, Environment, string) error
 	Clone(context.Context, Environment, string, string) error
@@ -96,7 +101,7 @@ func NewApp() *App {
 		Stdout:    os.Stdout,
 		Stderr:    os.Stderr,
 		Resolve:   ResolveEnvironment,
-		Database:  &DockerDatabase{},
+		Database:  &DockerDatabase{Stdout: os.Stdout},
 		Ports:     &FilePortAllocator{},
 		Processes: &OSProcesses{},
 
@@ -133,48 +138,44 @@ func (a *App) Run(ctx context.Context, args []string) error {
 }
 
 func (a *App) setup(ctx context.Context, env Environment) error {
-	if env.IsMain() {
-		if err := a.Database.Start(ctx, env); err != nil {
-			return err
-		}
-		exists, err := a.Database.Exists(ctx, env, env.MainDatabase)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			if err := a.Database.Create(ctx, env, env.MainDatabase); err != nil {
-				return err
-			}
-		}
-		if err := a.Database.Migrate(ctx, env, env.MainDatabase); err != nil {
-			return err
-		}
-		return a.printf("Main worktree is ready with database %s.\n", env.MainDatabase)
-	}
-
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
-	exists, err := a.Database.Exists(ctx, env, env.CurrentDatabase)
-	if err != nil {
+	if err := a.createWorktreeDatabase(ctx, env); err != nil {
 		return err
-	}
-	if !exists {
-		mainExists, err := a.Database.Exists(ctx, env, env.MainDatabase)
-		if err != nil {
-			return err
-		}
-		if !mainExists {
-			return fmt.Errorf("main database %s does not exist; run mise setup in %s", env.MainDatabase, env.MainRoot)
-		}
-		if err := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase); err != nil {
-			return fmt.Errorf("clone main database: %w", err)
-		}
 	}
 	if err := a.Database.Migrate(ctx, env, env.CurrentDatabase); err != nil {
 		return err
 	}
 	return a.printf("Worktree is ready with database %s.\n", env.CurrentDatabase)
+}
+
+// createWorktreeDatabase creates this worktree's database the first time a
+// command needs it. A linked worktree's database is copied from the main
+// worktree's when that exists, and starts empty otherwise. It leaves
+// migrating to the caller.
+func (a *App) createWorktreeDatabase(ctx context.Context, env Environment) error {
+	exists, err := a.Database.Exists(ctx, env, env.CurrentDatabase)
+	if err != nil || exists {
+		return err
+	}
+	mainExists := false
+	if !env.IsMain() {
+		mainExists, err = a.Database.Exists(ctx, env, env.MainDatabase)
+		if err != nil {
+			return err
+		}
+	}
+	if !mainExists {
+		return a.Database.Create(ctx, env, env.CurrentDatabase)
+	}
+	if err := a.printf("Copying the main worktree's database into %s...\n", env.CurrentDatabase); err != nil {
+		return err
+	}
+	if err := a.Database.Clone(ctx, env, env.MainDatabase, env.CurrentDatabase); err != nil {
+		return fmt.Errorf("clone main database: %w", err)
+	}
+	return nil
 }
 
 func (a *App) clone(ctx context.Context, env Environment, args []string) error {
@@ -188,7 +189,7 @@ func (a *App) clone(ctx context.Context, env Environment, args []string) error {
 	if env.IsMain() {
 		return errors.New("clone must be run from a linked worktree")
 	}
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
 
@@ -227,12 +228,15 @@ func (a *App) database(ctx context.Context, env Environment, args []string) erro
 	if len(args) != 1 {
 		return errors.New("database command must be migrate, reset, or rollback")
 	}
-	if err := a.Database.RequireRunning(ctx, env); err != nil {
+	if err := a.Database.Ensure(ctx, env); err != nil {
 		return err
 	}
 
 	switch args[0] {
 	case "migrate":
+		if err := a.createWorktreeDatabase(ctx, env); err != nil {
+			return err
+		}
 		return a.Database.Migrate(ctx, env, env.CurrentDatabase)
 	case "rollback":
 		return a.Database.Rollback(ctx, env, env.CurrentDatabase)
@@ -273,8 +277,12 @@ func (a *App) start(ctx context.Context, env Environment, args []string) error {
 	if mode != "all" && mode != "air" && mode != "api" && mode != "web" {
 		return fmt.Errorf("unknown start mode %q", mode)
 	}
+	// The API migrates its database when it starts.
 	if mode != "web" {
-		if err := a.Database.RequireRunning(ctx, env); err != nil {
+		if err := a.Database.Ensure(ctx, env); err != nil {
+			return err
+		}
+		if err := a.createWorktreeDatabase(ctx, env); err != nil {
 			return err
 		}
 	}
@@ -397,6 +405,15 @@ func (a *App) e2e(ctx context.Context, env Environment, args []string) error {
 	}
 	if len(args) == 1 {
 		project = args[0]
+	}
+	// Browser tests make their own schemas inside this worktree's database.
+	if localTestDatabase() {
+		if err := a.Database.Ensure(ctx, env); err != nil {
+			return err
+		}
+		if err := a.createWorktreeDatabase(ctx, env); err != nil {
+			return err
+		}
 	}
 	lease, err := a.Ports.Acquire(defaultWebPort)
 	if err != nil {
