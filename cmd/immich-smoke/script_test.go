@@ -44,6 +44,8 @@ func TestSmokeScriptSelection(t *testing.T) {
 		args                   []string
 		badChecksum            bool
 		goFailure              bool
+		pullFailures           int
+		phase                  string
 	}{
 		{name: "default", release: "v3.4.1"},
 		{name: "previous minor", release: "v3.3.6", args: []string{"--version", "v3.3.6"}},
@@ -54,7 +56,9 @@ func TestSmokeScriptSelection(t *testing.T) {
 		{name: "probe", release: "v3.5.0", args: []string{"--version", "v3.5.0", "--probe"}},
 		{name: "ML", release: "v3.4.1", args: []string{"--ml"}},
 		{name: "permission diagnostic", release: "v3.4.1", args: []string{"--permission-failure", "asset.read"}},
-		{name: "failed smoke retains evidence", release: "v3.4.1", goFailure: true, failure: "fixture failed"},
+		{name: "failed smoke retains evidence", release: "v3.4.1", goFailure: true, failure: "fixture failed", phase: "test"},
+		{name: "image pull retried", release: "v3.4.1", pullFailures: 2, phase: "complete"},
+		{name: "image pull exhausted", release: "v3.4.1", pullFailures: 3, failure: "toomanyrequests", phase: "pull"},
 		{name: "missing", args: []string{"--version"}, failure: "Missing value"},
 		{name: "unknown", args: []string{"--other"}, failure: "Unknown argument"},
 		{name: "checksum", release: "v3.3.6", args: []string{"--version", "v3.3.6"}, badChecksum: true, failure: "checksum mismatch"},
@@ -82,6 +86,11 @@ case "${0##*/}" in
     else printf 'unpinned  compose.yaml\n'; fi
     ;;
   docker)
+    if [[ "$*" == *' pull --quiet --include-deps '* ]]; then
+      pulls=$(( $(cat "$SMOKE_TEST_LOG.pulls" 2>/dev/null || echo 0) + 1 ))
+      printf '%s' "$pulls" > "$SMOKE_TEST_LOG.pulls"
+      (( pulls > SMOKE_TEST_PULL_FAILURES )) || { printf 'toomanyrequests\n'; exit 1; }
+    fi
     if [[ "$*" == *'up --detach'* && "$*" == *'immich-machine-learning'* ]]; then touch "$SMOKE_TEST_LOG.ml"; fi
     if [[ "$*" == *'down --timeout'* && "$*" == *'--profile ml'* ]]; then rm -f "$SMOKE_TEST_LOG.ml"; fi
     if [[ "$*" == *'port immich-server 2283'* ]]; then printf '127.0.0.1:12283\n'
@@ -103,7 +112,7 @@ case "${0##*/}" in
     ;;
 esac
 `
-			for _, tool := range []string{"docker", "curl", "go", "shasum"} {
+			for _, tool := range []string{"docker", "curl", "go", "shasum", "sleep"} {
 				require.NoError(t, os.WriteFile(filepath.Join(bin, tool), []byte(stub), 0o700))
 			}
 			args := append([]string{filepath.Join(root, "scripts", "immich-smoke.sh")}, test.args...)
@@ -114,6 +123,7 @@ esac
 			}
 			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "SMOKE_TEST_LOG="+log,
 				"SMOKE_TEST_BAD_CHECKSUM="+badChecksum, "SMOKE_TEST_GO_FAILURE="+strconv.FormatBool(test.goFailure),
+				"SMOKE_TEST_PULL_FAILURES="+strconv.Itoa(test.pullFailures),
 				"IMMICH_VERSION=operator-version", "UPLOAD_LOCATION=/operator/photos")
 			output, err := cmd.CombinedOutput()
 			if test.failure != "" {
@@ -130,8 +140,10 @@ esac
 			}
 			require.NoError(t, readErr)
 			text := string(calls)
+			// Setup failures stop before any container starts or check runs.
+			setupFailed := test.badChecksum || test.pullFailures >= 3
 			require.Contains(t, text, "https://github.com/immich-app/immich/releases/download/"+test.release+"/docker-compose.yml")
-			if test.badChecksum {
+			if setupFailed {
 				require.NotContains(t, text, "up --detach")
 				require.NotContains(t, text, "go|run")
 			} else {
@@ -145,6 +157,10 @@ esac
 					require.Contains(t, text, "immich-server memento-db immich-machine-learning|")
 					_, err := os.Stat(log + ".ml")
 					require.ErrorIs(t, err, os.ErrNotExist, "cleanup must remove the profiled ML service")
+				}
+				if test.name == "image pull retried" {
+					require.Contains(t, text, "sleep|30|")
+					require.Contains(t, text, "sleep|60|")
 				}
 				if test.name == "permission diagnostic" {
 					require.Contains(t, text, " --permission-failure asset.read|")
@@ -163,7 +179,7 @@ esac
 					request, err := os.ReadFile(filepath.Join(work, "artifacts", "request.txt"))
 					require.NoError(t, err)
 					require.Contains(t, string(request), "requested_version="+test.release)
-					if !test.badChecksum {
+					if !setupFailed {
 						for _, name := range []string{"run.log", "compose.log"} {
 							log, err := os.ReadFile(filepath.Join(work, "artifacts", name))
 							require.NoError(t, err)
@@ -180,6 +196,9 @@ esac
 						require.Contains(t, string(result), "exit_code=0")
 					} else {
 						require.Contains(t, string(result), "exit_code=1")
+					}
+					if test.phase != "" {
+						require.Contains(t, string(result), "phase="+test.phase+"\n")
 					}
 				}
 			}
