@@ -60,7 +60,7 @@ needed.
 You need:
 
 - An Immich server on a supported release. Memento imports from **Immich
-  3.x up to 3.3.x**; 2.x does not work. See
+  3.x up to 3.4.x**; 2.x does not work. See
   [Immich imports](#immich-imports).
 - PostgreSQL 14 or newer. The steps below reuse Immich's PostgreSQL container
   with a separate database and role. A
@@ -321,14 +321,14 @@ Any PostgreSQL 14 or newer works. The password still goes inside
 
 ## Immich imports
 
-The import and synchronization gate allows stable Immich **3.x up to 3.3.x**.
-The two most recent minors, currently 3.2.x and 3.3.x, are tested; older 3.x
+The import and synchronization gate allows stable Immich **3.x up to 3.4.x**.
+The two most recent minors, currently 3.3.x and 3.4.x, are tested; older 3.x
 releases are allowed but no longer tested. Other versions, including 2.x and
 releases newer than the latest tested minor, still report their detected
 version during setup, but Memento blocks new imports and synchronization and
 shows a warning. Safe existing reads remain available when the source APIs
-work. The [release smoke test](#smoke-test-a-real-immich-release) tests v3.3.1
-and v3.2.4; this is not a claim that every patch in those minors has been
+work. The [release smoke test](#smoke-test-a-real-immich-release) tests v3.4.1
+and v3.3.6; this is not a claim that every patch in those minors has been
 certified.
 
 The API key from [step 2](#2-create-the-immich-api-key) needs only read
@@ -808,17 +808,17 @@ and Worker behavior. To run it locally against a disposable PostgreSQL 14:
 
 ```sh
 mise test:immich                         # pinned current release
-mise test:immich --version v3.2.4         # pinned previous minor
+mise test:immich --version v3.3.6         # pinned previous minor
 mise test:immich --version vX.Y.Z --probe # a new release outside the declared range
 ```
 
 This requires Docker Compose 2.24.4 or newer, `curl`, `shasum`, Python 3, and
 `ffprobe`. Budget 5 to 15 minutes per release after image downloads and enough
 Docker memory for Immich and two PostgreSQL containers. The default release is
-v3.3.1. `--version` accepts an exact stable tag, not a floating tag or prerelease.
+v3.4.1. `--version` accepts an exact stable tag, not a floating tag or prerelease.
 The script downloads the official Compose file and tagged image into a uniquely
 named disposable project. Official Compose SHA-256 checks are pinned for
-v3.3.1 and v3.2.4. Other exact releases can be tried without a pinned Compose
+v3.4.1 and v3.3.6. Other exact releases can be tried without a pinned Compose
 checksum. Running container image IDs and registry digests are recorded, rather
 than assuming a tag still resolves to the same image.
 The fixture checks the actual API version against the requested tag before writes.
@@ -871,7 +871,7 @@ fixture/reset command; each invocation creates new users, media, and databases.
 For an intentional permission failure or the separate slower recognition check:
 
 ```sh
-mise test:immich --version v3.2.4 --permission-failure asset.download
+mise test:immich --version v3.3.6 --permission-failure asset.download
 mise test:immich --ml
 ```
 
@@ -884,7 +884,7 @@ without checking model-specific identity, geometry, scores, or clustering. Budge
 ### Maintain the compatibility declaration
 
 Memento tests the two most recent stable Immich minors, with no exceptions.
-Each minor is represented by its latest patch: v3.3.1 and v3.2.4. The gate
+Each minor is represented by its latest patch: v3.4.1 and v3.3.6. The gate
 allows every 3.x release up to the newest tested minor, so older 3.x
 installations keep importing without being tested. When Immich ships a new
 minor, the tested pair moves up by one and the gate's upper bound follows.
@@ -915,7 +915,7 @@ Once the detector workflow is on the default branch, simulate either outcome
 without changing support:
 
 ```sh
-gh workflow run immich-release-detector.yml -f simulated_release=v3.3.1
+gh workflow run immich-release-detector.yml -f simulated_release=v3.4.1
 gh workflow run immich-release-detector.yml -f simulated_release=v2.7.5
 ```
 

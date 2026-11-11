@@ -19,16 +19,16 @@ func TestParseRelease(t *testing.T) {
 		args []string
 		want string
 	}{
-		{name: "default", want: "v3.3.1"},
-		{name: "previous minor", args: []string{"--version", "v3.2.4"}, want: "v3.2.4"},
+		{name: "default", want: "v3.4.1"},
+		{name: "previous minor", args: []string{"--version", "v3.3.6"}, want: "v3.3.6"},
 		{name: "floating", args: []string{"--version", "release"}},
 		{name: "missing value", args: []string{"--version"}},
 		{name: "empty", args: []string{"--version", ""}},
-		{name: "prerelease", args: []string{"--version", "v3.3.0-rc.1"}},
-		{name: "build metadata", args: []string{"--version", "v3.3.0+build"}},
+		{name: "prerelease", args: []string{"--version", "v3.4.0-rc.1"}},
+		{name: "build metadata", args: []string{"--version", "v3.4.0+build"}},
 		{name: "leading zero", args: []string{"--version", "v3.01.0"}},
-		{name: "positional", args: []string{"v3.2.4"}},
-		{name: "unknown flag", args: []string{"--release", "v3.2.4"}},
+		{name: "positional", args: []string{"v3.3.6"}},
+		{name: "unknown flag", args: []string{"--release", "v3.3.6"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -45,10 +45,10 @@ func TestParseRelease(t *testing.T) {
 
 func TestProbeOptions(t *testing.T) {
 	t.Parallel()
-	options, err := parseOptions([]string{"--version", "v3.4.0", "--probe", "--openapi", "contract.json"})
+	options, err := parseOptions([]string{"--version", "v3.5.0", "--probe", "--openapi", "contract.json"})
 	require.NoError(t, err)
 	require.True(t, options.Probe)
-	require.Equal(t, "v3.4.0", options.Release)
+	require.Equal(t, "v3.5.0", options.Release)
 	require.Equal(t, "contract.json", options.OpenAPI)
 }
 
