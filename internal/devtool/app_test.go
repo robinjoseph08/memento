@@ -328,6 +328,77 @@ func TestStartUsesPortsSelectedAtRuntime(t *testing.T) {
 	assert.Equal(t, 5174, processes.webPort)
 }
 
+func TestStartCreatesAFreshWorktreeDatabaseWithoutMigrating(t *testing.T) {
+	t.Parallel()
+
+	mainRoot := t.TempDir()
+	env := testEnvironment(mainRoot, t.TempDir())
+	db := &fakeDatabase{exists: map[string]bool{"memento": true}}
+	app := testApp(env, db)
+
+	require.NoError(t, app.Run(context.Background(), []string{"start", "api"}))
+	assert.Equal(t, []databaseCall{
+		{operation: "ensure"},
+		{operation: "exists", target: env.CurrentDatabase},
+		{operation: "exists", target: "memento"},
+		{operation: "clone", source: "memento", target: env.CurrentDatabase},
+	}, db.calls, "the API migrates its own database when it starts")
+}
+
+func TestStartWebLeavesTheDatabaseAlone(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	db := &fakeDatabase{exists: map[string]bool{}}
+	app := testApp(testEnvironment(root, root), db)
+
+	require.NoError(t, app.Run(context.Background(), []string{"start", "web"}))
+	assert.Empty(t, db.calls)
+}
+
+func TestMigrateCreatesAFreshWorktreeDatabase(t *testing.T) {
+	t.Parallel()
+
+	env := testEnvironment(t.TempDir(), t.TempDir())
+	db := &fakeDatabase{exists: map[string]bool{}}
+	app := testApp(env, db)
+
+	require.NoError(t, app.Run(context.Background(), []string{"db", "migrate"}))
+	assert.Equal(t, []databaseCall{
+		{operation: "ensure"},
+		{operation: "exists", target: env.CurrentDatabase},
+		{operation: "exists", target: "memento"},
+		{operation: "create", target: env.CurrentDatabase},
+		{operation: "migrate", target: env.CurrentDatabase},
+	}, db.calls)
+}
+
+func TestE2EPreparesTheWorktreeDatabaseUnlessOverridden(t *testing.T) {
+	root := t.TempDir()
+	env := testEnvironment(root, root)
+
+	t.Setenv("CI", "")
+	t.Setenv("TEST_DATABASE_URL", "")
+	db := &fakeDatabase{exists: map[string]bool{}}
+	require.NoError(t, testApp(env, db).Run(context.Background(), []string{"e2e"}))
+	assert.Equal(t, []databaseCall{
+		{operation: "ensure"},
+		{operation: "exists", target: "memento"},
+		{operation: "create", target: "memento"},
+	}, db.calls)
+
+	t.Setenv("TEST_DATABASE_URL", "postgres://qa:password@localhost:5545/memento_test")
+	db = &fakeDatabase{exists: map[string]bool{}}
+	require.NoError(t, testApp(env, db).Run(context.Background(), []string{"e2e"}))
+	assert.Empty(t, db.calls, "an overridden test database is someone else's to run")
+
+	t.Setenv("CI", "true")
+	t.Setenv("TEST_DATABASE_URL", "")
+	db = &fakeDatabase{exists: map[string]bool{}}
+	require.NoError(t, testApp(env, db).Run(context.Background(), []string{"e2e"}))
+	assert.Empty(t, db.calls, "CI has no Compose PostgreSQL to start")
+}
+
 func TestPreviewEmailUsesPortsSelectedAtRuntime(t *testing.T) {
 	t.Parallel()
 
@@ -510,7 +581,6 @@ func testEnvironment(mainRoot, currentRoot string) Environment {
 		CurrentRoot:     currentRoot,
 		MainDatabase:    "memento",
 		CurrentDatabase: currentDatabase,
-		PostgresPort:    5432,
 		ProjectName:     "memento_test",
 	}
 }

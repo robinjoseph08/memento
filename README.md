@@ -557,10 +557,15 @@ Compose project, so `docker compose down --volumes` deletes it. Its selected
 host port is stored in the main worktree's `tmp/database.env`. PostgreSQL
 prefers port `5432` and uses the next available port when necessary.
 
-Setup, `mise clone`, `mise db:migrate`, `mise db:rollback`, `mise db:reset`,
-and every `mise start` mode that runs the API start the PostgreSQL container
-from any worktree when it is not already running. Do not run `docker compose
-down` while another worktree is using the database.
+These commands start the PostgreSQL container from any worktree when it is not
+already running:
+
+- `mise setup`, `mise db:migrate`, `mise test:e2e` without
+  `TEST_DATABASE_URL`, and every `mise start` mode that runs the API also
+  create the worktree's database the way setup does when it is missing.
+- `mise clone`, `mise db:rollback`, and `mise db:reset` only start PostgreSQL.
+
+Do not run `docker compose down` while another worktree is using the database.
 
 ## Start development
 

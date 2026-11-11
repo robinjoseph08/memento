@@ -328,6 +328,15 @@ func (d *DockerDatabase) composeCommand(ctx context.Context, env Environment, ar
 	command := exec.CommandContext(ctx, "docker", commandArgs...)
 	command.Dir = env.MainRoot
 	command.Env = append(os.Environ(), "POSTGRES_PORT="+strconv.Itoa(port))
+	// Ctrl+C reaches only this process, which decides what to cancel through
+	// ctx. Without this, the terminal's interrupt would also kill steps that
+	// run on a detached context, like Clone's final rename. Cancelling
+	// interrupts the whole group, since docker runs Compose as a child.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		return syscall.Kill(-command.Process.Pid, syscall.SIGINT)
+	}
+	command.WaitDelay = 5 * time.Second
 	return command, nil
 }
 
@@ -487,12 +496,12 @@ func writePostgresPort(mainRoot string, port int) error {
 }
 
 func databaseConfig(env Environment, name string) (*config.Config, error) {
-	port, err := readPostgresPort(env.MainRoot)
+	url, err := env.DatabaseURL(name)
 	if err != nil {
 		return nil, err
 	}
 	return &config.Config{
-		DatabaseURL:               fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", port, name),
+		DatabaseURL:               url,
 		DatabaseConnectRetryCount: 5,
 		DatabaseConnectRetryDelay: 500 * time.Millisecond,
 		ServerHost:                "127.0.0.1",

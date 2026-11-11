@@ -2,7 +2,6 @@ package testdb
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -27,7 +26,10 @@ func New(t *testing.T) *bun.DB {
 		if err != nil {
 			t.Fatalf("resolve local test database: %v", err)
 		}
-		baseURL = fmt.Sprintf("postgres://postgres:postgres@127.0.0.1:%d/%s?sslmode=disable", env.PostgresPort, env.CurrentDatabase)
+		baseURL, err = env.DatabaseURL(env.CurrentDatabase)
+		if err != nil {
+			t.Fatalf("resolve local test database: %v", err)
+		}
 	}
 	schema, err := NewSchema(ctx, baseURL)
 	if err != nil {

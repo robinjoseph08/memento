@@ -35,16 +35,11 @@ func ResolveEnvironment(ctx context.Context) (Environment, error) {
 		return Environment{}, fmt.Errorf("resolve current worktree path: %w", err)
 	}
 
-	port, err := readPostgresPort(mainRoot)
-	if err != nil {
-		return Environment{}, err
-	}
 	return Environment{
 		MainRoot:        mainRoot,
 		CurrentRoot:     currentRoot,
 		MainDatabase:    repositoryIdentifier(mainRoot),
 		CurrentDatabase: worktreeDatabaseName(mainRoot, currentRoot),
-		PostgresPort:    port,
 		ProjectName:     projectName(mainRoot),
 	}, nil
 }
