@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-11
+
+- [CI] Stop the Immich release detector filing issues for CI infrastructure failures (#152)
+- [Feature] Support Immich 3.4 (#151)
+- [Fix] Start PostgreSQL from any worktree when it isn't running (#150)
+- [Fix] Stop Go lint failing when another project holds the golangci-lint lock (#145)
+
 ## [0.7.0] - 2026-10-30
 
 - [Feature] Point viewers at the Videos tab, joining, and chapters with one-time Tips (#141)
