@@ -34,7 +34,7 @@ RUN MODULE=$(go list -m) && \
       -ldflags "-w -s -X $MODULE/pkg/version.Version=$VERSION" \
       -o /out/app ./cmd/api
 
-FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 # ffmpeg supplies the ffprobe binary that reads video chapters over HTTP ranges.
 RUN apk add --no-cache ca-certificates tzdata ffmpeg && \
     addgroup -S app && adduser -S -G app app && \
