@@ -17,3 +17,9 @@ func AvatarURL(personID, faceID, version string) string {
 func avatarVersion(faceID, version string) string {
 	return faceID + ":" + version
 }
+
+// PlaybackRevision ends every playback URL. Playback was once cached for a
+// year under the content version alone, and Immich can transcode a video again
+// without that version changing, so a new revision keeps browsers from
+// replaying a stream they cached before. Nothing reads it on the server.
+const PlaybackRevision = "&revision=2"

@@ -61,8 +61,11 @@ func streamPlayback(c *echo.Context, m *Module, id string) error {
 	header.Set("Cache-Control", "private, no-store")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Accept-Ranges", "bytes")
+	// With no validator of its own, Memento can never match an If-Range, so
+	// a client holding bytes from an earlier stream gets the whole video
+	// rather than a range it would splice onto them.
 	byteRange := strings.TrimSpace(c.Request().Header.Get("Range"))
-	if !singleByteRange.MatchString(byteRange) {
+	if !singleByteRange.MatchString(byteRange) || c.Request().Header.Get("If-Range") != "" {
 		byteRange = ""
 	}
 	playback, err := m.viewerPlayback(ctx, item, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})

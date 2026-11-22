@@ -82,7 +82,7 @@ func TestViewerPagesUseLocalCaptureTimeAndEntryIDWithoutPrivateMetadata(t *testi
 	clip := videos.Entries[0]
 	clipVersion := strings.Split(clip.ThumbnailURL, "?v=")[1]
 	require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+clip.ID+"/original?v="+clipVersion, clip.DownloadURL)
-	require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+clip.ID+"/playback?v="+clipVersion, clip.PlaybackURL)
+	require.Equal(t, "/api/media/viewer/"+curator.ID.String()+"/entries/"+clip.ID+"/playback?v="+clipVersion+"&revision=2", clip.PlaybackURL)
 	require.Equal(t, "pending", clip.ChapterStatus, "an unprobed video is pending, never failed")
 	require.Empty(t, clip.Chapters)
 	require.Empty(t, first.Entries[0].PlaybackURL, "photos have no playback")

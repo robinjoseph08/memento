@@ -126,6 +126,11 @@ func TestViewerPlaybackProxiesOneRangeWithoutCaching(t *testing.T) {
 	require.Equal(t, http.StatusPartialContent, seeking.Code)
 	require.Equal(t, "cdef", seeking.Body.String())
 
+	stale := do(http.MethodGet, url, map[string]string{"Range": "bytes=4-7", "If-Range": "\"earlier\""})
+	require.Equal(t, http.StatusOK, stale.Code, "bytes kept from an earlier stream are replaced, never extended")
+	require.Equal(t, "0123456789abcdef", stale.Body.String())
+	require.Empty(t, seen[len(seen)-1].Range, "Immich never sees a range it must not honor")
+
 	for _, header := range []string{"bytes=abc", "bytes=0-1,4-7", "items=0-1", "bytes=", "bytes=1-0-"} {
 		whole := do(http.MethodGet, url, map[string]string{"Range": header})
 		require.Equal(t, http.StatusOK, whole.Code, header)
