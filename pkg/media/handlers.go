@@ -113,7 +113,7 @@ func downloadFilename(item EntryMedia) string {
 	name := path.Base(strings.ReplaceAll(item.Filename, "\\", "/"))
 	extension := strings.ToLower(path.Ext(name))
 	if item.Kind != "IMAGE" {
-		if item.VideoTitle == nil || *item.VideoTitle == "" {
+		if item.VideoTitle == nil {
 			return item.Filename
 		}
 		// A slash in the title would otherwise be read as a folder.
