@@ -431,6 +431,10 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 	if tail.Code != http.StatusPartialContent || tail.Body.Len() != 10 {
 		return fmt.Errorf("seeking to the end returned HTTP %d with %d bytes", tail.Code, tail.Body.Len())
 	}
+	stale := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": "\"earlier\""})
+	if stale.Code != http.StatusOK || stale.Header().Get("Content-Range") != "" || !bytes.Equal(stale.Body.Bytes(), full.Body.Bytes()) {
+		return fmt.Errorf("a stale If-Range did not return the whole video: HTTP %d", stale.Code)
+	}
 	head := do(alexHTTP, http.MethodHead, entry.PlaybackURL, nil)
 	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Cache-Control") != cache {
 		return fmt.Errorf("playback HEAD differs from GET: HTTP %d", head.Code)
