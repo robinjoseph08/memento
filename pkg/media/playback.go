@@ -20,10 +20,8 @@ func (h *viewerHandlers) previewPlayback(c *echo.Context) error { return h.playb
 // allows a server to do with any Range header.
 var singleByteRange = regexp.MustCompile(`^bytes=(\d+-\d*|-\d+)$`)
 
-// playback proxies Immich's video stream for an authorized Album Entry. Memento
-// owns the validators: the content version is the ETag, so a matching
-// If-None-Match answers 304 and a mismatched If-Range asks for the whole file.
-// One byte range passes through with Immich's partial response intact.
+// playback proxies Immich's video stream for an authorized Album Entry. One
+// byte range passes through with Immich's partial response intact.
 func (h *viewerHandlers) playback(c *echo.Context, preview bool) error {
 	actorID, _ := c.Get("identity.person_id").(string)
 	selected := ""
@@ -42,7 +40,7 @@ func (h *viewerHandlers) playback(c *echo.Context, preview bool) error {
 }
 
 // entryPlayback streams a video to a Curator reviewing it, with the same
-// range and validator semantics as the viewer routes.
+// range handling as the viewer routes.
 func (h *handlers) entryPlayback(c *echo.Context) error {
 	return streamPlayback(c, h.module, c.Param("id"))
 }
@@ -56,17 +54,15 @@ func streamPlayback(c *echo.Context, m *Module, id string) error {
 	if err != nil {
 		return err
 	}
-	tag := "\"" + version + "\""
+	// The stream is Immich's playback copy, which Immich can transcode again
+	// without the content version changing, so browsers never store it. A
+	// browser caches only the start of a long video anyway.
 	header := c.Response().Header()
-	header.Set("Cache-Control", "private, max-age=31536000, immutable")
-	header.Set("ETag", tag)
+	header.Set("Cache-Control", "private, no-store")
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Accept-Ranges", "bytes")
-	if etagMatches(c.Request().Header.Get("If-None-Match"), tag) {
-		return c.NoContent(http.StatusNotModified)
-	}
 	byteRange := strings.TrimSpace(c.Request().Header.Get("Range"))
-	if !singleByteRange.MatchString(byteRange) || !ifRangeAllows(c.Request().Header.Get("If-Range"), tag) {
+	if !singleByteRange.MatchString(byteRange) {
 		byteRange = ""
 	}
 	playback, err := m.viewerPlayback(ctx, item, immich.PlaybackRequest{Range: byteRange, Head: c.Request().Method == http.MethodHead})
@@ -89,23 +85,4 @@ func streamPlayback(c *echo.Context, m *Module, id string) error {
 		return c.NoContent(playback.StatusCode)
 	}
 	return errorstack.CaptureContext(ctx, c.Stream(playback.StatusCode, playback.ContentType, playback.Body))
-}
-
-// etagMatches applies If-None-Match with weak comparison, as browsers revalidate.
-func etagMatches(header, tag string) bool {
-	for candidate := range strings.SplitSeq(header, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == tag {
-			return true
-		}
-	}
-	return false
-}
-
-// ifRangeAllows says whether a Range may be honored. Absent means yes; a
-// strong match of Memento's tag means yes; a date or another tag means the
-// browser holds different bytes and must receive the whole video.
-func ifRangeAllows(header, tag string) bool {
-	header = strings.TrimSpace(header)
-	return header == "" || header == tag
 }

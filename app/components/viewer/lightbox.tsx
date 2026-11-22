@@ -516,7 +516,7 @@ export function Lightbox({
                     />
                   </Button>
                 </DialogPrimitive.Close>
-                <div className="min-w-0 flex-1 pt-1.5">
+                <div className="min-w-0 flex-1 self-center">
                   <DialogPrimitive.Description className="truncate font-heading text-lg leading-tight">
                     {kind === "video" && entry ? entry.title || "Video" : title}
                   </DialogPrimitive.Description>

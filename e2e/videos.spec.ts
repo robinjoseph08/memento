@@ -255,15 +255,15 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
     await expect(picker).toHaveText(/Goodbyes/);
     await expect(dialog).toHaveAccessibleName("Video 1 of 103");
 
-    // Playback proxies byte ranges with Memento's validators.
+    // Playback proxies byte ranges and is never stored, since Immich can
+    // transcode it again.
     const partial = await member.request.get(playbackURL, {
       headers: { Range: "bytes=0-99" },
     });
     expect(partial.status()).toBe(206);
     expect(partial.headers()["content-range"]).toMatch(/^bytes 0-99\/\d+$/);
-    expect(partial.headers()["cache-control"]).toBe(
-      "private, max-age=31536000, immutable",
-    );
+    expect(partial.headers()["cache-control"]).toBe("private, no-store");
+    expect(partial.headers()["etag"]).toBeUndefined();
     expect(partial.headers()["accept-ranges"]).toBe("bytes");
     expect((await partial.body()).byteLength).toBe(100);
 
@@ -297,7 +297,8 @@ test("videos play with titles, chapters, ranges, downloads, and recover a failed
       member.waitForEvent("download"),
       dialog.getByRole("link", { name: "Download video", exact: true }).click(),
     ]);
-    expect(download.suggestedFilename()).toBe("birthday-party.webm");
+    // A titled video downloads under its title, never its file name.
+    expect(download.suggestedFilename()).toBe("Birthday party.webm");
     expect(await download.failure()).toBeNull();
 
     // Neighbours without chapters, including the broken one, have no picker.
