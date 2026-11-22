@@ -476,7 +476,7 @@ func TestViewerOriginalDownloadsAuthorizedPhotosAndVideosWithoutRanges(t *testin
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/sam/entries/"+allowed.ID+"/original?v="+version, nil).Code, "another Person's URL is never served")
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/alex/entries/"+allowed.ID+"/original?v=wrong", nil).Code)
 	require.Empty(t, upstream.requested)
-	// A video downloads through the same route, named after its file.
+	// A video downloads through the same route, named after its title.
 	upstream.asset = immich.Asset{ID: "clip", Checksum: "Yg==", Filename: "clip.mp4", Kind: "VIDEO", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}
 	upstream.originalType = "video/mp4"
 	videoDownload := do(http.MethodGet, "/api/media/viewer/alex/entries/"+video.ID+"/original?v="+strings.Split(video.ThumbnailURL, "?v=")[1], map[string]string{"Range": "bytes=0-3"})
@@ -487,7 +487,14 @@ func TestViewerOriginalDownloadsAuthorizedPhotosAndVideosWithoutRanges(t *testin
 	require.Empty(t, videoDownload.Header().Get("Content-Range"), "downloads stay range-independent")
 	_, params, err = mime.ParseMediaType(videoDownload.Header().Get("Content-Disposition"))
 	require.NoError(t, err)
-	require.Equal(t, "clip.mp4", params["filename"])
+	require.Equal(t, "clip.mp4", params["filename"], "an untitled video keeps its file name")
+	_, err = db.NewUpdate().Model((*models.MediaItem)(nil)).Set("video_title = ?", "Beach day / sunset").Where("id = ?", video.MediaID).Exec(t.Context())
+	require.NoError(t, err)
+	titled := do(http.MethodGet, "/api/media/viewer/alex/entries/"+video.ID+"/original?v="+strings.Split(video.ThumbnailURL, "?v=")[1], nil)
+	require.Equal(t, http.StatusOK, titled.Code)
+	_, params, err = mime.ParseMediaType(titled.Header().Get("Content-Disposition"))
+	require.NoError(t, err)
+	require.Equal(t, "Beach day - sunset.mp4", params["filename"], "a titled video is named for its title, never its file")
 	upstream.asset = immich.Asset{ID: "asset", Checksum: "YQ==", Filename: "Lake sunset (edited).jpg", Kind: "IMAGE", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}
 	upstream.originalType = ""
 	upstream.requested = ""

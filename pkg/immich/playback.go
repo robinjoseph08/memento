@@ -15,8 +15,8 @@ import (
 )
 
 // PlaybackRequest carries the only request facts Memento forwards: one byte
-// range and whether the caller wants headers alone. Validators stay in Memento
-// because its content version, not Immich's ETag, names the cached bytes.
+// range and whether the caller wants headers alone. Playback is never cached,
+// so no validators are forwarded.
 type PlaybackRequest struct {
 	Range string
 	Head  bool

@@ -75,6 +75,10 @@ export function VideoStage({
         autoPlay={autoPlay}
         className="max-h-full max-w-full bg-black object-contain"
         controls
+        // The player streams Immich's smaller playback copy, so its own
+        // download would save that copy under a meaningless name. The
+        // lightbox's Download button saves the original instead.
+        controlsList="nodownload"
         onTimeUpdate={(event) => onTime(event.currentTarget.currentTime)}
         playsInline
         preload="metadata"

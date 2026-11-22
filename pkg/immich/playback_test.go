@@ -21,7 +21,7 @@ func TestPlaybackForwardsOneRangeAndKeepsPartialSemantics(t *testing.T) {
 	fixture := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/assets/clip%2F1/video/playback", r.RequestURI)
 		assert.Equal(t, "read-key", r.Header.Get("X-Api-Key"))
-		assert.Empty(t, r.Header.Get("If-Range"), "Memento owns validators; upstream never sees them")
+		assert.Empty(t, r.Header.Get("If-Range"), "playback is never conditional; upstream never sees validators")
 		assert.Empty(t, r.Header.Get("If-None-Match"))
 		w.Header().Set("Content-Type", "video/mp4")
 		w.Header().Set("Accept-Ranges", "bytes")

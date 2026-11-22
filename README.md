@@ -231,7 +231,8 @@ the browser accepts gzip. No proxy gzip tuning is needed. Nginx's
 [default gzip types](https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_types)
 cover only HTML, which leaves JSON, JavaScript, and CSS uncompressed when
 relying on the proxy alone. Media and playback routes bypass Memento's
-compression to preserve byte ranges and private versioned caching.
+compression to preserve byte ranges and, for images, private versioned
+caching.
 
 Casting a video over AirPlay, or a photo or video over Google Cast, hands the
 TV a signed address under `PUBLIC_URL` that works for a few hours, and the TV

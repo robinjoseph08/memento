@@ -230,7 +230,7 @@ func (v viewerContext) playbackURL(entryID, kind, version string) string {
 	if kind != "VIDEO" {
 		return ""
 	}
-	return v.mediaURL(entryID, "playback", version)
+	return v.mediaURL(entryID, "playback", version) + media.PlaybackRevision
 }
 
 func (v viewerContext) mediaURL(entryID, variant, version string) string {

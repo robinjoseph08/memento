@@ -105,14 +105,20 @@ var photoDownloadExtensions = map[string]bool{
 	".raf": true, ".rw2": true, ".tif": true, ".tiff": true, ".webp": true,
 }
 
-// downloadFilename keeps video names but gives photos a capture-time name so
-// the browser never exposes a camera filename.
+// downloadFilename never exposes a camera filename when it can avoid it: a
+// photo is named for its capture time, and a video for its Curator-given
+// title, keeping only the file's extension. An untitled video keeps its file
+// name, as it does everywhere else.
 func downloadFilename(item EntryMedia) string {
-	if item.Kind != "IMAGE" {
-		return item.Filename
-	}
 	name := path.Base(strings.ReplaceAll(item.Filename, "\\", "/"))
 	extension := strings.ToLower(path.Ext(name))
+	if item.Kind != "IMAGE" {
+		if item.VideoTitle == nil {
+			return item.Filename
+		}
+		// A slash in the title would otherwise be read as a folder.
+		return strings.NewReplacer("/", "-", "\\", "-").Replace(*item.VideoTitle) + extension
+	}
 	if !photoDownloadExtensions[extension] {
 		extension = ""
 	}

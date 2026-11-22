@@ -47,7 +47,7 @@ func fakeStream(content string, seen *[]immich.PlaybackRequest) func(context.Con
 	}
 }
 
-func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
+func TestViewerPlaybackProxiesOneRangeWithoutCaching(t *testing.T) {
 	t.Parallel()
 	upstream := &source{asset: immich.Asset{ID: "clip", Checksum: "Yg==", Filename: "clip.mp4", Kind: "VIDEO", LocalDateTime: "2026-07-04T23:59:00Z", FileCreatedAt: "2026-07-04T23:59:00Z", UpdatedAt: "2026-07-05T00:00:00Z"}}
 	var seen []immich.PlaybackRequest
@@ -103,7 +103,6 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 		return r
 	}
 	url := "/api/media/viewer/alex/entries/" + video.ID + "/playback?v=" + version
-	tag := "\"" + version + "\""
 
 	full := do(http.MethodGet, url, nil)
 	require.Equal(t, http.StatusOK, full.Code)
@@ -111,8 +110,8 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.Equal(t, "video/mp4", full.Header().Get("Content-Type"))
 	require.Equal(t, "16", full.Header().Get("Content-Length"))
 	require.Equal(t, "bytes", full.Header().Get("Accept-Ranges"))
-	require.Equal(t, tag, full.Header().Get("ETag"))
-	require.Equal(t, "private, max-age=31536000, immutable", full.Header().Get("Cache-Control"))
+	require.Empty(t, full.Header().Get("ETag"), "Immich can transcode again under the same content version")
+	require.Equal(t, "private, no-store", full.Header().Get("Cache-Control"))
 	require.Equal(t, "nosniff", full.Header().Get("X-Content-Type-Options"))
 	require.Empty(t, full.Header().Get("Content-Range"))
 	require.Equal(t, "playback:clip", upstream.requested)
@@ -122,14 +121,13 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.Equal(t, "4567", partial.Body.String())
 	require.Equal(t, "bytes 4-7/16", partial.Header().Get("Content-Range"))
 	require.Equal(t, "4", partial.Header().Get("Content-Length"))
-	require.Equal(t, tag, partial.Header().Get("ETag"))
 
-	seeking := do(http.MethodGet, url, map[string]string{"Range": "bytes=12-", "If-Range": tag})
-	require.Equal(t, http.StatusPartialContent, seeking.Code, "a matching If-Range keeps the seek")
+	seeking := do(http.MethodGet, url, map[string]string{"Range": "bytes=12-"})
+	require.Equal(t, http.StatusPartialContent, seeking.Code)
 	require.Equal(t, "cdef", seeking.Body.String())
 
-	stale := do(http.MethodGet, url, map[string]string{"Range": "bytes=4-7", "If-Range": "\"other\""})
-	require.Equal(t, http.StatusOK, stale.Code, "a foreign validator asks for the whole video")
+	stale := do(http.MethodGet, url, map[string]string{"Range": "bytes=4-7", "If-Range": "\"earlier\""})
+	require.Equal(t, http.StatusOK, stale.Code, "bytes kept from an earlier stream are replaced, never extended")
 	require.Equal(t, "0123456789abcdef", stale.Body.String())
 	require.Empty(t, seen[len(seen)-1].Range, "Immich never sees a range it must not honor")
 
@@ -145,12 +143,6 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.Empty(t, unsatisfiable.Body.String())
 	require.Empty(t, unsatisfiable.Header().Get("Content-Length"), "no body means no declared length")
 
-	upstream.requested = ""
-	cached := do(http.MethodGet, url, map[string]string{"If-None-Match": "W/" + tag, "Range": "bytes=4-7"})
-	require.Equal(t, http.StatusNotModified, cached.Code)
-	require.Equal(t, tag, cached.Header().Get("ETag"))
-	require.Empty(t, upstream.requested, "a validated cache never reaches Immich")
-
 	before := len(seen)
 	head := do(http.MethodHead, url, map[string]string{"Range": "bytes=4-7"})
 	require.Equal(t, http.StatusPartialContent, head.Code)
@@ -165,7 +157,7 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/sam/entries/"+video.ID+"/playback?v="+version, nil).Code, "another Person's URL is never served")
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/viewer/alex/entries/"+video.ID+"/playback?v=wrong", nil).Code)
 	allowed = false
-	require.Equal(t, http.StatusNotFound, do(http.MethodGet, url, map[string]string{"If-None-Match": tag}).Code, "authorization runs before the conditional answer")
+	require.Equal(t, http.StatusNotFound, do(http.MethodGet, url, nil).Code, "authorization runs before Immich is asked")
 	allowed = true
 	require.Empty(t, upstream.requested)
 	require.Equal(t, http.StatusForbidden, do(http.MethodGet, "/api/media/preview/sam/entries/"+video.ID+"/playback?v="+version, nil).Code)
@@ -173,7 +165,7 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	preview := do(http.MethodGet, "/api/media/preview/sam/entries/"+video.ID+"/playback?v="+version, map[string]string{"Range": "bytes=4-7"})
 	require.Equal(t, http.StatusPartialContent, preview.Code, "preview plays the same stream")
 	require.Equal(t, "sam", selected)
-	require.Equal(t, "private, max-age=31536000, immutable", preview.Header().Get("Cache-Control"))
+	require.Equal(t, "private, no-store", preview.Header().Get("Cache-Control"))
 	actor = "alex"
 
 	// A Curator reviewing the video streams it through the Curator route with
@@ -185,7 +177,7 @@ func TestViewerPlaybackProxiesOneRangeWithMementoValidators(t *testing.T) {
 	reviewed := do(http.MethodGet, curatorURL, map[string]string{"Range": "bytes=4-7"})
 	require.Equal(t, http.StatusPartialContent, reviewed.Code)
 	require.Equal(t, "4567", reviewed.Body.String())
-	require.Equal(t, tag, reviewed.Header().Get("ETag"))
+	require.Equal(t, "private, no-store", reviewed.Header().Get("Cache-Control"))
 	require.Equal(t, http.StatusNotFound, do(http.MethodGet, "/api/media/entries/"+photo.ID+"/playback?v="+strings.Split(photo.ThumbnailURL, "?v=")[1], nil).Code)
 	actor = "alex"
 

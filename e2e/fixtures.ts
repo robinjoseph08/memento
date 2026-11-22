@@ -222,13 +222,14 @@ export async function finishOnboarding(
 // playbackSource waits for a lightbox video to have its source and returns
 // it. Where AirPlay exists (WebKit) the player takes a signed URL from the
 // start, so an Apple TV could fetch it; elsewhere it plays the cookie URL.
-// Both name the Album Entry and end in its content version.
+// Both name the Album Entry and carry its content version.
 export async function playbackSource(video: Locator, entry?: ViewerEntry) {
   await expect(video).toHaveAttribute("src", /\/playback(\/[^/?]+)?\?v=/);
   const source = (await video.getAttribute("src")) ?? "";
   if (entry) {
     expect(source).toContain(entry.id);
-    expect(source.split("?v=")[1]).toBe(entry.playback_url.split("?v=")[1]);
+    const version = (url: string) => url.split("?v=")[1].split("&")[0];
+    expect(version(source)).toBe(version(entry.playback_url));
   }
   return source;
 }

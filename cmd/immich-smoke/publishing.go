@@ -355,8 +355,8 @@ func isNotFound(err error) bool {
 }
 
 // verifyVideoPublishing shares the video album with Alex, publishes it, and
-// streams playback through the production route with byte ranges and
-// Memento's validators. Sam has no access and preview cannot download.
+// streams playback through the production route whole and in byte ranges,
+// never cached. Sam has no access and preview cannot download.
 func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.Module, delivery *media.Module, album publishing.AlbumDetail, video fixture.Video) error {
 	people := identity.New(db, nil)
 	curator, err := people.SignIn(ctx, identity.Claims{Email: "curator@example.test", EmailVerified: true, DisplayName: "Smoke Curator"})
@@ -415,13 +415,12 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 		handler.ServeHTTP(recorder, request)
 		return recorder
 	}
-	const cache = "private, max-age=31536000, immutable"
+	const cache = "private, no-store"
 	full := do(alexHTTP, http.MethodGet, entry.PlaybackURL, nil)
-	if full.Code != http.StatusOK || !strings.HasPrefix(full.Header().Get("Content-Type"), "video/") || full.Header().Get("Cache-Control") != cache || full.Header().Get("ETag") == "" || full.Header().Get("Accept-Ranges") != "bytes" || full.Body.Len() == 0 {
+	if full.Code != http.StatusOK || !strings.HasPrefix(full.Header().Get("Content-Type"), "video/") || full.Header().Get("Cache-Control") != cache || full.Header().Get("ETag") != "" || full.Header().Get("Accept-Ranges") != "bytes" || full.Body.Len() == 0 {
 		return fmt.Errorf("whole playback returned HTTP %d %q", full.Code, full.Header().Get("Content-Type"))
 	}
-	etag := full.Header().Get("ETag")
-	partial := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": etag})
+	partial := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99"})
 	if partial.Code != http.StatusPartialContent || !strings.HasPrefix(partial.Header().Get("Content-Range"), "bytes 0-99/") || partial.Body.Len() != 100 || partial.Header().Get("Cache-Control") != cache {
 		return fmt.Errorf("ranged playback returned HTTP %d %q with %d bytes", partial.Code, partial.Header().Get("Content-Range"), partial.Body.Len())
 	}
@@ -432,17 +431,13 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 	if tail.Code != http.StatusPartialContent || tail.Body.Len() != 10 {
 		return fmt.Errorf("seeking to the end returned HTTP %d with %d bytes", tail.Code, tail.Body.Len())
 	}
-	foreign := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": "\"other\""})
-	if foreign.Code != http.StatusOK || foreign.Body.Len() != full.Body.Len() {
-		return fmt.Errorf("a foreign If-Range did not return the whole video: HTTP %d", foreign.Code)
+	stale := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"Range": "bytes=0-99", "If-Range": "\"earlier\""})
+	if stale.Code != http.StatusOK || stale.Header().Get("Content-Range") != "" || !bytes.Equal(stale.Body.Bytes(), full.Body.Bytes()) {
+		return fmt.Errorf("a stale If-Range did not return the whole video: HTTP %d", stale.Code)
 	}
 	head := do(alexHTTP, http.MethodHead, entry.PlaybackURL, nil)
-	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("ETag") != etag {
+	if head.Code != http.StatusOK || head.Body.Len() != 0 || head.Header().Get("Cache-Control") != cache {
 		return fmt.Errorf("playback HEAD differs from GET: HTTP %d", head.Code)
-	}
-	cached := do(alexHTTP, http.MethodGet, entry.PlaybackURL, map[string]string{"If-None-Match": etag})
-	if cached.Code != http.StatusNotModified || cached.Body.Len() != 0 {
-		return fmt.Errorf("conditional playback did not validate the cached stream: HTTP %d", cached.Code)
 	}
 	download := do(alexHTTP, http.MethodGet, entry.DownloadURL, map[string]string{"Range": "bytes=0-1"})
 	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), video.Bytes) || download.Header().Get("Content-Range") != "" {
@@ -471,6 +466,6 @@ func verifyVideoPublishing(ctx context.Context, db *bun.DB, module *publishing.M
 	if err := deniedMedia(ctx, curatorHTTP, strings.Replace(preview.Entries[0].PlaybackURL, "/playback?", "/original?", 1), http.StatusNotFound); err != nil {
 		return fmt.Errorf("preview enabled video download: %w", err)
 	}
-	fmt.Printf("Video: %d-byte playback streams whole and in ranges with Memento validators, downloads match the upload, and preview plays without downloading\n", full.Body.Len())
+	fmt.Printf("Video: %d-byte playback streams whole and in ranges without caching, downloads match the upload, and preview plays without downloading\n", full.Body.Len())
 	return nil
 }
