@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-24
+
+- [Fix] Play re-transcoded videos and name video downloads after their title (#154)
+
 ## [0.7.1] - 2026-11-11
 
 - [CI] Stop the Immich release detector filing issues for CI infrastructure failures (#152)
